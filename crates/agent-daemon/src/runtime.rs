@@ -23,7 +23,8 @@ use crate::{
     delegation::{
         delegation_targets_from_config, resolve_delegation_tasks, summarize_batch_results,
     },
-    learn_from_interaction, load_enabled_skill_guidance, sync_system_profile_memories,
+    learn_from_interaction, load_enabled_skill_guidance, load_pattern_guidance,
+    sync_system_profile_memories,
     tools::{execute_tool_call, tool_definitions, ToolContext},
     ApiError, AppState, MAX_TOOL_LOOP_ITERATIONS, REPEATED_TOOL_BATCH_LIMIT,
 };
@@ -157,6 +158,28 @@ pub(crate) async fn execute_task_request(
             ConversationMessage {
                 role: MessageRole::System,
                 content: memory_context,
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: Vec::new(),
+                provider_payload_json: None,
+                attachments: Vec::new(),
+            },
+        );
+    }
+    // Inject learned usage-pattern guidance when available.
+    let pattern_guidance = load_pattern_guidance(
+        state,
+        Some(&cwd.display().to_string()),
+        Some(&provider.id),
+        5,
+    )
+    .unwrap_or_default();
+    if !pattern_guidance.is_empty() {
+        messages.insert(
+            if messages.len() > 1 { 2 } else { 1 },
+            ConversationMessage {
+                role: MessageRole::System,
+                content: pattern_guidance,
                 tool_call_id: None,
                 tool_name: None,
                 tool_calls: Vec::new(),

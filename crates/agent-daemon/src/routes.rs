@@ -13,32 +13,33 @@ use crate::{
     add_mission, approve_connector_approval, approve_memory, autonomy_status, autopilot_status,
     call_home_assistant_service_route, cancel_mission, clear_provider_credentials,
     dashboard::{dashboard_css, dashboard_index, dashboard_js, dashboard_root},
-    delegation_status, delete_app_connector, delete_discord_connector,
+    delegation_status, delete_app_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_mcp_server,
     delete_signal_connector, delete_slack_connector, delete_telegram_connector,
     delete_webhook_connector, doctor, enable_autonomy, evolve_status, forget_memory,
-    get_discord_connector, get_home_assistant_connector, get_home_assistant_entity_state_route,
-    get_inbox_connector, get_mission, get_permission_preset, get_session, get_signal_connector,
-    get_skill_draft, get_slack_connector, get_telegram_connector, get_webhook_connector,
-    list_aliases, list_app_connectors, list_connector_approvals, list_delegation_targets,
-    list_discord_connectors, list_enabled_skills, list_events, list_home_assistant_connectors,
+    get_discord_connector, get_gmail_connector, get_home_assistant_connector,
+    get_home_assistant_entity_state_route, get_inbox_connector, get_mission,
+    get_permission_preset, get_session, get_signal_connector, get_skill_draft, get_slack_connector,
+    get_telegram_connector, get_webhook_connector, list_aliases, list_app_connectors,
+    list_connector_approvals, list_delegation_targets, list_discord_connectors,
+    list_enabled_skills, list_events, list_gmail_connectors, list_home_assistant_connectors,
     list_inbox_connectors, list_logs, list_mcp_servers, list_memories, list_memory_review_queue,
     list_mission_checkpoints, list_missions, list_profile_memories, list_provider_models,
     list_providers, list_sessions, list_signal_connectors, list_skill_drafts,
     list_slack_connectors, list_telegram_connectors, list_webhook_connectors, pause_autonomy,
-    pause_evolve_mode, pause_mission, poll_discord_connector_route,
+    pause_evolve_mode, pause_mission, poll_discord_connector_route, poll_gmail_connector_route,
     poll_home_assistant_connector_route, poll_inbox_connector_route, poll_signal_connector_route,
     poll_slack_connector_route, poll_telegram_connector_route, publish_skill_draft,
     receive_webhook_event, reject_connector_approval, reject_memory, reject_skill_draft,
     resolve_alias_and_provider, resume_autonomy, resume_evolve_mode, resume_mission, search_memory,
-    send_discord_message_route, send_signal_message_route, send_slack_message_route,
-    send_telegram_message_route, shutdown, start_evolve_mode, status, stop_evolve_mode,
-    update_autopilot, update_daemon_config, update_delegation_config, update_enabled_skills,
-    update_permission_preset, update_trust, upsert_alias, upsert_app_connector,
-    upsert_discord_connector, upsert_home_assistant_connector, upsert_inbox_connector,
-    upsert_mcp_server, upsert_memory, upsert_provider, upsert_signal_connector,
-    upsert_slack_connector, upsert_telegram_connector, upsert_webhook_connector, ApiError,
-    AppState,
+    send_discord_message_route, send_gmail_message_route, send_signal_message_route,
+    send_slack_message_route, send_telegram_message_route, shutdown, start_evolve_mode, status,
+    stop_evolve_mode, update_autopilot, update_daemon_config, update_delegation_config,
+    update_enabled_skills, update_permission_preset, update_trust, upsert_alias,
+    upsert_app_connector, upsert_discord_connector, upsert_gmail_connector,
+    upsert_home_assistant_connector, upsert_inbox_connector, upsert_mcp_server, upsert_memory,
+    upsert_provider, upsert_signal_connector, upsert_slack_connector, upsert_telegram_connector,
+    upsert_webhook_connector, ApiError, AppState,
 };
 use crate::{
     execute_batch_request, execute_task_request, DelegationExecutionOptions, TaskRequestInput,
@@ -192,6 +193,22 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route(
             "/v1/signal/{connector_id}/send",
             post(send_signal_message_route),
+        )
+        .route(
+            "/v1/gmail",
+            get(list_gmail_connectors).post(upsert_gmail_connector),
+        )
+        .route(
+            "/v1/gmail/{connector_id}",
+            get(get_gmail_connector).delete(delete_gmail_connector),
+        )
+        .route(
+            "/v1/gmail/{connector_id}/poll",
+            post(poll_gmail_connector_route),
+        )
+        .route(
+            "/v1/gmail/{connector_id}/send",
+            post(send_gmail_message_route),
         )
         .route("/v1/connector-approvals", get(list_connector_approvals))
         .route(

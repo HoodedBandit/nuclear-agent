@@ -46,6 +46,54 @@ const elements = {
   delegationList: document.getElementById("delegation-list"),
   eventsSummary: document.getElementById("events-summary"),
   eventsList: document.getElementById("events-list"),
+  providersSummary: document.getElementById("providers-summary"),
+  providersList: document.getElementById("providers-list"),
+  aliasesList: document.getElementById("aliases-list"),
+  aliasForm: document.getElementById("alias-form"),
+  aliasName: document.getElementById("alias-name"),
+  aliasProvider: document.getElementById("alias-provider"),
+  aliasModel: document.getElementById("alias-model"),
+  aliasDescription: document.getElementById("alias-description"),
+  aliasMain: document.getElementById("alias-main"),
+  memorySearchForm: document.getElementById("memory-search-form"),
+  memorySearchQuery: document.getElementById("memory-search-query"),
+  memorySearchResults: document.getElementById("memory-search-results"),
+  memoryCreateForm: document.getElementById("memory-create-form"),
+  memoryCreateKind: document.getElementById("memory-create-kind"),
+  memoryCreateScope: document.getElementById("memory-create-scope"),
+  memoryCreateSubject: document.getElementById("memory-create-subject"),
+  memoryCreateContent: document.getElementById("memory-create-content"),
+  permissionsSummary: document.getElementById("permissions-summary"),
+  permissionPresetActions: document.getElementById("permission-preset-actions"),
+  permissionsDetails: document.getElementById("permissions-details"),
+  trustToggles: document.getElementById("trust-toggles"),
+  connectorAddForm: document.getElementById("connector-add-form"),
+  connectorAddType: document.getElementById("connector-add-type"),
+  connectorAddName: document.getElementById("connector-add-name"),
+  connectorAddId: document.getElementById("connector-add-id"),
+  connectorAddFields: document.getElementById("connector-add-fields"),
+  runTaskForm: document.getElementById("run-task-form"),
+  runTaskPrompt: document.getElementById("run-task-prompt"),
+  runTaskAlias: document.getElementById("run-task-alias"),
+  runTaskModel: document.getElementById("run-task-model"),
+  runTaskThinking: document.getElementById("run-task-thinking"),
+  runTaskResult: document.getElementById("run-task-result"),
+  sessionsSummary: document.getElementById("sessions-summary"),
+  sessionsBody: document.getElementById("sessions-body"),
+  sessionDetail: document.getElementById("session-detail"),
+  logsSummary: document.getElementById("logs-summary"),
+  logsList: document.getElementById("logs-list"),
+  mcpSummary: document.getElementById("mcp-summary"),
+  mcpList: document.getElementById("mcp-list"),
+  mcpAddForm: document.getElementById("mcp-add-form"),
+  mcpAddId: document.getElementById("mcp-add-id"),
+  mcpAddName: document.getElementById("mcp-add-name"),
+  mcpAddCommand: document.getElementById("mcp-add-command"),
+  mcpAddArgs: document.getElementById("mcp-add-args"),
+  mcpAddEnabled: document.getElementById("mcp-add-enabled"),
+  daemonConfigSummary: document.getElementById("daemon-config-summary"),
+  daemonPersistenceActions: document.getElementById("daemon-persistence-actions"),
+  daemonAutostartActions: document.getElementById("daemon-autostart-actions"),
 };
 
 function bearerHeaders() {
@@ -92,6 +140,10 @@ function apiPut(path, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload ?? {}),
   });
+}
+
+function apiDelete(path) {
+  return apiRequest(path, { method: "DELETE" });
 }
 
 function escapeHtml(value) {
@@ -181,8 +233,9 @@ function renderStatus(status, health) {
         status.signal_connectors +
         status.home_assistant_connectors +
         status.webhook_connectors +
-        status.inbox_connectors,
-      "telegram, discord, slack, signal, home assistant, webhook, inbox",
+        status.inbox_connectors +
+        (status.gmail_connectors || 0),
+      "telegram, discord, slack, signal, home assistant, webhook, inbox, gmail",
     ],
   ];
   elements.statusCards.innerHTML = cards
@@ -481,6 +534,7 @@ function connectorRow(kind, connector, target, detail, pollable, path) {
       connector.enabled ? "button-small--ghost" : ""
     ),
     pollable ? buttonHtml("Poll", { connectorPoll: `${kind}:${connector.id}` }, "button-muted") : "",
+    buttonHtml("Delete", { connectorDelete: `${kind}:${connector.id}` }, "button-small--ghost"),
   ]
     .filter(Boolean)
     .join("");
@@ -510,8 +564,10 @@ function renderConnectors(
   signals,
   homeAssistants,
   webhooks,
-  inboxes
+  inboxes,
+  gmails
 ) {
+  gmails = gmails || [];
   const cards = [
     ["Telegram", status.telegram_connectors],
     ["Discord", status.discord_connectors],
@@ -520,6 +576,7 @@ function renderConnectors(
     ["Home Assistant", status.home_assistant_connectors],
     ["Webhooks", status.webhook_connectors],
     ["Inboxes", status.inbox_connectors],
+    ["Gmail", gmails.length],
   ];
   elements.connectorCards.innerHTML = cards
     .map(
@@ -604,6 +661,16 @@ function renderConnectors(
         connector.cwd
       )
     ),
+    ...gmails.map((connector) =>
+      connectorRow(
+        "gmail",
+        connector,
+        fmtList(connector.allowed_emails || connector.monitored_labels),
+        connector.requested_model || connector.alias || "-",
+        true,
+        connector.cwd || connector.credentials_path || "-"
+      )
+    ),
   ];
   elements.connectorSummary.textContent = `${rows.length} connector entry/entries loaded`;
   elements.connectorsBody.innerHTML = rows.length
@@ -654,6 +721,170 @@ function renderEvents(events) {
     : renderEmpty("No daemon events yet.");
 }
 
+function renderProviders(providers, aliases) {
+  elements.providersSummary.textContent = `${providers.length} provider(s), ${aliases.length} alias(es)`;
+  elements.providersList.innerHTML = providers.length
+    ? providers
+        .map(
+          (provider) => `
+            <article class="stack-card">
+              <div class="card-title-row">
+                <div>
+                  <h4>${escapeHtml(provider.id)}</h4>
+                  <p class="card-subtitle">${escapeHtml(provider.kind || provider.provider_kind || "-")}</p>
+                </div>
+                ${badge(provider.auth_mode || "unknown", "info")}
+              </div>
+              <ul class="micro-list">
+                <li>base_url: ${escapeHtml(fmt(provider.base_url))}</li>
+                <li>keychain: ${escapeHtml(fmt(provider.keychain_entry || provider.keychain_ok))}</li>
+              </ul>
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No providers configured.");
+  elements.aliasesList.innerHTML = aliases.length
+    ? aliases
+        .map(
+          (alias) => `
+            <article class="stack-card">
+              <div class="card-title-row">
+                <div>
+                  <h4>${escapeHtml(alias.alias || alias.name || alias.id)}</h4>
+                  <p class="card-subtitle">${escapeHtml(alias.provider_id || "-")} / ${escapeHtml(alias.model || "-")}</p>
+                </div>
+                ${alias.main || alias.is_main ? badge("main", "good") : ""}
+              </div>
+              ${alias.description ? `<p class="card-copy">${escapeHtml(alias.description)}</p>` : ""}
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No aliases configured.");
+}
+
+function renderPermissions(permissions) {
+  const preset = permissions.preset || permissions.mode || "unknown";
+  elements.permissionsSummary.textContent = `Preset: ${preset}`;
+  const presets = ["Suggest", "AutoEdit", "FullAuto"];
+  elements.permissionPresetActions.innerHTML = presets
+    .map((p) =>
+      buttonHtml(p, { permissionPreset: p.toLowerCase() }, preset.toLowerCase() === p.toLowerCase() ? "" : "button-ghost")
+    )
+    .join("");
+  const details = Object.entries(permissions)
+    .filter(([key]) => key !== "preset" && key !== "mode")
+    .slice(0, 10);
+  elements.permissionsDetails.innerHTML = details.length
+    ? details
+        .map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(fmt(typeof value === "boolean" ? fmtBoolean(value) : value))}</dd>`)
+        .join("")
+    : "";
+}
+
+function renderTrust(trust) {
+  const flags = ["allow_shell", "allow_network", "allow_full_disk", "allow_self_edit"];
+  elements.trustToggles.innerHTML = flags
+    .map(
+      (flag) => `
+        <label class="toggle">
+          <input type="checkbox" data-trust-flag="${escapeHtml(flag)}" ${trust[flag] ? "checked" : ""}>
+          <span>${escapeHtml(flag.replaceAll("_", " "))}</span>
+        </label>
+      `
+    )
+    .join("");
+}
+
+function renderLogs(logs) {
+  elements.logsSummary.textContent = `${logs.length} log entry/entries`;
+  elements.logsList.innerHTML = logs.length
+    ? logs
+        .map(
+          (log) => `
+            <article class="event-item">
+              <div class="event-item__meta">
+                <span class="timestamp">${escapeHtml(fmtDate(log.timestamp || log.created_at))}</span>
+                ${badge(log.level || "info", (log.level || "info") === "error" ? "danger" : (log.level || "info") === "warn" ? "warn" : "good")}
+              </div>
+              <div class="event-item__body">
+                <p class="event-item__message">${escapeHtml(log.message || log.text || JSON.stringify(log))}</p>
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No log entries.");
+}
+
+function renderSessions(sessions) {
+  elements.sessionsSummary.textContent = `${sessions.length} session(s)`;
+  elements.sessionsBody.innerHTML = sessions.length
+    ? sessions
+        .map(
+          (session) => `
+            <tr>
+              <td>
+                <strong>${escapeHtml(session.title || session.id)}</strong>
+                <div class="table-sub mono">${escapeHtml(session.id)}</div>
+              </td>
+              <td>${escapeHtml(fmt(session.alias))}</td>
+              <td>${escapeHtml(fmt(session.model || session.requested_model))}</td>
+              <td>${escapeHtml(fmt(session.message_count))}</td>
+              <td>${escapeHtml(fmtDate(session.created_at))}</td>
+              <td>${escapeHtml(fmtDate(session.updated_at))}</td>
+              <td><div class="inline-actions">${buttonHtml("View", { sessionView: session.id }, "button-ghost")}</div></td>
+            </tr>
+          `
+        )
+        .join("")
+    : `<tr><td colspan="7" class="empty-table">No sessions yet.</td></tr>`;
+}
+
+function renderMcpServers(servers) {
+  elements.mcpSummary.textContent = `${servers.length} MCP server(s)`;
+  elements.mcpList.innerHTML = servers.length
+    ? servers
+        .map(
+          (server) => `
+            <article class="stack-card">
+              <div class="card-title-row">
+                <div>
+                  <h4>${escapeHtml(server.name || server.id)}</h4>
+                  <p class="card-subtitle">${escapeHtml(fmt(server.command))}</p>
+                </div>
+                ${badge(server.enabled !== false ? "enabled" : "disabled", server.enabled !== false ? "good" : "warn")}
+              </div>
+              <ul class="micro-list">
+                <li>id: ${escapeHtml(fmt(server.id))}</li>
+                <li>args: ${escapeHtml(fmtList(server.args))}</li>
+              </ul>
+              <div class="inline-actions">
+                ${buttonHtml("Delete", { mcpDelete: server.id }, "button-small--ghost")}
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No MCP servers configured.");
+}
+
+function renderDaemonConfig(status) {
+  const persistence = status.persistence_mode || "on_demand";
+  const autoStart = status.auto_start || false;
+  elements.daemonConfigSummary.textContent = `${persistence} | auto-start: ${fmtBoolean(autoStart)}`;
+  elements.daemonPersistenceActions.innerHTML = ["on_demand", "always_on"]
+    .map((mode) =>
+      buttonHtml(mode.replaceAll("_", " "), { daemonPersistence: mode }, persistence === mode ? "" : "button-ghost")
+    )
+    .join("");
+  elements.daemonAutostartActions.innerHTML = [
+    buttonHtml("Enable auto-start", { daemonAutostart: "true" }, autoStart ? "" : "button-ghost"),
+    buttonHtml("Disable auto-start", { daemonAutostart: "false" }, autoStart ? "button-ghost" : ""),
+  ].join("");
+}
+
 async function refreshDashboard() {
   if (!state.token) {
     setStatus("Waiting for a daemon token.", "neutral");
@@ -678,6 +909,13 @@ async function refreshDashboard() {
       homeAssistants,
       webhooks,
       inboxes,
+      gmails,
+      providers,
+      aliases,
+      logs,
+      sessions,
+      mcpServers,
+      permissions,
     ] = await Promise.all([
       apiGet("/v1/status"),
       apiGet("/v1/doctor"),
@@ -695,6 +933,13 @@ async function refreshDashboard() {
       apiGet("/v1/home-assistant"),
       apiGet("/v1/webhooks"),
       apiGet("/v1/inboxes"),
+      apiGet("/v1/gmail").catch(() => []),
+      apiGet("/v1/providers").catch(() => []),
+      apiGet("/v1/aliases").catch(() => []),
+      apiGet("/v1/logs?limit=100").catch(() => []),
+      apiGet("/v1/sessions?limit=25").catch(() => []),
+      apiGet("/v1/mcp").catch(() => []),
+      apiGet("/v1/permissions").catch(() => ({})),
     ]);
 
     state.lastData = {
@@ -714,6 +959,13 @@ async function refreshDashboard() {
       homeAssistants,
       webhooks,
       inboxes,
+      gmails,
+      providers,
+      aliases,
+      logs,
+      sessions,
+      mcpServers,
+      permissions,
     };
 
     renderStatus(status, health);
@@ -731,10 +983,18 @@ async function refreshDashboard() {
       signals,
       homeAssistants,
       webhooks,
-      inboxes
+      inboxes,
+      gmails
     );
     renderDelegation(delegationTargets);
     renderEvents(events);
+    renderProviders(providers, aliases);
+    renderPermissions(permissions);
+    renderTrust(permissions);
+    renderLogs(logs);
+    renderSessions(sessions);
+    renderMcpServers(mcpServers);
+    renderDaemonConfig(status);
     elements.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     setStatus("Connected.", "ok");
   } catch (error) {
@@ -844,6 +1104,7 @@ function lookupConnector(kind, id) {
     "home-assistant": state.lastData.homeAssistants,
     webhook: state.lastData.webhooks,
     inbox: state.lastData.inboxes,
+    gmail: state.lastData.gmails,
   };
   return (groups[kind] || []).find((entry) => entry.id === id) || null;
 }
@@ -857,6 +1118,7 @@ function connectorBasePath(kind) {
     "home-assistant": "/v1/home-assistant",
     webhook: "/v1/webhooks",
     inbox: "/v1/inboxes",
+    gmail: "/v1/gmail",
   }[kind];
 }
 
@@ -975,6 +1237,63 @@ function bindActions() {
       } else if (target.dataset.connectorPoll) {
         const [kind, id] = target.dataset.connectorPoll.split(":");
         await pollConnector(kind, id);
+      } else if (target.dataset.connectorDelete) {
+        const [kind, id] = target.dataset.connectorDelete.split(":");
+        if (window.confirm(`Delete ${kind} connector ${id}?`)) {
+          const basePath = connectorBasePath(kind);
+          if (basePath) {
+            await apiDelete(`${basePath}/${id}`);
+            await refreshDashboard();
+          }
+        }
+      } else if (target.dataset.permissionPreset) {
+        await apiPut("/v1/permissions", { preset: target.dataset.permissionPreset });
+        await refreshDashboard();
+      } else if (target.dataset.trustFlag) {
+        const flag = target.dataset.trustFlag;
+        const checked = target.checked;
+        const trust = { ...(state.lastData?.permissions || {}) };
+        trust[flag] = checked;
+        await apiPut("/v1/trust", trust);
+        await refreshDashboard();
+      } else if (target.dataset.memoryDelete) {
+        if (window.confirm("Delete this memory?")) {
+          await apiDelete(`/v1/memory/${target.dataset.memoryDelete}`);
+          await refreshDashboard();
+        }
+      } else if (target.dataset.sessionView) {
+        try {
+          const session = await apiGet(`/v1/sessions/${target.dataset.sessionView}`);
+          const messages = session.messages || session.history || [];
+          elements.sessionDetail.innerHTML = messages.length
+            ? messages
+                .map(
+                  (msg) => `
+                    <article class="stack-card">
+                      <div class="card-title-row">
+                        <div><h4>${escapeHtml(msg.role || "unknown")}</h4></div>
+                        ${badge(fmtDate(msg.created_at || msg.timestamp))}
+                      </div>
+                      <p class="card-copy">${escapeHtml(typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content))}</p>
+                    </article>
+                  `
+                )
+                .join("")
+            : renderEmpty("No messages in this session.");
+        } catch (err) {
+          elements.sessionDetail.innerHTML = renderEmpty(`Failed to load session: ${err.message}`);
+        }
+      } else if (target.dataset.mcpDelete) {
+        if (window.confirm(`Delete MCP server ${target.dataset.mcpDelete}?`)) {
+          await apiDelete(`/v1/mcp/${target.dataset.mcpDelete}`);
+          await refreshDashboard();
+        }
+      } else if (target.dataset.daemonPersistence) {
+        await apiPut("/v1/daemon/config", { persistence_mode: target.dataset.daemonPersistence });
+        await refreshDashboard();
+      } else if (target.dataset.daemonAutostart) {
+        await apiPut("/v1/daemon/config", { auto_start: target.dataset.daemonAutostart === "true" });
+        await refreshDashboard();
       }
     } catch (error) {
       setStatus(`Action failed: ${error.message}`, "warn");
@@ -1019,6 +1338,231 @@ elements.missionSchedule.addEventListener("click", async () => {
     await createMission(true);
   } catch (error) {
     setStatus(`Mission schedule failed: ${error.message}`, "warn");
+  }
+});
+
+elements.aliasForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const name = elements.aliasName.value.trim();
+    const providerId = elements.aliasProvider.value.trim();
+    const model = elements.aliasModel.value.trim();
+    if (!name || !providerId || !model) {
+      throw new Error("Alias name, provider ID, and model are required.");
+    }
+    await apiPost("/v1/aliases", {
+      alias: name,
+      provider_id: providerId,
+      model,
+      description: elements.aliasDescription.value.trim() || null,
+      main: elements.aliasMain.checked,
+    });
+    elements.aliasForm.reset();
+    await refreshDashboard();
+  } catch (error) {
+    setStatus(`Alias create failed: ${error.message}`, "warn");
+  }
+});
+
+elements.memorySearchForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const query = elements.memorySearchQuery.value.trim();
+    if (!query) {
+      throw new Error("Search query is required.");
+    }
+    const results = await apiPost("/v1/memory/search", { query });
+    const items = Array.isArray(results) ? results : results.results || [];
+    elements.memorySearchResults.innerHTML = items.length
+      ? items
+          .map(
+            (memory) => `
+              <article class="stack-card">
+                <div class="card-title-row">
+                  <div>
+                    <h4>${escapeHtml(memory.subject)}</h4>
+                    <p class="card-subtitle">${escapeHtml(memory.kind || "-")} · ${escapeHtml(memory.scope || "-")}</p>
+                  </div>
+                  ${buttonHtml("Delete", { memoryDelete: memory.id }, "button-small--ghost")}
+                </div>
+                <p class="card-copy">${escapeHtml(memory.content)}</p>
+              </article>
+            `
+          )
+          .join("")
+      : renderEmpty("No matching memories found.");
+  } catch (error) {
+    setStatus(`Memory search failed: ${error.message}`, "warn");
+  }
+});
+
+elements.memoryCreateForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const subject = elements.memoryCreateSubject.value.trim();
+    const content = elements.memoryCreateContent.value.trim();
+    if (!subject || !content) {
+      throw new Error("Subject and content are required.");
+    }
+    await apiPost("/v1/memory", {
+      kind: elements.memoryCreateKind.value,
+      scope: elements.memoryCreateScope.value,
+      subject,
+      content,
+    });
+    elements.memoryCreateForm.reset();
+    await refreshDashboard();
+  } catch (error) {
+    setStatus(`Memory create failed: ${error.message}`, "warn");
+  }
+});
+
+function connectorTypeFields(type) {
+  const fieldMap = {
+    telegram: [
+      { label: "Bot token", id: "bot_token", placeholder: "123456:ABC-DEF..." },
+      { label: "Allowed chat IDs (comma-separated)", id: "allowed_chat_ids", placeholder: "12345,67890" },
+    ],
+    discord: [
+      { label: "Bot token", id: "bot_token", placeholder: "Discord bot token" },
+      { label: "Monitored channel IDs (comma-separated)", id: "monitored_channel_ids", placeholder: "123,456" },
+    ],
+    slack: [
+      { label: "Bot token", id: "bot_token", placeholder: "xoxb-..." },
+      { label: "App token", id: "app_token", placeholder: "xapp-..." },
+      { label: "Monitored channel IDs (comma-separated)", id: "monitored_channel_ids", placeholder: "C01..." },
+    ],
+    signal: [
+      { label: "Account", id: "account", placeholder: "+1234567890" },
+      { label: "CLI path", id: "cli_path", placeholder: "/usr/bin/signal-cli" },
+      { label: "Monitored group IDs (comma-separated)", id: "monitored_group_ids", placeholder: "group-id" },
+    ],
+    "home-assistant": [
+      { label: "Base URL", id: "base_url", placeholder: "http://homeassistant.local:8123" },
+      { label: "Access token", id: "access_token", placeholder: "HA long-lived access token" },
+      { label: "Monitored entity IDs (comma-separated)", id: "monitored_entity_ids", placeholder: "sensor.temp" },
+    ],
+    webhook: [
+      { label: "Prompt template", id: "prompt_template", placeholder: "Handle: {{body}}" },
+    ],
+    inbox: [
+      { label: "Path", id: "path", placeholder: "/path/to/inbox" },
+    ],
+    gmail: [
+      { label: "Allowed emails (comma-separated)", id: "allowed_emails", placeholder: "user@example.com" },
+      { label: "Credentials path", id: "credentials_path", placeholder: "/path/to/credentials.json" },
+    ],
+  };
+  return fieldMap[type] || [];
+}
+
+function updateConnectorAddFields() {
+  const type = elements.connectorAddType.value;
+  const fields = connectorTypeFields(type);
+  elements.connectorAddFields.innerHTML = fields
+    .map(
+      (field) => `
+        <label class="field">
+          <span>${escapeHtml(field.label)}</span>
+          <input type="text" data-connector-field="${escapeHtml(field.id)}" autocomplete="off" placeholder="${escapeHtml(field.placeholder)}">
+        </label>
+      `
+    )
+    .join("");
+}
+
+elements.connectorAddType.addEventListener("change", updateConnectorAddFields);
+updateConnectorAddFields();
+
+elements.connectorAddForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const type = elements.connectorAddType.value;
+    const name = elements.connectorAddName.value.trim();
+    if (!name) {
+      throw new Error("Connector name is required.");
+    }
+    const connector = {
+      id: elements.connectorAddId.value.trim() || crypto.randomUUID(),
+      name,
+      enabled: true,
+    };
+    const fieldInputs = elements.connectorAddFields.querySelectorAll("[data-connector-field]");
+    for (const input of fieldInputs) {
+      const key = input.dataset.connectorField;
+      const value = input.value.trim();
+      if (value) {
+        if (key.endsWith("_ids") || key.endsWith("_emails") || key.endsWith("_labels")) {
+          connector[key] = value.split(",").map((s) => s.trim()).filter(Boolean);
+        } else {
+          connector[key] = value;
+        }
+      }
+    }
+    const basePath = connectorBasePath(type);
+    if (!basePath) {
+      throw new Error(`Unknown connector type: ${type}`);
+    }
+    await apiPost(basePath, { connector });
+    elements.connectorAddForm.reset();
+    updateConnectorAddFields();
+    await refreshDashboard();
+  } catch (error) {
+    setStatus(`Connector add failed: ${error.message}`, "warn");
+  }
+});
+
+elements.runTaskForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const prompt = elements.runTaskPrompt.value.trim();
+    if (!prompt) {
+      throw new Error("Prompt is required.");
+    }
+    const payload = { prompt };
+    const alias = elements.runTaskAlias.value.trim();
+    const model = elements.runTaskModel.value.trim();
+    const thinking = elements.runTaskThinking.value;
+    if (alias) payload.alias = alias;
+    if (model) payload.model = model;
+    if (thinking) payload.thinking_level = thinking;
+    elements.runTaskResult.innerHTML = renderEmpty("Running task...");
+    const result = await apiPost("/v1/run", payload);
+    const text = typeof result === "string" ? result : result.text || result.response || JSON.stringify(result, null, 2);
+    elements.runTaskResult.innerHTML = `
+      <article class="stack-card">
+        <div class="card-title-row"><div><h4>Response</h4></div></div>
+        <p class="card-copy" style="white-space:pre-wrap">${escapeHtml(text)}</p>
+      </article>
+    `;
+  } catch (error) {
+    elements.runTaskResult.innerHTML = renderEmpty(`Task failed: ${error.message}`);
+  }
+});
+
+elements.mcpAddForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const id = elements.mcpAddId.value.trim();
+    const name = elements.mcpAddName.value.trim();
+    const command = elements.mcpAddCommand.value.trim();
+    if (!id || !command) {
+      throw new Error("Server ID and command are required.");
+    }
+    const argsRaw = elements.mcpAddArgs.value.trim();
+    const args = argsRaw ? argsRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    await apiPost("/v1/mcp", {
+      id,
+      name: name || id,
+      command,
+      args,
+      enabled: elements.mcpAddEnabled.checked,
+    });
+    elements.mcpAddForm.reset();
+    elements.mcpAddEnabled.checked = true;
+    await refreshDashboard();
+  } catch (error) {
+    setStatus(`MCP add failed: ${error.message}`, "warn");
   }
 });
 

@@ -1314,7 +1314,13 @@ fn next_retry_wake_at(autopilot: &AutopilotConfig, retry_attempt: u32) -> DateTi
 
 pub(crate) fn build_mission_prompt(mission: &Mission, checkpoints: &[MissionCheckpoint]) -> String {
     if mission.evolve {
-        return build_evolve_prompt(mission, checkpoints);
+        let workspace_root = mission
+            .workspace_key
+            .as_deref()
+            .map(std::path::Path::new)
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let signals = gather_evolve_signals(workspace_root);
+        return build_evolve_prompt(mission, checkpoints, &signals);
     }
     let mut prompt = format!(
         "You are continuing an autonomous background mission.\n\nMission title: {}\nMission details: {}\n\nAdvance the mission by one concrete step. Use tools when needed. Keep moving until you either finish, hit a blocker, or decide the next wake-up time.\n",
@@ -1380,7 +1386,11 @@ pub(crate) fn build_mission_prompt(mission: &Mission, checkpoints: &[MissionChec
     prompt
 }
 
-fn build_evolve_prompt(mission: &Mission, checkpoints: &[MissionCheckpoint]) -> String {
+fn build_evolve_prompt(
+    mission: &Mission,
+    checkpoints: &[MissionCheckpoint],
+    signals: &[String],
+) -> String {
     let mut prompt = format!(
         "You are running the agent's EVOLVE mode. Improve the agent methodically, not by shotgun edits.\n\nPrimary goals in order:\n1. functionality\n2. speed\n3. bug fixes in its own code\n\nCurrent evolve mission: {}\nMission details: {}\n\nRules:\n- Pick one bounded improvement target for this cycle.\n- You may inspect and modify the repo and use subagents if helpful.\n- You must verify each cycle with cargo check, cargo test, cargo clippy, and cargo build unless you can justify a narrower verification scope in verification_summary.\n- Prefer small, reversible changes.\n- Keep a clear handoff_summary for the next cycle.\n- Stop only when you are satisfied there is no clearly worthwhile next improvement, or when the current cycle exposes a blocker.\n",
         mission.title, mission.details
@@ -1412,10 +1422,87 @@ fn build_evolve_prompt(mission: &Mission, checkpoints: &[MissionCheckpoint]) -> 
             ));
         }
     }
+    if !signals.is_empty() {
+        prompt.push_str("\nImprovement signals gathered from the workspace:\n");
+        for signal in signals.iter().take(10) {
+            prompt.push_str(&format!("- {}\n", signal));
+        }
+        prompt.push_str("Use these signals to choose your improvement target for this cycle.\n");
+    }
     prompt.push_str(
         "\nBefore finishing this cycle, run `git diff` (or equivalent) to review ALL changes you made. Include the review in the diff_summary field.\n\nReturn a single JSON object only. Use snake_case fields with this shape:\n{\n  \"status\": \"waiting|blocked|completed|failed|running|scheduled|queued|cancelled\",\n  \"next_wake_seconds\": 30,\n  \"next_phase\": \"planner|executor|reviewer\",\n  \"handoff_summary\": \"condensed context for the next evolve cycle\",\n  \"summary\": \"short status summary\",\n  \"error\": \"optional blocker description\",\n  \"continue_evolving\": true,\n  \"improvement_goal\": \"one bounded target for the cycle\",\n  \"verification_summary\": \"what verification you ran and the result\",\n  \"diff_summary\": \"review of all changes made in this cycle and why\",\n  \"restart_required\": false,\n  \"follow_up_title\": \"optional child mission title\",\n  \"follow_up_details\": \"optional child mission details\",\n  \"follow_up_after_seconds\": 300\n}\nSet continue_evolving=false only if you are satisfied or blocked. Always include improvement_goal, verification_summary, and diff_summary in evolve mode.",
     );
     prompt
+}
+
+/// Gather concrete improvement signals from the workspace to guide the evolve cycle.
+fn gather_evolve_signals(workspace_root: &std::path::Path) -> Vec<String> {
+    let mut signals = Vec::new();
+
+    // 1. Count TODO/FIXME/HACK comments by reading Rust files directly.
+    let mut todo_count = 0usize;
+    for crate_dir in ["crates/agent-core", "crates/agent-daemon", "crates/agent-storage", "crates/agent-providers", "crates/agent-cli", "crates/agent-policy"] {
+        let src = workspace_root.join(crate_dir).join("src");
+        if let Ok(entries) = fs::read_dir(&src) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "rs").unwrap_or(false) {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        for line in content.lines() {
+                            let upper = line.to_ascii_uppercase();
+                            if upper.contains("TODO") || upper.contains("FIXME") || upper.contains("HACK") {
+                                todo_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if todo_count > 0 {
+        signals.push(format!("Found {} TODO/FIXME/HACK comments in Rust source files", todo_count));
+    }
+
+    // 2. Check for large files that may benefit from splitting.
+    for entry in [
+        "crates/agent-daemon/src/lib.rs",
+        "crates/agent-daemon/src/missions.rs",
+        "crates/agent-daemon/src/runtime.rs",
+        "crates/agent-daemon/src/memory.rs",
+        "crates/agent-storage/src/lib.rs",
+        "crates/agent-core/src/lib.rs",
+    ] {
+        let path = workspace_root.join(entry);
+        if let Ok(content) = fs::read_to_string(&path) {
+            let line_count = content.lines().count();
+            if line_count > 800 {
+                signals.push(format!("{} has {} lines — consider splitting", entry, line_count));
+            }
+        }
+    }
+
+    // 3. Run clippy with a short timeout to find warnings.
+    if let Ok(output) = std::process::Command::new("cargo")
+        .args(["clippy", "--workspace", "--message-format=short", "--quiet"])
+        .current_dir(workspace_root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let warning_lines: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.contains("warning:"))
+            .collect();
+        if !warning_lines.is_empty() {
+            signals.push(format!("{} clippy warnings detected", warning_lines.len()));
+            for w in warning_lines.iter().take(3) {
+                signals.push(format!("  - {}", w.trim()));
+            }
+        }
+    }
+
+    signals
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

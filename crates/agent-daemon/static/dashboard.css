@@ -635,6 +635,33 @@ button:disabled {
   text-align: center;
 }
 
+.panel--providers,
+.panel--memory-tools,
+.panel--permissions,
+.panel--connector-add,
+.panel--run-task,
+.panel--sessions,
+.panel--logs,
+.panel--mcp,
+.panel--daemon-config {
+  grid-column: span 12;
+}
+
+select {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(44, 60, 51, 0.18);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--heading);
+  font: inherit;
+}
+
+select:focus {
+  outline: 2px solid rgba(31, 91, 71, 0.24);
+  outline-offset: 2px;
+}
+
 @media (max-width: 1180px) {
   .dashboard-nav,
   .hero,

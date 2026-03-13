@@ -15,6 +15,7 @@ mod delegation;
 mod memory;
 mod missions;
 mod patch;
+mod patterns;
 mod routes;
 mod runtime;
 mod sessions;
@@ -38,19 +39,21 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use chrono::{DateTime, Utc};
 pub(crate) use connectors::{
     approve_connector_approval, call_home_assistant_service_route, delete_app_connector,
-    delete_discord_connector, delete_home_assistant_connector, delete_inbox_connector,
-    delete_signal_connector, delete_slack_connector, delete_telegram_connector,
-    delete_webhook_connector, get_discord_connector, get_home_assistant_connector,
-    get_home_assistant_entity_state_route, get_inbox_connector, get_signal_connector,
-    get_slack_connector, get_telegram_connector, get_webhook_connector, list_app_connectors,
-    list_connector_approvals, list_discord_connectors, list_home_assistant_connectors,
-    list_inbox_connectors, list_signal_connectors, list_slack_connectors, list_telegram_connectors,
-    list_webhook_connectors, poll_discord_connector_route, poll_home_assistant_connector_route,
-    poll_inbox_connector_route, poll_inbox_connectors, poll_signal_connector_route,
-    poll_slack_connector_route, poll_telegram_connector_route, receive_webhook_event,
-    reject_connector_approval, send_discord_message_route, send_signal_message_route,
-    send_slack_message_route, send_telegram_message_route, upsert_app_connector,
-    upsert_discord_connector, upsert_home_assistant_connector, upsert_inbox_connector,
+    delete_discord_connector, delete_gmail_connector, delete_home_assistant_connector,
+    delete_inbox_connector, delete_signal_connector, delete_slack_connector,
+    delete_telegram_connector, delete_webhook_connector, get_discord_connector,
+    get_gmail_connector, get_home_assistant_connector, get_home_assistant_entity_state_route,
+    get_inbox_connector, get_signal_connector, get_slack_connector, get_telegram_connector,
+    get_webhook_connector, list_app_connectors, list_connector_approvals, list_discord_connectors,
+    list_gmail_connectors, list_home_assistant_connectors, list_inbox_connectors,
+    list_signal_connectors, list_slack_connectors, list_telegram_connectors,
+    list_webhook_connectors, poll_discord_connector_route, poll_gmail_connector_route,
+    poll_home_assistant_connector_route, poll_inbox_connector_route, poll_inbox_connectors,
+    poll_signal_connector_route, poll_slack_connector_route, poll_telegram_connector_route,
+    receive_webhook_event, reject_connector_approval, send_discord_message_route,
+    send_gmail_message_route, send_signal_message_route, send_slack_message_route,
+    send_telegram_message_route, upsert_app_connector, upsert_discord_connector,
+    upsert_gmail_connector, upsert_home_assistant_connector, upsert_inbox_connector,
     upsert_signal_connector, upsert_slack_connector, upsert_telegram_connector,
     upsert_webhook_connector,
 };
@@ -72,6 +75,7 @@ pub(crate) use memory::{
     load_enabled_skill_guidance, normalize_memory_sentence, publish_skill_draft, reject_memory,
     reject_skill_draft, search_memory, sync_system_profile_memories, upsert_memory,
 };
+pub(crate) use patterns::{detect_patterns, load_pattern_guidance, record_patterns};
 pub(crate) use missions::{
     add_mission, autopilot_loop, cancel_mission, evolve_status, get_mission,
     list_mission_checkpoints, list_missions, pause_evolve_mode, pause_mission, resume_evolve_mode,

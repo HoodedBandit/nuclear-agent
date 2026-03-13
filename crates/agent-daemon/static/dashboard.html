@@ -55,6 +55,11 @@
         <a href="#profile">Profile</a>
         <a href="#connectors">Connectors</a>
         <a href="#delegation">Delegation</a>
+        <a href="#providers">Providers</a>
+        <a href="#run-task">Run Task</a>
+        <a href="#sessions">Sessions</a>
+        <a href="#logs">Logs</a>
+        <a href="#mcp">MCP</a>
         <a href="#events">Events</a>
       </div>
     </nav>
@@ -247,6 +252,326 @@
           <p id="delegation-summary" class="panel__meta">No delegation data yet</p>
         </div>
         <div id="delegation-list" class="card-grid card-grid--compact"></div>
+      </section>
+
+      <section id="providers" class="panel panel--providers">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Infrastructure</p>
+            <h2>Providers &amp; Aliases</h2>
+          </div>
+          <p id="providers-summary" class="panel__meta">No provider data yet</p>
+        </div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Providers</h3>
+            </div>
+            <div id="providers-list" class="stacked-list"></div>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Aliases</h3>
+            </div>
+            <div id="aliases-list" class="stacked-list"></div>
+            <form id="alias-form" class="inline-form" style="margin-top:14px">
+              <div class="field-grid">
+                <label class="field">
+                  <span>Alias name</span>
+                  <input id="alias-name" type="text" autocomplete="off" placeholder="main">
+                </label>
+                <label class="field">
+                  <span>Provider ID</span>
+                  <input id="alias-provider" type="text" autocomplete="off" placeholder="anthropic">
+                </label>
+                <label class="field">
+                  <span>Model</span>
+                  <input id="alias-model" type="text" autocomplete="off" placeholder="claude-sonnet-4-20250514">
+                </label>
+              </div>
+              <div class="field-grid">
+                <label class="field">
+                  <span>Description</span>
+                  <input id="alias-description" type="text" autocomplete="off" placeholder="optional">
+                </label>
+                <label class="toggle">
+                  <input id="alias-main" type="checkbox">
+                  <span>Set as main alias</span>
+                </label>
+              </div>
+              <div class="auth-panel__actions">
+                <button id="alias-submit" type="submit">Add alias</button>
+              </div>
+            </form>
+          </article>
+        </div>
+      </section>
+
+      <section id="memory-tools" class="panel panel--memory-tools">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Memory tools</p>
+            <h2>Search, create &amp; delete</h2>
+          </div>
+        </div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Search memory</h3>
+            </div>
+            <form id="memory-search-form" class="inline-form">
+              <label class="field">
+                <span>Query</span>
+                <input id="memory-search-query" type="text" autocomplete="off" placeholder="Search memories...">
+              </label>
+              <div class="auth-panel__actions">
+                <button type="submit">Search</button>
+              </div>
+            </form>
+            <div id="memory-search-results" class="stacked-list" style="margin-top:14px"></div>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Create memory</h3>
+            </div>
+            <form id="memory-create-form" class="inline-form">
+              <div class="field-grid">
+                <label class="field">
+                  <span>Kind</span>
+                  <select id="memory-create-kind">
+                    <option value="preference">preference</option>
+                    <option value="project_fact">project_fact</option>
+                    <option value="workflow">workflow</option>
+                    <option value="constraint">constraint</option>
+                    <option value="note">note</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Scope</span>
+                  <select id="memory-create-scope">
+                    <option value="global">global</option>
+                    <option value="workspace">workspace</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Subject</span>
+                  <input id="memory-create-subject" type="text" autocomplete="off" placeholder="Subject line">
+                </label>
+              </div>
+              <label class="field">
+                <span>Content</span>
+                <textarea id="memory-create-content" rows="3" placeholder="Memory content..."></textarea>
+              </label>
+              <div class="auth-panel__actions">
+                <button type="submit">Remember</button>
+              </div>
+            </form>
+          </article>
+        </div>
+      </section>
+
+      <section id="permissions" class="panel panel--permissions">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Security</p>
+            <h2>Permissions &amp; Trust</h2>
+          </div>
+          <p id="permissions-summary" class="panel__meta">No permission data yet</p>
+        </div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Permission preset</h3>
+            </div>
+            <div id="permission-preset-actions" class="card-actions"></div>
+            <dl id="permissions-details" class="detail-list" style="margin-top:14px"></dl>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Trust policy</h3>
+            </div>
+            <div id="trust-toggles" class="inline-form"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="connector-add" class="panel panel--connector-add">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Integrations</p>
+            <h2>Add / Delete Connector</h2>
+          </div>
+        </div>
+        <form id="connector-add-form" class="inline-form">
+          <div class="field-grid">
+            <label class="field">
+              <span>Connector type</span>
+              <select id="connector-add-type">
+                <option value="telegram">telegram</option>
+                <option value="discord">discord</option>
+                <option value="slack">slack</option>
+                <option value="signal">signal</option>
+                <option value="home-assistant">home-assistant</option>
+                <option value="webhook">webhook</option>
+                <option value="inbox">inbox</option>
+                <option value="gmail">gmail</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Name</span>
+              <input id="connector-add-name" type="text" autocomplete="off" placeholder="my-bot">
+            </label>
+            <label class="field">
+              <span>ID</span>
+              <input id="connector-add-id" type="text" autocomplete="off" placeholder="auto-generated if empty">
+            </label>
+          </div>
+          <div id="connector-add-fields" class="field-grid"></div>
+          <div class="auth-panel__actions">
+            <button type="submit">Add connector</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="run-task" class="panel panel--run-task">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Execution</p>
+            <h2>Run Task</h2>
+          </div>
+        </div>
+        <form id="run-task-form" class="inline-form">
+          <label class="field">
+            <span>Prompt</span>
+            <textarea id="run-task-prompt" rows="4" placeholder="Enter a prompt to run..."></textarea>
+          </label>
+          <div class="field-grid">
+            <label class="field">
+              <span>Alias</span>
+              <input id="run-task-alias" type="text" autocomplete="off" placeholder="main">
+            </label>
+            <label class="field">
+              <span>Model override</span>
+              <input id="run-task-model" type="text" autocomplete="off" placeholder="optional">
+            </label>
+            <label class="field">
+              <span>Thinking level</span>
+              <select id="run-task-thinking">
+                <option value="">default</option>
+                <option value="none">none</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </label>
+          </div>
+          <div class="auth-panel__actions">
+            <button type="submit">Run</button>
+          </div>
+        </form>
+        <div id="run-task-result" class="stacked-list" style="margin-top:14px"></div>
+      </section>
+
+      <section id="sessions" class="panel panel--sessions">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">History</p>
+            <h2>Sessions</h2>
+          </div>
+          <p id="sessions-summary" class="panel__meta">No session data yet</p>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Alias</th>
+                <th>Model</th>
+                <th>Messages</th>
+                <th>Created</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="sessions-body"></tbody>
+          </table>
+        </div>
+        <div id="session-detail" class="stacked-list" style="margin-top:14px"></div>
+      </section>
+
+      <section id="logs" class="panel panel--logs">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Diagnostics</p>
+            <h2>Logs</h2>
+          </div>
+          <p id="logs-summary" class="panel__meta">No log data yet</p>
+        </div>
+        <div id="logs-list" class="event-feed"></div>
+      </section>
+
+      <section id="mcp" class="panel panel--mcp">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Tools</p>
+            <h2>MCP Servers</h2>
+          </div>
+          <p id="mcp-summary" class="panel__meta">No MCP data yet</p>
+        </div>
+        <div id="mcp-list" class="stacked-list"></div>
+        <form id="mcp-add-form" class="inline-form" style="margin-top:14px">
+          <div class="field-grid">
+            <label class="field">
+              <span>Server ID</span>
+              <input id="mcp-add-id" type="text" autocomplete="off" placeholder="my-server">
+            </label>
+            <label class="field">
+              <span>Name</span>
+              <input id="mcp-add-name" type="text" autocomplete="off" placeholder="My MCP Server">
+            </label>
+            <label class="field">
+              <span>Command</span>
+              <input id="mcp-add-command" type="text" autocomplete="off" placeholder="npx -y @some/mcp">
+            </label>
+          </div>
+          <div class="field-grid">
+            <label class="field">
+              <span>Args (comma-separated)</span>
+              <input id="mcp-add-args" type="text" autocomplete="off" placeholder="--port,8080">
+            </label>
+            <label class="toggle">
+              <input id="mcp-add-enabled" type="checkbox" checked>
+              <span>Enabled</span>
+            </label>
+          </div>
+          <div class="auth-panel__actions">
+            <button type="submit">Add MCP server</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="daemon-config" class="panel panel--daemon-config">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">System</p>
+            <h2>Daemon Config</h2>
+          </div>
+          <p id="daemon-config-summary" class="panel__meta">Loaded from status</p>
+        </div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Persistence mode</h3>
+            </div>
+            <div id="daemon-persistence-actions" class="card-actions"></div>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Auto-start</h3>
+            </div>
+            <div id="daemon-autostart-actions" class="card-actions"></div>
+          </article>
+        </div>
       </section>
 
       <section id="events" class="panel panel--events">

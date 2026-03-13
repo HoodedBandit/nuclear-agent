@@ -40,6 +40,7 @@ dependencies = [
  "agent-storage",
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "futures",
  "jsonschema",

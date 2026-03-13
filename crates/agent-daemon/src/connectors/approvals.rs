@@ -112,6 +112,25 @@ pub(crate) async fn approve_connector_approval(
                 &state, &connector, &approval,
             )?)
         }
+        ConnectorKind::Gmail => {
+            let connector = {
+                let mut config = state.config.write().await;
+                let connector = config
+                    .gmail_connectors
+                    .iter_mut()
+                    .find(|connector| connector.id == approval.connector_id)
+                    .ok_or_else(|| {
+                        ApiError::new(StatusCode::NOT_FOUND, "gmail connector is missing")
+                    })?;
+                gmail::add_gmail_pairing_allowlist_entries(connector, &approval)?;
+                let updated = connector.clone();
+                state.storage.save_config(&config)?;
+                updated
+            };
+            Some(gmail::queue_gmail_approval_mission(
+                &state, &connector, &approval,
+            )?)
+        }
         _ => None,
     };
 
