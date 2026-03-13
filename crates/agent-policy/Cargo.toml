@@ -1,0 +1,9 @@
+[package]
+name = "agent-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agent-core = { path = "../agent-core" }
+anyhow.workspace = true

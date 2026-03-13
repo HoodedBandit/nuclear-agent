@@ -1,0 +1,227 @@
+#!/bin/sh
+
+set -eu
+
+step() {
+  printf '==> %s\n' "$1"
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+script_dir() {
+  CDPATH= cd -- "$(dirname -- "$0")" && pwd
+}
+
+resolve_source_root() {
+  root="$1"
+  if [ -f "$root/source/Cargo.toml" ]; then
+    printf '%s\n' "$root/source"
+    return
+  fi
+  if [ -f "$root/Cargo.toml" ]; then
+    printf '%s\n' "$root"
+    return
+  fi
+  echo "Could not locate the project source directory." >&2
+  exit 1
+}
+
+resolve_bundled_binary() {
+  root="$1"
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64)
+      candidate="$root/bin/linux-x64/autism"
+      ;;
+    aarch64|arm64)
+      candidate="$root/bin/linux-arm64/autism"
+      ;;
+    *)
+      candidate=""
+      ;;
+  esac
+
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return
+  fi
+
+  if [ -x "$root/target/release/autism" ]; then
+    printf '%s\n' "$root/target/release/autism"
+    return
+  fi
+
+  printf '\n'
+}
+
+install_rustup() {
+  step "Rust toolchain not found; installing rustup"
+  if command_exists curl; then
+    curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+  elif command_exists wget; then
+    wget -q -O - https://sh.rustup.rs | sh -s -- -y --profile minimal
+  else
+    echo "curl or wget is required to install Rust automatically." >&2
+    exit 1
+  fi
+  export PATH="$HOME/.cargo/bin:$PATH"
+}
+
+ensure_cargo() {
+  if command_exists cargo; then
+    return
+  fi
+  install_rustup
+  if ! command_exists cargo; then
+    echo "cargo is still unavailable after rustup installation." >&2
+    exit 1
+  fi
+}
+
+choose_install_dir() {
+  if [ -n "${AUTISM_INSTALL_DIR:-}" ]; then
+    printf '%s\n' "$AUTISM_INSTALL_DIR"
+    return
+  fi
+
+  if [ -n "${CARGO_HOME:-}" ] && [ -d "$CARGO_HOME/bin" ]; then
+    case ":$PATH:" in
+      *":$CARGO_HOME/bin:"*)
+        printf '%s\n' "$CARGO_HOME/bin"
+        return
+        ;;
+    esac
+  fi
+
+  case ":$PATH:" in
+    *":$HOME/.cargo/bin:"*)
+      printf '%s\n' "$HOME/.cargo/bin"
+      return
+      ;;
+    *":$HOME/.local/bin:"*)
+      printf '%s\n' "$HOME/.local/bin"
+      return
+      ;;
+  esac
+
+  printf '%s\n' "$HOME/.local/bin"
+}
+
+add_to_path() {
+  install_dir="$1"
+  profile="$HOME/.profile"
+
+  case "${SHELL:-}" in
+    */bash)
+      profile="$HOME/.bashrc"
+      ;;
+    */zsh)
+      profile="$HOME/.zshrc"
+      ;;
+  esac
+
+  if [ "${AUTISM_SKIP_PATH_PERSIST:-0}" = "1" ]; then
+    step "Skipped persistent PATH changes for this install run"
+    return
+  fi
+
+  path_line="export PATH=\"$install_dir:\$PATH\""
+  if [ -f "$profile" ] && grep -F "$path_line" "$profile" >/dev/null 2>&1; then
+    step "PATH is already configured for future shells in $profile"
+    return
+  fi
+
+  case ":$PATH:" in
+    *":$install_dir:"*)
+      step "Persisting $install_dir to $profile for future shells"
+      ;;
+  esac
+
+  {
+    printf '\n# Added by autism installer\n'
+    printf '%s\n' "$path_line"
+  } >>"$profile"
+  step "Updated PATH for future shells in $profile"
+}
+
+install_binary_atomic() {
+  source_binary="$1"
+  target_binary="$2"
+  tmp_binary="$target_binary.new"
+  cp "$source_binary" "$tmp_binary"
+  chmod 0755 "$tmp_binary"
+  mv -f "$tmp_binary" "$target_binary"
+}
+
+stop_installed_processes() {
+  binary_path="$1"
+
+  if [ ! -x "$binary_path" ]; then
+    return
+  fi
+
+  step "Stopping any running autism processes from the install directory"
+  "$binary_path" daemon stop >/dev/null 2>&1 || true
+  sleep 1
+
+  if command_exists pgrep; then
+    pgrep -f "$binary_path" 2>/dev/null | while IFS= read -r pid; do
+      [ -n "$pid" ] || continue
+      kill "$pid" 2>/dev/null || true
+    done
+    sleep 1
+  fi
+}
+
+build_binary_from_source() {
+  source_root="$1"
+  target_binary="$2"
+  ensure_cargo
+  step "Building autism from source"
+  cargo build --release --bin autism --manifest-path "$source_root/Cargo.toml"
+  built_binary="$source_root/target/release/autism"
+  if [ ! -x "$built_binary" ]; then
+    echo "Cargo reported success but $built_binary was not found." >&2
+    exit 1
+  fi
+  install_binary_atomic "$built_binary" "$target_binary"
+}
+
+case "$(uname -s)" in
+  Linux)
+    ;;
+  *)
+    echo "install supports Linux only. Use install.ps1 on Windows." >&2
+    exit 1
+    ;;
+esac
+
+root="$(script_dir)"
+source_root="$(resolve_source_root "$root")"
+install_dir="$(choose_install_dir)"
+binary_path="$install_dir/autism"
+bundled_binary="$(resolve_bundled_binary "$root")"
+
+step "Installing autism CLI"
+step "Install directory: $install_dir"
+mkdir -p "$install_dir"
+stop_installed_processes "$binary_path"
+
+if [ -n "$bundled_binary" ]; then
+  step "Using bundled Linux binary"
+  install_binary_atomic "$bundled_binary" "$binary_path"
+else
+  build_binary_from_source "$source_root" "$binary_path"
+fi
+
+version="$("$binary_path" --version)"
+add_to_path "$install_dir"
+
+step "Installed version: $version"
+if command -v autism >/dev/null 2>&1; then
+  step "Run: autism"
+else
+  step "Open a new terminal and run: autism"
+fi

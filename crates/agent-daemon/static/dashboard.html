@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Daemon Dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body id="top">
+  <div class="backdrop"></div>
+  <div class="shell">
+    <header class="hero">
+      <div class="hero__copy">
+        <p class="eyebrow">Resident operator console</p>
+        <h1>Local control room</h1>
+        <p class="lede">
+          Manage missions, schedules, approvals, memory review, learned skills, delegation targets,
+          and connector activity through the live daemon.
+        </p>
+        <div class="hero__chips" id="hero-chips"></div>
+      </div>
+      <form id="auth-form" class="auth-panel">
+        <label class="field">
+          <span>Bearer token</span>
+          <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste daemon token">
+        </label>
+        <div class="auth-panel__actions">
+          <button id="connect-button" type="submit">Connect</button>
+          <button id="refresh-button" type="button" class="button-muted">Refresh</button>
+          <button id="clear-button" type="button" class="button-ghost">Clear</button>
+        </div>
+        <label class="toggle">
+          <input id="autorefresh-input" type="checkbox" checked>
+          <span>Auto refresh every 12 seconds</span>
+        </label>
+        <p id="connection-status" class="connection-status">Waiting for a daemon token.</p>
+      </form>
+    </header>
+
+    <nav class="dashboard-nav" aria-label="Dashboard sections">
+      <div class="dashboard-nav__intro">
+        <p class="dashboard-nav__eyebrow">Quick start</p>
+        <p class="dashboard-nav__copy">
+          Connect with the daemon token, then jump straight to providers, connectors, missions,
+          memory, delegation, or recent events.
+        </p>
+      </div>
+      <div class="dashboard-nav__links">
+        <a href="#overview">Overview</a>
+        <a href="#controls">Settings & Autonomy</a>
+        <a href="#missions">Missions</a>
+        <a href="#approvals">Approvals</a>
+        <a href="#memory">Memory</a>
+        <a href="#skills">Skills</a>
+        <a href="#profile">Profile</a>
+        <a href="#connectors">Connectors</a>
+        <a href="#delegation">Delegation</a>
+        <a href="#events">Events</a>
+      </div>
+    </nav>
+
+    <main class="layout">
+      <section id="overview" class="panel panel--status">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Overview</p>
+            <h2>Daemon status</h2>
+          </div>
+          <p id="last-updated" class="panel__meta">Not connected</p>
+        </div>
+        <div id="status-cards" class="card-grid"></div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Runtime</h3>
+            </div>
+            <dl id="status-details" class="detail-list"></dl>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Health checks</h3>
+            </div>
+            <div id="health-summary" class="health-summary"></div>
+            <div id="provider-health" class="stacked-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="controls" class="panel panel--controls">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Control</p>
+            <h2>Autonomy and scheduling</h2>
+          </div>
+          <p id="control-summary" class="panel__meta">No control data yet</p>
+        </div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Autopilot</h3>
+            </div>
+            <div id="autopilot-actions" class="card-actions"></div>
+            <dl id="autopilot-details" class="detail-list"></dl>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Schedule a mission</h3>
+            </div>
+            <form id="mission-form" class="inline-form">
+              <label class="field">
+                <span>Title</span>
+                <input id="mission-title" type="text" autocomplete="off" placeholder="Nightly review auth logs">
+              </label>
+              <label class="field">
+                <span>Details</span>
+                <textarea id="mission-details" rows="4" placeholder="Inspect failures, summarize anomalies, and message me if anything looks bad."></textarea>
+              </label>
+              <div class="field-grid">
+                <label class="field">
+                  <span>Alias</span>
+                  <input id="mission-alias" type="text" autocomplete="off" placeholder="main">
+                </label>
+                <label class="field">
+                  <span>Model override</span>
+                  <input id="mission-model" type="text" autocomplete="off" placeholder="optional">
+                </label>
+                <label class="field">
+                  <span>Wake in seconds</span>
+                  <input id="mission-delay" type="number" min="0" step="1" value="0">
+                </label>
+                <label class="field">
+                  <span>Repeat every seconds</span>
+                  <input id="mission-repeat" type="number" min="0" step="1" value="0">
+                </label>
+              </div>
+              <div class="auth-panel__actions">
+                <button id="mission-run-now" type="submit">Queue mission</button>
+                <button id="mission-schedule" type="button" class="button-muted">Schedule</button>
+              </div>
+            </form>
+          </article>
+        </div>
+      </section>
+
+      <section id="missions" class="panel panel--missions">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Execution</p>
+            <h2>Missions</h2>
+          </div>
+          <p id="mission-summary" class="panel__meta">No mission data yet</p>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Mission</th>
+                <th>Status</th>
+                <th>Wake</th>
+                <th>Repeat</th>
+                <th>Updated</th>
+                <th>Context</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="missions-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="approvals" class="panel panel--approvals">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Human gate</p>
+            <h2>Pending approvals</h2>
+          </div>
+          <p id="approvals-summary" class="panel__meta">No approval data yet</p>
+        </div>
+        <div id="approvals-list" class="stacked-list"></div>
+      </section>
+
+      <section id="memory" class="panel panel--memory">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Memory</p>
+            <h2>Review queue</h2>
+          </div>
+          <p id="memory-summary" class="panel__meta">No memory review data yet</p>
+        </div>
+        <div id="memory-list" class="stacked-list"></div>
+      </section>
+
+      <section id="skills" class="panel panel--skills">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Procedural memory</p>
+            <h2>Skill drafts</h2>
+          </div>
+          <p id="skills-summary" class="panel__meta">No skill draft data yet</p>
+        </div>
+        <div id="skills-list" class="stacked-list"></div>
+      </section>
+
+      <section id="profile" class="panel panel--profile">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Profile memory</p>
+            <h2>User and system context</h2>
+          </div>
+          <p id="profile-summary" class="panel__meta">No profile data yet</p>
+        </div>
+        <div id="profile-list" class="stacked-list"></div>
+      </section>
+
+      <section id="connectors" class="panel panel--connectors">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Integrations</p>
+            <h2>Connector roster</h2>
+          </div>
+          <p id="connector-summary" class="panel__meta">No connector data yet</p>
+        </div>
+        <div id="connector-cards" class="card-grid card-grid--compact"></div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Name</th>
+                <th>Enabled</th>
+                <th>Target</th>
+                <th>Detail</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="connectors-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="delegation" class="panel panel--delegation">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Provider mesh</p>
+            <h2>Delegation targets</h2>
+          </div>
+          <p id="delegation-summary" class="panel__meta">No delegation data yet</p>
+        </div>
+        <div id="delegation-list" class="card-grid card-grid--compact"></div>
+      </section>
+
+      <section id="events" class="panel panel--events">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Activity</p>
+            <h2>Recent events</h2>
+          </div>
+          <p id="events-summary" class="panel__meta">No event data yet</p>
+        </div>
+        <div id="events-list" class="event-feed"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/dashboard.js" defer></script>
+</body>
+</html>
