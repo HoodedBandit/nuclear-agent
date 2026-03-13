@@ -3,15 +3,16 @@ use agent_core::{
     AppConnectorConfig, AppConnectorUpsertRequest, ConnectorApprovalRecord,
     ConnectorApprovalStatus, ConnectorApprovalUpdateRequest, ConnectorKind, DiscordConnectorConfig,
     DiscordConnectorUpsertRequest, DiscordPollResponse, DiscordSendRequest, DiscordSendResponse,
-    HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest, HomeAssistantEntityState,
-    HomeAssistantPollResponse, HomeAssistantServiceCallRequest, HomeAssistantServiceCallResponse,
-    InboxConnectorConfig, InboxConnectorUpsertRequest, InboxPollResponse, Mission, MissionStatus,
-    SignalConnectorConfig, SignalConnectorUpsertRequest, SignalPollResponse, SignalSendRequest,
-    SignalSendResponse, SlackConnectorConfig, SlackConnectorUpsertRequest, SlackPollResponse,
-    SlackSendRequest, SlackSendResponse, TelegramConnectorConfig, TelegramConnectorUpsertRequest,
-    TelegramPollResponse, TelegramSendRequest, TelegramSendResponse, WakeTrigger,
-    WebhookConnectorConfig, WebhookConnectorUpsertRequest, WebhookEventRequest,
-    WebhookEventResponse,
+    GmailConnectorConfig, GmailConnectorUpsertRequest, GmailPollResponse, GmailSendRequest,
+    GmailSendResponse, HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest,
+    HomeAssistantEntityState, HomeAssistantPollResponse, HomeAssistantServiceCallRequest,
+    HomeAssistantServiceCallResponse, InboxConnectorConfig, InboxConnectorUpsertRequest,
+    InboxPollResponse, Mission, MissionStatus, SignalConnectorConfig, SignalConnectorUpsertRequest,
+    SignalPollResponse, SignalSendRequest, SignalSendResponse, SlackConnectorConfig,
+    SlackConnectorUpsertRequest, SlackPollResponse, SlackSendRequest, SlackSendResponse,
+    TelegramConnectorConfig, TelegramConnectorUpsertRequest, TelegramPollResponse,
+    TelegramSendRequest, TelegramSendResponse, WakeTrigger, WebhookConnectorConfig,
+    WebhookConnectorUpsertRequest, WebhookEventRequest, WebhookEventResponse,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -22,6 +23,7 @@ use axum::{
 mod admin;
 mod approvals;
 mod discord;
+mod gmail;
 mod home_assistant;
 mod inbox;
 mod signal;
@@ -30,16 +32,17 @@ mod telegram;
 mod webhook;
 
 pub(crate) use admin::{
-    delete_app_connector, delete_discord_connector, delete_home_assistant_connector,
-    delete_inbox_connector, delete_signal_connector, delete_slack_connector,
-    delete_telegram_connector, delete_webhook_connector, get_discord_connector,
-    get_home_assistant_connector, get_inbox_connector, get_signal_connector, get_slack_connector,
-    get_telegram_connector, get_webhook_connector, list_app_connectors, list_discord_connectors,
+    delete_app_connector, delete_discord_connector, delete_gmail_connector,
+    delete_home_assistant_connector, delete_inbox_connector, delete_signal_connector,
+    delete_slack_connector, delete_telegram_connector, delete_webhook_connector,
+    get_discord_connector, get_gmail_connector, get_home_assistant_connector, get_inbox_connector,
+    get_signal_connector, get_slack_connector, get_telegram_connector, get_webhook_connector,
+    list_app_connectors, list_discord_connectors, list_gmail_connectors,
     list_home_assistant_connectors, list_inbox_connectors, list_signal_connectors,
     list_slack_connectors, list_telegram_connectors, list_webhook_connectors, upsert_app_connector,
-    upsert_discord_connector, upsert_home_assistant_connector, upsert_inbox_connector,
-    upsert_signal_connector, upsert_slack_connector, upsert_telegram_connector,
-    upsert_webhook_connector,
+    upsert_discord_connector, upsert_gmail_connector, upsert_home_assistant_connector,
+    upsert_inbox_connector, upsert_signal_connector, upsert_slack_connector,
+    upsert_telegram_connector, upsert_webhook_connector,
 };
 pub(crate) use approvals::{
     approve_connector_approval, list_connector_approvals, reject_connector_approval,
@@ -475,6 +478,84 @@ pub(crate) async fn send_signal_message_route(
     }))
 }
 
+pub(crate) async fn poll_gmail_connector_route(
+    State(state): State<AppState>,
+    Path(connector_id): Path<String>,
+) -> Result<Json<GmailPollResponse>, ApiError> {
+    refresh_connector_config(&state).await?;
+    let connector = {
+        let config = state.config.read().await;
+        config
+            .gmail_connectors
+            .iter()
+            .find(|connector| connector.id == connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown gmail connector"))?
+    };
+    Ok(Json(
+        gmail::process_gmail_connector(&state, &connector).await?,
+    ))
+}
+
+pub(crate) async fn send_gmail_message_route(
+    State(state): State<AppState>,
+    Path(connector_id): Path<String>,
+    Json(payload): Json<GmailSendRequest>,
+) -> Result<Json<GmailSendResponse>, ApiError> {
+    let connector = {
+        let config = state.config.read().await;
+        config
+            .gmail_connectors
+            .iter()
+            .find(|connector| connector.id == connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown gmail connector"))?
+    };
+    ensure_connector_enabled(
+        connector.enabled,
+        "gmail",
+        &connector.id,
+        "sending messages",
+    )?;
+    let to = payload.to.trim();
+    if to.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "gmail recipient must not be empty",
+        ));
+    }
+    let subject = payload.subject.trim();
+    let body = payload.body.trim();
+    if body.is_empty() && subject.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "gmail message must have a subject or body",
+        ));
+    }
+    let token = gmail::load_gmail_oauth_token(&connector)?;
+    let message_id = gmail::send_gmail_message(
+        &state.http_client,
+        &token,
+        to,
+        subject,
+        body,
+    )
+    .await?;
+    append_log(
+        &state,
+        "info",
+        "gmail",
+        format!(
+            "gmail '{}' sent outbound message to {}",
+            connector.id, to
+        ),
+    )?;
+    Ok(Json(GmailSendResponse {
+        connector_id: connector.id,
+        message_id,
+    }))
+}
+
 pub(crate) async fn receive_webhook_event(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
@@ -562,6 +643,7 @@ pub(crate) async fn poll_inbox_connectors(state: &AppState) -> Result<usize, Api
     queued += slack::poll_slack_connectors(state).await?;
     queued += home_assistant::poll_home_assistant_connectors(state).await?;
     queued += signal::poll_signal_connectors(state).await?;
+    queued += gmail::poll_gmail_connectors(state).await?;
     Ok(queued)
 }
 
@@ -575,6 +657,7 @@ fn connector_display_name(kind: ConnectorKind) -> &'static str {
         ConnectorKind::Slack => "slack",
         ConnectorKind::HomeAssistant => "home assistant",
         ConnectorKind::Signal => "signal",
+        ConnectorKind::Gmail => "gmail",
     }
 }
 
@@ -588,6 +671,7 @@ fn connector_log_category(kind: ConnectorKind) -> &'static str {
         ConnectorKind::Slack => "slack",
         ConnectorKind::HomeAssistant => "home_assistant",
         ConnectorKind::Signal => "signal",
+        ConnectorKind::Gmail => "gmail",
     }
 }
 

@@ -664,6 +664,18 @@ pub(crate) fn learn_from_interaction(
             format!("learned skill draft '{}' as {:?}", title, status),
         )?;
     }
+
+    // Detect and record usage patterns from tool events.
+    if tool_events.len() >= 2 {
+        let workspace_key = cwd.map(|p| p.display().to_string());
+        let detected = crate::detect_patterns(tool_events, workspace_key.as_deref(), provider_id);
+        if !detected.is_empty() {
+            if let Err(err) = crate::record_patterns(state, detected) {
+                warn!("failed to record usage patterns: {err}");
+            }
+        }
+    }
+
     Ok(())
 }
 

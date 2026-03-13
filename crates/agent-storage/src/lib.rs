@@ -8,8 +8,8 @@ use std::{
 use agent_core::{
     AppConfig, ConnectorApprovalRecord, ConnectorApprovalStatus, ConnectorKind, LogEntry,
     MemoryRecord, MemoryReviewStatus, MemoryScope, Mission, MissionCheckpoint, MissionStatus,
-    ModelAlias, SessionMessage, SessionSearchHit, SessionSummary, SkillDraft, SkillDraftStatus,
-    APP_NAME, APP_SLUG,
+    ModelAlias, PatternType, SessionMessage, SessionSearchHit, SessionSummary, SkillDraft,
+    SkillDraftStatus, UsagePattern, APP_NAME, APP_SLUG,
 };
 use anyhow::{anyhow, Context, Result};
 use auto_launch::AutoLaunchBuilder;
@@ -490,6 +490,18 @@ impl Storage {
                 INSERT INTO memory_records_fts(memory_id, subject, content, tags_text)
                 VALUES (new.id, new.subject, new.content, COALESCE(new.tags_text, ''));
             END;
+            CREATE TABLE IF NOT EXISTS usage_patterns (
+                id TEXT PRIMARY KEY,
+                pattern_type TEXT NOT NULL,
+                description TEXT NOT NULL,
+                trigger_hint TEXT NOT NULL DEFAULT '',
+                frequency INTEGER NOT NULL DEFAULT 1,
+                confidence INTEGER NOT NULL DEFAULT 50,
+                last_seen_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                workspace_key TEXT,
+                provider_id TEXT
+            );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_approvals_source_key
             ON connector_approvals(source_key);
             CREATE INDEX IF NOT EXISTS idx_connector_approvals_status
@@ -1887,6 +1899,105 @@ impl Storage {
         )?;
         Ok(())
     }
+
+    // ── Usage patterns ────────────────────────────────────────────────
+
+    pub fn upsert_pattern(&self, pattern: &UsagePattern) -> Result<()> {
+        let connection = self.connection()?;
+        let pattern_type_json = serde_json::to_string(&pattern.pattern_type)?;
+        connection.execute(
+            "INSERT INTO usage_patterns (id, pattern_type, description, trigger_hint, frequency, confidence, last_seen_at, created_at, workspace_key, provider_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(id) DO UPDATE SET
+                description = excluded.description,
+                trigger_hint = excluded.trigger_hint,
+                frequency = excluded.frequency,
+                confidence = excluded.confidence,
+                last_seen_at = excluded.last_seen_at,
+                workspace_key = excluded.workspace_key,
+                provider_id = excluded.provider_id",
+            params![
+                pattern.id,
+                pattern_type_json,
+                pattern.description,
+                pattern.trigger_hint,
+                pattern.frequency as i64,
+                pattern.confidence as i64,
+                pattern.last_seen_at.to_rfc3339(),
+                pattern.created_at.to_rfc3339(),
+                pattern.workspace_key,
+                pattern.provider_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_patterns(
+        &self,
+        limit: usize,
+        workspace_key: Option<&str>,
+    ) -> Result<Vec<UsagePattern>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, pattern_type, description, trigger_hint, frequency, confidence,
+                    last_seen_at, created_at, workspace_key, provider_id
+             FROM usage_patterns
+             WHERE (?2 IS NULL OR workspace_key = ?2 OR workspace_key IS NULL)
+             ORDER BY frequency DESC, last_seen_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map(params![limit as i64, workspace_key], row_to_pattern)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn find_pattern_by_description(
+        &self,
+        description: &str,
+        workspace_key: Option<&str>,
+    ) -> Result<Option<UsagePattern>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, pattern_type, description, trigger_hint, frequency, confidence,
+                    last_seen_at, created_at, workspace_key, provider_id
+             FROM usage_patterns
+             WHERE description = ?1
+               AND (?2 IS NULL OR workspace_key = ?2 OR workspace_key IS NULL)
+             LIMIT 1",
+        )?;
+        statement
+            .query_row(params![description, workspace_key], row_to_pattern)
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn increment_pattern_frequency(&self, id: &str) -> Result<bool> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            "UPDATE usage_patterns SET frequency = frequency + 1, last_seen_at = ?2 WHERE id = ?1",
+            params![id, Utc::now().to_rfc3339()],
+        )?;
+        Ok(updated > 0)
+    }
+}
+
+fn row_to_pattern(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsagePattern> {
+    let pattern_type_json: String = row.get(1)?;
+    let last_seen_at: String = row.get(6)?;
+    let created_at: String = row.get(7)?;
+    Ok(UsagePattern {
+        id: row.get(0)?,
+        pattern_type: serde_json::from_str(&pattern_type_json).unwrap_or(PatternType::ToolSequence),
+        description: row.get(2)?,
+        trigger_hint: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        frequency: row.get::<_, i64>(4).unwrap_or(1) as u32,
+        confidence: row.get::<_, i64>(5).unwrap_or(50) as u8,
+        last_seen_at: parse_datetime(&last_seen_at).unwrap_or_else(|_| Utc::now()),
+        created_at: parse_datetime(&created_at).unwrap_or_else(|_| Utc::now()),
+        workspace_key: row.get(8)?,
+        provider_id: row.get(9)?,
+    })
 }
 
 fn configure_connection(connection: &Connection) -> Result<()> {

@@ -135,8 +135,114 @@ Files:
 
 - `crates/agent-daemon/src/lib.rs`
 
+---
+
+## Changes Implemented — 2026-03-13 (Phases 1–4)
+
+### Phase 1: Bug Fixes
+
+**1a. OAuth refresh race condition** — Added per-account async mutex so concurrent token refreshes for the same account serialize instead of racing.
+- Files: `crates/agent-providers/src/lib.rs`, `crates/agent-providers/Cargo.toml`
+
+**1b. Windows write_atomic locked files** — `write_atomic` now retries on `ERROR_SHARING_VIOLATION` (32) and `ERROR_LOCK_VIOLATION` (33) with exponential backoff (50ms–800ms, 5 retries).
+- Files: `crates/agent-storage/src/lib.rs`
+
+**1c. File watch content hashing** — Replaced metadata-only fingerprinting with content hashing. Files <1MB use full content hash; files >1MB hash first 4KB + last 4KB + size.
+- Files: `crates/agent-daemon/src/missions.rs`
+
+**1d. Provider rate limiting** — Token bucket `ProviderRateLimiter` (60 RPM default per provider) acquired before each `run_prompt` call.
+- Files: `crates/agent-daemon/src/lib.rs`, `crates/agent-daemon/src/runtime.rs`
+
+### Phase 2: Structural Cleanup
+
+Deleted `_recovery_quarantine/` (260MB dead recovery duplicates) and `dist/` (1.5GB old build bundles). Both were already gitignored with no source references.
+
+### Phase 3: Memory & Learning Foundation
+
+**3a. Semantic memory search — 3-tier pipeline:**
+- Tier 1: `build_expanded_fts_query()` with English suffix stemmer (30+ suffix rules) for improved FTS recall
+- Tier 2: `fuzzy_memory_search()` LIKE-based fallback when FTS returns < half the limit
+- Tier 3: Embedding-based vector search — `memory_embeddings` table (BLOB vectors), cosine similarity, auto-embeds on upsert via `maybe_compute_embedding()`, supplements FTS via `embedding_search()`
+- Pipeline order: stemmed FTS → fuzzy LIKE fallback → embedding cosine similarity
+- Files: `crates/agent-core/src/lib.rs` (EmbeddingConfig), `crates/agent-providers/src/lib.rs` (compute_embedding), `crates/agent-storage/src/lib.rs` (memory_embeddings table, search functions), `crates/agent-daemon/src/memory.rs` (pipeline orchestration)
+
+**3b. Evolve diff review enforcement:**
+- `diff_review_required: bool` on `EvolveConfig` (default true)
+- `diff_summary` field on `MissionDirective` and `EVOLVE_DIRECTIVE_SCHEMA`
+- `handle_evolve_cycle` fails if files were mutated but no `diff_summary` provided
+- `build_evolve_prompt` instructs agent to run `git diff` and include review
+- Files: `crates/agent-core/src/lib.rs`, `crates/agent-daemon/src/missions.rs`
+
+### Phase 4: Gmail Connector
+
+Complete Gmail connector via Gmail REST API + OAuth2 Bearer tokens:
+- Polling: `GET /messages?q=is:unread` → `GET /messages/{id}` for detail
+- Sending: `POST /messages/send` with base64url-encoded RFC 2822 message
+- Pairing approval workflow for unknown senders
+- Admin CRUD, approval routing, connector orchestration
+- Files:
+  - `crates/agent-core/src/lib.rs` (Gmail types, ConnectorKind::Gmail, WakeTrigger::Gmail, GmailConnectorConfig)
+  - `crates/agent-daemon/src/connectors/gmail.rs` (NEW — full implementation)
+  - `crates/agent-daemon/src/connectors.rs` (Gmail routing, polling integration)
+  - `crates/agent-daemon/src/connectors/admin.rs` (Gmail CRUD)
+  - `crates/agent-daemon/src/connectors/approvals.rs` (Gmail approval branch)
+  - `crates/agent-daemon/src/routes.rs` (Gmail routes /v1/gmail/*)
+  - `crates/agent-daemon/src/control.rs` (gmail_connectors in DaemonStatus)
+  - `crates/agent-daemon/Cargo.toml` (base64 dependency)
+
+### Phase 5: Intelligence Layer
+
+**5a. Proactive learning — pattern tracking:**
+- New `PatternType` enum (ToolSequence, ErrorRecovery, PreferredWorkflow, AvoidedAction) and `UsagePattern` struct in agent-core
+- New `usage_patterns` SQLite table with CRUD operations in agent-storage
+- New `crates/agent-daemon/src/patterns.rs` — detects tool sequences, error-recovery retries, and preferred workflows from tool events
+- Pattern detection wired into `learn_from_interaction()` — auto-records patterns after each interaction with 2+ tool events
+- Files: `crates/agent-core/src/lib.rs`, `crates/agent-storage/src/lib.rs`, `crates/agent-daemon/src/patterns.rs` (NEW), `crates/agent-daemon/src/lib.rs`, `crates/agent-daemon/src/memory.rs`
+
+**5b. Adaptive behavior — preference injection:**
+- `load_pattern_guidance()` surfaces top recurring patterns (frequency ≥ 2, confidence ≥ 40) as system prompt context
+- Injected into `execute_task_request()` as an additional system message after memory context
+- Agent sees observed patterns from prior interactions to inform its approach
+- Files: `crates/agent-daemon/src/patterns.rs`, `crates/agent-daemon/src/runtime.rs`
+
+**5c. Smarter evolve — workspace improvement signals:**
+- `gather_evolve_signals()` scans workspace before each evolve cycle for: TODO/FIXME/HACK counts, large files (>800 lines), clippy warnings
+- Signals injected into the evolve prompt to guide improvement target selection
+- Files: `crates/agent-daemon/src/missions.rs`
+
+### Phase 6: Dashboard Feature Parity
+
+Full web dashboard rewrite achieving CLI feature parity:
+
+**New sections added:**
+- **Providers & Aliases** — List providers with kind/auth/keychain info, list aliases, add alias form
+- **Memory Tools** — Search form (POST /v1/memory/search), create memory form (kind/scope/subject/content), forget/delete buttons on memory cards
+- **Permissions & Trust** — Permission preset selector (Suggest/AutoEdit/FullAuto), trust policy toggles (shell/network/full_disk/self_edit)
+- **Add Connector** — Type dropdown (telegram/discord/slack/signal/home-assistant/webhook/inbox/gmail) with dynamic type-specific fields, delete buttons on existing connectors
+- **Gmail Connectors** — Added to connector fetch, display, toggle, poll, delete
+- **Run Task** — Prompt execution form with alias, model override, thinking level selector, response display
+- **Sessions** — Session list table with expandable detail view for messages
+- **Logs** — Scrollable daemon log viewer (GET /v1/logs)
+- **MCP Servers** — List with delete + add form (id, name, command, args, enabled)
+- **Daemon Config** — Persistence mode toggle (on_demand/always_on), auto-start toggle
+
+**Infrastructure changes:**
+- `apiDelete()` helper added
+- `refreshDashboard()` now fetches 24 endpoints in parallel (was 16) with graceful fallbacks
+- Dynamic connector form fields via `connectorTypeFields()`/`updateConnectorAddFields()`
+- 12 new action handlers in `bindActions()`
+
+Files:
+- `crates/agent-daemon/static/dashboard.html` (expanded with 9 new panel sections, 5 new nav links)
+- `crates/agent-daemon/static/dashboard.js` (expanded with 8 new render functions, 12 action handlers)
+- `crates/agent-daemon/static/dashboard.css` (new panel span rules, select element styling)
+
+### Verification
+
+All 171 tests pass, clippy clean, zero warnings after all phases.
+
 ## Recommended Next Steps
 
 1. Split `crates/agent-daemon/src/lib.rs` into smaller modules before layering more autonomy features onto it.
-2. Expand the learning pipeline again so it consolidates assistant conclusions and tool outcomes into reviewable long-term memory records, not just heuristic phrase matches.
-3. Build the next resident-runtime layer: more connector/event sources and richer TUI management for learned skills/profile/schedules.
+2. Expand the learning pipeline to consolidate assistant conclusions and tool outcomes into reviewable long-term memory records.
+3. Add end-to-end integration tests for connector workflows and dashboard API coverage.

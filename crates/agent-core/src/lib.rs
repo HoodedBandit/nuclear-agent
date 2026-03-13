@@ -173,6 +173,7 @@ pub enum WakeTrigger {
     Slack,
     HomeAssistant,
     Signal,
+    Gmail,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -223,6 +224,7 @@ pub enum ConnectorKind {
     Slack,
     HomeAssistant,
     Signal,
+    Gmail,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -867,6 +869,63 @@ impl SkillDraft {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PatternType {
+    ToolSequence,
+    ErrorRecovery,
+    PreferredWorkflow,
+    AvoidedAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsagePattern {
+    pub id: String,
+    pub pattern_type: PatternType,
+    pub description: String,
+    #[serde(default)]
+    pub trigger_hint: String,
+    #[serde(default = "default_one_u32")]
+    pub frequency: u32,
+    #[serde(default = "default_fifty_u8")]
+    pub confidence: u8,
+    pub last_seen_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub workspace_key: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+}
+
+fn default_one_u32() -> u32 {
+    1
+}
+fn default_fifty_u8() -> u8 {
+    50
+}
+
+impl UsagePattern {
+    pub fn new(
+        pattern_type: PatternType,
+        description: String,
+        trigger_hint: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            pattern_type,
+            description,
+            trigger_hint,
+            frequency: 1,
+            confidence: 50,
+            last_seen_at: now,
+            created_at: now,
+            workspace_key: None,
+            provider_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionSummary {
     pub id: String,
     pub title: Option<String>,
@@ -1026,6 +1085,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub signal_connectors: Vec<SignalConnectorConfig>,
     #[serde(default)]
+    pub gmail_connectors: Vec<GmailConnectorConfig>,
+    #[serde(default)]
     pub enabled_skills: Vec<String>,
     #[serde(default)]
     pub autopilot: AutopilotConfig,
@@ -1058,6 +1119,7 @@ impl Default for AppConfig {
             slack_connectors: Vec::new(),
             home_assistant_connectors: Vec::new(),
             signal_connectors: Vec::new(),
+            gmail_connectors: Vec::new(),
             enabled_skills: Vec::new(),
             autopilot: AutopilotConfig::default(),
             delegation: DelegationConfig::default(),
@@ -1280,6 +1342,25 @@ impl AppConfig {
         self.signal_connectors
             .retain(|connector| connector.id != id);
         before != self.signal_connectors.len()
+    }
+
+    pub fn upsert_gmail_connector(&mut self, connector: GmailConnectorConfig) {
+        if let Some(existing) = self
+            .gmail_connectors
+            .iter_mut()
+            .find(|entry| entry.id == connector.id)
+        {
+            *existing = connector;
+        } else {
+            self.gmail_connectors.push(connector);
+        }
+    }
+
+    pub fn remove_gmail_connector(&mut self, id: &str) -> bool {
+        let before = self.gmail_connectors.len();
+        self.gmail_connectors
+            .retain(|connector| connector.id != id);
+        before != self.gmail_connectors.len()
     }
 }
 
@@ -2057,6 +2138,59 @@ pub struct SignalSendResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailConnectorConfig {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub oauth_keychain_account: Option<String>,
+    #[serde(default = "default_true")]
+    pub require_pairing_approval: bool,
+    #[serde(default)]
+    pub allowed_sender_addresses: Vec<String>,
+    #[serde(default)]
+    pub label_filter: Option<String>,
+    #[serde(default)]
+    pub last_history_id: Option<String>,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailConnectorUpsertRequest {
+    pub connector: GmailConnectorConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailPollResponse {
+    pub connector_id: String,
+    pub processed_messages: usize,
+    pub queued_missions: usize,
+    #[serde(default)]
+    pub pending_approvals: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailSendRequest {
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailSendResponse {
+    pub connector_id: String,
+    #[serde(default)]
+    pub message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillUpdateRequest {
     pub enabled_skills: Vec<String>,
 }
@@ -2089,6 +2223,8 @@ pub struct DaemonStatus {
     pub home_assistant_connectors: usize,
     #[serde(default)]
     pub signal_connectors: usize,
+    #[serde(default)]
+    pub gmail_connectors: usize,
     #[serde(default)]
     pub pending_connector_approvals: usize,
     pub missions: usize,

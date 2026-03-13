@@ -60,6 +60,7 @@ pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<DaemonS
         slack_connectors: config.slack_connectors.len(),
         home_assistant_connectors: config.home_assistant_connectors.len(),
         signal_connectors: config.signal_connectors.len(),
+        gmail_connectors: config.gmail_connectors.len(),
         pending_connector_approvals: state.storage.count_pending_connector_approvals()?,
         missions: missions.len(),
         active_missions,

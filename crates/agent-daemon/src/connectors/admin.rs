@@ -690,6 +690,112 @@ pub(crate) async fn delete_signal_connector(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+pub(crate) async fn list_gmail_connectors(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<GmailConnectorConfig>>, ApiError> {
+    let config = state.config.read().await;
+    Ok(Json(config.gmail_connectors.clone()))
+}
+
+pub(crate) async fn get_gmail_connector(
+    State(state): State<AppState>,
+    Path(connector_id): Path<String>,
+) -> Result<Json<GmailConnectorConfig>, ApiError> {
+    let config = state.config.read().await;
+    let connector = config
+        .gmail_connectors
+        .iter()
+        .find(|connector| connector.id == connector_id)
+        .cloned()
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown gmail connector"))?;
+    Ok(Json(connector))
+}
+
+pub(crate) async fn upsert_gmail_connector(
+    State(state): State<AppState>,
+    Json(payload): Json<GmailConnectorUpsertRequest>,
+) -> Result<Json<GmailConnectorConfig>, ApiError> {
+    let account = payload
+        .connector
+        .oauth_keychain_account
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "gmail connector oauth_keychain_account must not be empty",
+            )
+        })?;
+    let _ = load_api_key(account).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("failed to load gmail OAuth token from keychain: {error}"),
+        )
+    })?;
+    {
+        let mut config = state.config.write().await;
+        config.upsert_gmail_connector(payload.connector.clone());
+        state.storage.save_config(&config)?;
+    }
+    append_log(
+        &state,
+        "info",
+        "gmail",
+        format!("gmail connector '{}' updated", payload.connector.id),
+    )?;
+    Ok(Json(payload.connector))
+}
+
+pub(crate) async fn delete_gmail_connector(
+    State(state): State<AppState>,
+    Path(connector_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let (removed_connector, delete_secret_account) = {
+        let mut config = state.config.write().await;
+        let removed = config
+            .gmail_connectors
+            .iter()
+            .find(|connector| connector.id == connector_id)
+            .cloned();
+        if removed.is_some() {
+            config.remove_gmail_connector(&connector_id);
+            state.storage.save_config(&config)?;
+        }
+        let delete_secret_account = removed
+            .as_ref()
+            .and_then(|connector| connector.oauth_keychain_account.as_deref())
+            .map(str::trim)
+            .filter(|account| !account.is_empty())
+            .filter(|account| {
+                !gmail::gmail_oauth_account_in_use(&config.gmail_connectors, account)
+            })
+            .map(ToOwned::to_owned);
+        (removed, delete_secret_account)
+    };
+    if removed_connector.is_none() {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "unknown gmail connector",
+        ));
+    }
+    if let Some(account) = delete_secret_account {
+        delete_secret(&account).map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to delete gmail OAuth token: {error}"),
+            )
+        })?;
+    }
+    append_log(
+        &state,
+        "info",
+        "gmail",
+        format!("gmail connector '{}' removed", connector_id),
+    )?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 pub(crate) async fn delete_telegram_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
