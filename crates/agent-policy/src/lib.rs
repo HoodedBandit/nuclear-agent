@@ -96,8 +96,16 @@ fn is_shell_tool(tool_name: &str) -> bool {
     )
 }
 
-fn is_network_tool(tool_name: &str) -> bool {
-    matches!(tool_name, "fetch_url" | "http_request")
+pub fn is_network_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "fetch_url"
+            | "http_request"
+            | "brave_web_search"
+            | "brave_news_search"
+            | "brave_image_search"
+            | "brave_local_search"
+    )
 }
 
 pub fn path_is_trusted(

@@ -1663,10 +1663,7 @@ fn needs_onboarding(config: &AppConfig) -> bool {
 }
 
 fn has_usable_main_alias(config: &AppConfig) -> bool {
-    config
-        .main_alias()
-        .ok()
-        .is_some_and(|alias| config.get_provider(&alias.provider_id).is_some())
+    config.has_usable_main_alias()
 }
 
 async fn ensure_onboarded(storage: &Storage) -> Result<()> {
@@ -2364,6 +2361,7 @@ async fn telegram_command(storage: &Storage, command: TelegramCommands) -> Resul
                         "/v1/telegram",
                         &TelegramConnectorUpsertRequest {
                             connector: connector.clone(),
+                            bot_token: None,
                         },
                     )
                     .await?;
@@ -2614,6 +2612,7 @@ async fn discord_command(storage: &Storage, command: DiscordCommands) -> Result<
                         "/v1/discord",
                         &DiscordConnectorUpsertRequest {
                             connector: connector.clone(),
+                            bot_token: None,
                         },
                     )
                     .await?;
@@ -2858,6 +2857,7 @@ async fn slack_command(storage: &Storage, command: SlackCommands) -> Result<()> 
                         "/v1/slack",
                         &SlackConnectorUpsertRequest {
                             connector: connector.clone(),
+                            bot_token: None,
                         },
                     )
                     .await?;
@@ -3326,6 +3326,7 @@ async fn home_assistant_command(storage: &Storage, command: HomeAssistantCommand
                         "/v1/home-assistant",
                         &HomeAssistantConnectorUpsertRequest {
                             connector: connector.clone(),
+                            access_token: None,
                         },
                     )
                     .await?;
@@ -3497,6 +3498,7 @@ async fn webhook_command(storage: &Storage, command: WebhookCommands) -> Result<
                         "/v1/webhooks",
                         &WebhookConnectorUpsertRequest {
                             connector: connector.clone(),
+                            webhook_token: None,
                         },
                     )
                     .await?;
@@ -4131,6 +4133,7 @@ async fn set_telegram_enabled(storage: &Storage, id: &str, enabled: bool) -> Res
                 "/v1/telegram",
                 &TelegramConnectorUpsertRequest {
                     connector: connector.clone(),
+                    bot_token: None,
                 },
             )
             .await?;
@@ -4155,6 +4158,7 @@ async fn set_discord_enabled(storage: &Storage, id: &str, enabled: bool) -> Resu
                 "/v1/discord",
                 &DiscordConnectorUpsertRequest {
                     connector: connector.clone(),
+                    bot_token: None,
                 },
             )
             .await?;
@@ -4179,6 +4183,7 @@ async fn set_slack_enabled(storage: &Storage, id: &str, enabled: bool) -> Result
                 "/v1/slack",
                 &SlackConnectorUpsertRequest {
                     connector: connector.clone(),
+                    bot_token: None,
                 },
             )
             .await?;
@@ -4203,6 +4208,7 @@ async fn set_home_assistant_enabled(storage: &Storage, id: &str, enabled: bool) 
                 "/v1/home-assistant",
                 &HomeAssistantConnectorUpsertRequest {
                     connector: connector.clone(),
+                    access_token: None,
                 },
             )
             .await?;
@@ -4251,6 +4257,7 @@ async fn set_webhook_enabled(storage: &Storage, id: &str, enabled: bool) -> Resu
                 "/v1/webhooks",
                 &WebhookConnectorUpsertRequest {
                     connector: connector.clone(),
+                    webhook_token: None,
                 },
             )
             .await?;
@@ -8551,55 +8558,11 @@ fn hosted_kind_defaults(kind: HostedKindArg) -> (&'static str, &'static str) {
 }
 
 fn next_available_provider_id(config: &AppConfig, preferred: &str) -> String {
-    if config.get_provider(preferred).is_none() {
-        return preferred.to_string();
-    }
-
-    let mut index = 2;
-    loop {
-        let candidate = format!("{preferred}-{index}");
-        if config.get_provider(&candidate).is_none() {
-            return candidate;
-        }
-        index += 1;
-    }
+    config.next_available_provider_id(preferred)
 }
 
 fn default_alias_name(config: &AppConfig, provider: &ProviderConfig, model: &str) -> String {
-    let preferred = if config.main_agent_alias.is_none() && config.aliases.is_empty() {
-        "main".to_string()
-    } else {
-        let model_slug = model
-            .chars()
-            .map(|ch| match ch {
-                'a'..='z' | 'A'..='Z' | '0'..='9' => ch.to_ascii_lowercase(),
-                _ => '-',
-            })
-            .collect::<String>()
-            .split('-')
-            .filter(|segment| !segment.is_empty())
-            .take(3)
-            .collect::<Vec<_>>()
-            .join("-");
-        if model_slug.is_empty() {
-            provider.id.clone()
-        } else {
-            format!("{}-{}", provider.id, model_slug)
-        }
-    };
-
-    if config.get_alias(&preferred).is_none() {
-        return preferred;
-    }
-
-    let mut index = 2;
-    loop {
-        let candidate = format!("{preferred}-{index}");
-        if config.get_alias(&candidate).is_none() {
-            return candidate;
-        }
-        index += 1;
-    }
+    config.default_alias_name_for(&provider.id, model)
 }
 
 async fn resolve_hosted_model_after_auth(
@@ -8775,9 +8738,7 @@ async fn complete_browser_login(
         HostedKindArg::Openrouter => Ok(BrowserLoginResult::ApiKey(
             complete_openrouter_browser_login().await?,
         )),
-        HostedKindArg::Anthropic => Ok(BrowserLoginResult::ApiKey(
-            complete_claude_browser_login().await?,
-        )),
+        HostedKindArg::Anthropic => complete_claude_browser_login().await,
         HostedKindArg::Moonshot | HostedKindArg::Venice => Ok(BrowserLoginResult::ApiKey(
             capture_browser_api_key(kind, provider_name).await?,
         )),
@@ -9106,10 +9067,10 @@ struct ClaudeBrowserRolesResponse {
     organization_name: Option<String>,
 }
 
-async fn complete_claude_browser_login() -> Result<String> {
+async fn complete_claude_browser_login() -> Result<BrowserLoginResult> {
     if let Some(credentials) = try_load_claude_browser_credentials().await? {
         print_claude_browser_credentials(&credentials, true);
-        return Ok(credentials.api_key);
+        return Ok(BrowserLoginResult::ApiKey(credentials.api_key));
     }
 
     let provider = ProviderConfig {
@@ -9163,21 +9124,29 @@ async fn complete_claude_browser_login() -> Result<String> {
         &redirect_uri,
     )
     .await?;
-    let api_key = create_claude_browser_api_key(&client, &token.access_token).await?;
     let roles = fetch_claude_browser_roles(&client, &token.access_token)
         .await
         .ok();
-    let credentials = ClaudeBrowserCredentials {
-        api_key,
-        email: token.display_email,
-        org_id: token.org_id,
-        org_name: roles
-            .as_ref()
-            .and_then(|roles| roles.organization_name.clone()),
-        subscription_type: token.subscription_type,
-    };
-    print_claude_browser_credentials(&credentials, false);
-    Ok(credentials.api_key)
+    match create_claude_browser_api_key(&client, &token.access_token).await {
+        Ok(api_key) => {
+            let credentials = ClaudeBrowserCredentials {
+                api_key,
+                email: token.display_email,
+                org_id: token.org_id,
+                org_name: roles
+                    .as_ref()
+                    .and_then(|roles| roles.organization_name.clone()),
+                subscription_type: token.subscription_type,
+            };
+            print_claude_browser_credentials(&credentials, false);
+            Ok(BrowserLoginResult::ApiKey(credentials.api_key))
+        }
+        Err(error) if should_fallback_to_claude_browser_oauth(&error.to_string()) => {
+            print_claude_browser_oauth_fallback(roles.as_ref());
+            Ok(BrowserLoginResult::OAuthToken(token))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn try_load_claude_browser_credentials() -> Result<Option<ClaudeBrowserCredentials>> {
@@ -9337,6 +9306,12 @@ async fn create_claude_browser_api_key(client: &Client, access_token: &str) -> R
         .ok_or_else(|| anyhow!("Claude browser login returned no managed API key"))
 }
 
+fn should_fallback_to_claude_browser_oauth(error: &str) -> bool {
+    let normalized = error.trim().to_ascii_lowercase();
+    normalized.contains("org:create_api_key")
+        && (normalized.contains("scope requirement") || normalized.contains("does not meet scope"))
+}
+
 async fn fetch_claude_browser_roles(
     client: &Client,
     access_token: &str,
@@ -9436,6 +9411,15 @@ fn print_claude_browser_credentials(credentials: &ClaudeBrowserCredentials, reus
         println!("Claude org: {org_name}");
     } else if let Some(org_id) = credentials.org_id.as_deref() {
         println!("Claude org id: {org_id}");
+    }
+}
+
+fn print_claude_browser_oauth_fallback(roles: Option<&ClaudeBrowserRolesResponse>) {
+    println!(
+        "Claude browser sign-in completed without managed API key scope; storing the OAuth session directly."
+    );
+    if let Some(org_name) = roles.and_then(|item| item.organization_name.as_deref()) {
+        println!("Claude org: {org_name}");
     }
 }
 
@@ -10522,6 +10506,50 @@ mod tests {
     }
 
     #[test]
+    fn openai_browser_authorization_url_uses_loopback_contract() {
+        let provider = ProviderConfig {
+            id: "openai-browser".to_string(),
+            display_name: "OpenAI Browser Session".to_string(),
+            kind: ProviderKind::ChatGptCodex,
+            base_url: DEFAULT_CHATGPT_CODEX_URL.to_string(),
+            auth_mode: AuthMode::OAuth,
+            default_model: None,
+            keychain_account: None,
+            oauth: Some(openai_browser_oauth_config()),
+            local: false,
+        };
+        let redirect_uri =
+            format!("http://localhost:{OPENAI_BROWSER_CALLBACK_PORT}{OPENAI_BROWSER_CALLBACK_PATH}");
+        let authorization_url = build_oauth_authorization_url(
+            &provider,
+            &redirect_uri,
+            "state-123",
+            &pkce_challenge("verifier-123"),
+        )
+        .expect("authorization URL should build");
+        let parsed = Url::parse(&authorization_url).expect("authorization URL should parse");
+        let query = parsed
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(parsed.host_str(), Some("auth.openai.com"));
+        assert_eq!(parsed.path(), "/oauth/authorize");
+        assert_eq!(
+            query.get("redirect_uri").map(String::as_str),
+            Some(redirect_uri.as_str())
+        );
+        assert_eq!(
+            query.get("scope").map(String::as_str),
+            Some("openid profile email offline_access api.connectors.read api.connectors.invoke")
+        );
+        assert_eq!(
+            query.get("originator").map(String::as_str),
+            Some(OPENAI_BROWSER_ORIGINATOR)
+        );
+    }
+
+    #[test]
     fn claude_browser_oauth_config_matches_packaged_claude_constants() {
         let config = claude_browser_oauth_config();
         assert_eq!(config.client_id, CLAUDE_BROWSER_CLIENT_ID);
@@ -10540,6 +10568,57 @@ mod tests {
             .extra_authorize_params
             .iter()
             .any(|param| param.key == "code" && param.value == "true"));
+    }
+
+    #[test]
+    fn claude_browser_authorization_url_uses_loopback_contract() {
+        let provider = ProviderConfig {
+            id: "claude-browser".to_string(),
+            display_name: "Claude Browser Session".to_string(),
+            kind: ProviderKind::Anthropic,
+            base_url: DEFAULT_ANTHROPIC_URL.to_string(),
+            auth_mode: AuthMode::OAuth,
+            default_model: None,
+            keychain_account: None,
+            oauth: Some(claude_browser_oauth_config()),
+            local: false,
+        };
+        let redirect_uri =
+            format!("http://localhost:{CLAUDE_BROWSER_CALLBACK_PORT}{CLAUDE_BROWSER_CALLBACK_PATH}");
+        let authorization_url = build_oauth_authorization_url(
+            &provider,
+            &redirect_uri,
+            "state-456",
+            &pkce_challenge("verifier-456"),
+        )
+        .expect("authorization URL should build");
+        let parsed = Url::parse(&authorization_url).expect("authorization URL should parse");
+        let query = parsed
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(parsed.host_str(), Some("claude.ai"));
+        assert_eq!(parsed.path(), "/oauth/authorize");
+        assert_eq!(
+            query.get("redirect_uri").map(String::as_str),
+            Some(redirect_uri.as_str())
+        );
+        assert_eq!(
+            query.get("scope").map(String::as_str),
+            Some("org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers")
+        );
+        assert_eq!(query.get("code").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn claude_scope_error_triggers_oauth_fallback() {
+        assert!(should_fallback_to_claude_browser_oauth(
+            "Claude browser API key mint failed: OAuth token does not meet scope requirement org:create_api_key"
+        ));
+        assert!(!should_fallback_to_claude_browser_oauth(
+            "Claude browser API key mint failed: service unavailable"
+        ));
     }
 
     #[test]
@@ -11172,6 +11251,7 @@ mod tests {
                 alias: "main".to_string(),
                 provider_id: "openai".to_string(),
                 model: "gpt-4.1".to_string(),
+                message_count: 0,
                 cwd: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),

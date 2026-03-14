@@ -1,8 +1,27 @@
 const state = {
   token: "",
+  dashboardSessionAuthenticated: false,
   autoRefresh: true,
   refreshTimer: null,
+  healthTimer: null,
   lastData: null,
+  activeChatSessionId: null,
+  activeTranscript: [],
+  editingProviderId: null,
+  editingConnectorKey: null,
+  providerAuthSessionId: null,
+  providerAuthKind: null,
+  providerAuthWindow: null,
+  providerAuthPollTimer: null,
+  providerAuthStatusMessage: "",
+  providerAuthStatusTone: "neutral",
+  providerAutoDefaults: null,
+  lazyObserver: null,
+  loadedPanels: new Set(),
+  renderCache: {},
+  refreshInFlight: null,
+  healthInFlight: null,
+  panelInFlight: {},
 };
 
 const elements = {
@@ -48,6 +67,29 @@ const elements = {
   eventsList: document.getElementById("events-list"),
   providersSummary: document.getElementById("providers-summary"),
   providersList: document.getElementById("providers-list"),
+  providerFormMode: document.getElementById("provider-form-mode"),
+  providerForm: document.getElementById("provider-form"),
+  providerPreset: document.getElementById("provider-preset"),
+  providerId: document.getElementById("provider-id"),
+  providerName: document.getElementById("provider-name"),
+  providerKind: document.getElementById("provider-kind"),
+  providerBaseUrl: document.getElementById("provider-base-url"),
+  providerAuthMode: document.getElementById("provider-auth-mode"),
+  providerDefaultModel: document.getElementById("provider-default-model"),
+  providerLocal: document.getElementById("provider-local"),
+  providerApiKey: document.getElementById("provider-api-key"),
+  providerOauthConfig: document.getElementById("provider-oauth-config"),
+  providerOauthToken: document.getElementById("provider-oauth-token"),
+  providerAliasName: document.getElementById("provider-alias-name"),
+  providerAliasModel: document.getElementById("provider-alias-model"),
+  providerAliasDescription: document.getElementById("provider-alias-description"),
+  providerSetMainRow: document.getElementById("provider-set-main-row"),
+  providerSetMain: document.getElementById("provider-set-main"),
+  providerBrowserAuth: document.getElementById("provider-browser-auth"),
+  providerBrowserAuthStatus: document.getElementById("provider-browser-auth-status"),
+  providerDiscoverModels: document.getElementById("provider-discover-models"),
+  providerReset: document.getElementById("provider-reset"),
+  providerModelResults: document.getElementById("provider-model-results"),
   aliasesList: document.getElementById("aliases-list"),
   aliasForm: document.getElementById("alias-form"),
   aliasName: document.getElementById("alias-name"),
@@ -67,17 +109,35 @@ const elements = {
   permissionPresetActions: document.getElementById("permission-preset-actions"),
   permissionsDetails: document.getElementById("permissions-details"),
   trustToggles: document.getElementById("trust-toggles"),
+  trustPathForm: document.getElementById("trust-path-form"),
+  trustPathInput: document.getElementById("trust-path-input"),
+  trustPaths: document.getElementById("trust-paths"),
+  delegationForm: document.getElementById("delegation-form"),
+  delegationMaxDepth: document.getElementById("delegation-max-depth"),
+  delegationMaxParallel: document.getElementById("delegation-max-parallel"),
+  delegationDisabledProviders: document.getElementById("delegation-disabled-providers"),
   connectorAddForm: document.getElementById("connector-add-form"),
   connectorAddType: document.getElementById("connector-add-type"),
   connectorAddName: document.getElementById("connector-add-name"),
   connectorAddId: document.getElementById("connector-add-id"),
+  connectorAddDescription: document.getElementById("connector-add-description"),
+  connectorAddAlias: document.getElementById("connector-add-alias"),
+  connectorAddModel: document.getElementById("connector-add-model"),
+  connectorAddCwd: document.getElementById("connector-add-cwd"),
+  connectorAddEnabled: document.getElementById("connector-add-enabled"),
   connectorAddFields: document.getElementById("connector-add-fields"),
+  connectorReset: document.getElementById("connector-reset"),
   runTaskForm: document.getElementById("run-task-form"),
   runTaskPrompt: document.getElementById("run-task-prompt"),
   runTaskAlias: document.getElementById("run-task-alias"),
   runTaskModel: document.getElementById("run-task-model"),
   runTaskThinking: document.getElementById("run-task-thinking"),
+  runTaskPermission: document.getElementById("run-task-permission"),
   runTaskResult: document.getElementById("run-task-result"),
+  chatSessionMeta: document.getElementById("chat-session-meta"),
+  chatTranscript: document.getElementById("chat-transcript"),
+  chatNewSession: document.getElementById("chat-new-session"),
+  chatRenameButton: document.getElementById("chat-rename-button"),
   sessionsSummary: document.getElementById("sessions-summary"),
   sessionsBody: document.getElementById("sessions-body"),
   sessionDetail: document.getElementById("session-detail"),
@@ -100,9 +160,18 @@ function bearerHeaders() {
   return state.token ? { Authorization: `Bearer ${state.token}` } : {};
 }
 
+function hasDashboardAuth() {
+  return state.dashboardSessionAuthenticated || !!state.token;
+}
+
+function isUnauthorizedError(error) {
+  return error?.status === 401 || String(error?.message || "").startsWith("401 ");
+}
+
 async function apiRequest(path, options = {}) {
   const response = await fetch(path, {
     ...options,
+    credentials: "same-origin",
     headers: {
       ...(options.headers || {}),
       ...bearerHeaders(),
@@ -110,7 +179,11 @@ async function apiRequest(path, options = {}) {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
+    const error = new Error(
+      `${response.status} ${response.statusText}${text ? `: ${text}` : ""}`
+    );
+    error.status = response.status;
+    throw error;
   }
   if (response.status === 204) {
     return null;
@@ -144,6 +217,478 @@ function apiPut(path, payload) {
 
 function apiDelete(path) {
   return apiRequest(path, { method: "DELETE" });
+}
+
+async function createDashboardSession(token) {
+  const trimmed = token.trim();
+  if (!trimmed) {
+    throw new Error("A daemon token is required.");
+  }
+  const response = await fetch("/auth/dashboard/session", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: trimmed }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    const error = new Error(
+      `${response.status} ${response.statusText}${text ? `: ${text}` : ""}`
+    );
+    error.status = response.status;
+    throw error;
+  }
+  state.dashboardSessionAuthenticated = true;
+  state.token = "";
+  elements.tokenInput.value = "";
+}
+
+async function clearDashboardSession() {
+  await fetch("/auth/dashboard/session", {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  state.dashboardSessionAuthenticated = false;
+}
+
+const providerPresets = {
+  codex: {
+    id: "codex",
+    name: "ChatGPT Codex",
+    kind: "chat_gpt_codex",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    authMode: "oauth",
+    defaultModel: "gpt-5-codex",
+    local: false,
+    browserAuthKind: "codex",
+    browserAuthLabel: "Codex",
+  },
+  openai: {
+    id: "openai",
+    name: "OpenAI",
+    kind: "open_ai_compatible",
+    baseUrl: "https://api.openai.com/v1",
+    authMode: "api_key",
+    defaultModel: "gpt-5",
+    local: false,
+  },
+  anthropic: {
+    id: "anthropic",
+    name: "Claude",
+    kind: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    authMode: "api_key",
+    defaultModel: "claude-sonnet-4-20250514",
+    local: false,
+    browserAuthKind: "claude",
+    browserAuthLabel: "Claude",
+  },
+  openrouter: {
+    id: "openrouter",
+    name: "OpenRouter",
+    kind: "open_ai_compatible",
+    baseUrl: "https://openrouter.ai/api/v1",
+    authMode: "api_key",
+    defaultModel: "openai/gpt-4.1",
+    local: false,
+  },
+  moonshot: {
+    id: "moonshot",
+    name: "Moonshot",
+    kind: "open_ai_compatible",
+    baseUrl: "https://api.moonshot.ai/v1",
+    authMode: "api_key",
+    defaultModel: "kimi-k2",
+    local: false,
+  },
+  venice: {
+    id: "venice",
+    name: "Venice AI",
+    kind: "open_ai_compatible",
+    baseUrl: "https://api.venice.ai/api/v1",
+    authMode: "api_key",
+    defaultModel: "venice-large",
+    local: false,
+  },
+  ollama: {
+    id: "ollama-local",
+    name: "Ollama",
+    kind: "ollama",
+    baseUrl: "http://127.0.0.1:11434",
+    authMode: "none",
+    defaultModel: null,
+    local: true,
+  },
+  custom: {
+    id: "",
+    name: "",
+    kind: "open_ai_compatible",
+    baseUrl: "",
+    authMode: "api_key",
+    defaultModel: null,
+    local: false,
+  },
+};
+
+function trimToNull(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed ? trimmed : null;
+}
+
+function providerBrowserAuthLabel(kind) {
+  return kind === "claude" ? "Claude" : "Codex";
+}
+
+function suggestedProviderDefaultModel(kind, baseUrl) {
+  const normalizedBaseUrl = String(baseUrl ?? "").trim();
+  if (kind === "chat_gpt_codex") {
+    return "gpt-5-codex";
+  }
+  if (kind === "anthropic") {
+    return "claude-sonnet-4-20250514";
+  }
+  if (kind === "open_ai_compatible") {
+    if (normalizedBaseUrl === "https://api.openai.com/v1") {
+      return "gpt-5";
+    }
+    if (normalizedBaseUrl === "https://openrouter.ai/api/v1") {
+      return "openai/gpt-4.1";
+    }
+    if (normalizedBaseUrl === "https://api.moonshot.ai/v1") {
+      return "kimi-k2";
+    }
+    if (normalizedBaseUrl === "https://api.venice.ai/api/v1") {
+      return "venice-large";
+    }
+  }
+  return null;
+}
+
+function resolveProviderDefaultModel() {
+  return (
+    trimToNull(elements.providerDefaultModel.value) ||
+    suggestedProviderDefaultModel(elements.providerKind.value, elements.providerBaseUrl.value)
+  );
+}
+
+function applySuggestedProviderModelDefaults() {
+  const suggestedModel = resolveProviderDefaultModel();
+  if (suggestedModel && !trimToNull(elements.providerDefaultModel.value)) {
+    elements.providerDefaultModel.value = suggestedModel;
+  }
+  if (
+    suggestedModel &&
+    trimToNull(elements.providerAliasName.value) &&
+    !trimToNull(elements.providerAliasModel.value)
+  ) {
+    elements.providerAliasModel.value = suggestedModel;
+  }
+  return suggestedModel;
+}
+
+function isProviderCreateMode() {
+  return !state.editingProviderId;
+}
+
+function syncProviderModeUi() {
+  const createMode = isProviderCreateMode();
+  elements.providerFormMode.textContent = createMode
+    ? "Create a new provider without replacing existing logged-in providers or aliases."
+    : `Editing provider ${state.editingProviderId}`;
+  elements.providerReset.textContent = createMode ? "Reset" : "Create new";
+  if (elements.providerSetMainRow) {
+    elements.providerSetMainRow.hidden = createMode;
+  }
+  if (createMode) {
+    elements.providerSetMain.checked = false;
+  }
+}
+
+function providerSuggestionRequest() {
+  const preset = providerPresets[elements.providerPreset.value] || providerPresets.custom;
+  return {
+    preferred_provider_id:
+      trimToNull(elements.providerId.value) || preset.id || "provider",
+    preferred_alias_name: trimToNull(elements.providerAliasName.value),
+    default_model: resolveProviderDefaultModel(),
+    editing_provider_id: state.editingProviderId || null,
+    editing_alias_name: state.editingProviderId ? trimToNull(elements.providerAliasName.value) : null,
+  };
+}
+
+function applyProviderSuggestions(suggestions) {
+  const previous = state.providerAutoDefaults;
+  state.providerAutoDefaults = suggestions;
+  if (!isProviderCreateMode()) {
+    return;
+  }
+
+  const currentProviderId = trimToNull(elements.providerId.value);
+  if (!currentProviderId || (previous && currentProviderId === previous.provider_id)) {
+    elements.providerId.value = suggestions.provider_id || "";
+  }
+
+  const currentAliasName = trimToNull(elements.providerAliasName.value);
+  const previousAliasName = previous?.alias_name || null;
+  if (!currentAliasName || currentAliasName === previousAliasName) {
+    elements.providerAliasName.value = suggestions.alias_name || "";
+  }
+
+  const currentAliasModel = trimToNull(elements.providerAliasModel.value);
+  const previousAliasModel = previous?.alias_model || null;
+  if (!currentAliasModel || currentAliasModel === previousAliasModel) {
+    elements.providerAliasModel.value = suggestions.alias_model || "";
+  }
+}
+
+async function refreshProviderCreateSuggestions() {
+  if (!isProviderCreateMode()) {
+    state.providerAutoDefaults = null;
+    syncProviderModeUi();
+    return null;
+  }
+  if (!hasDashboardAuth()) {
+    state.providerAutoDefaults = null;
+    syncProviderModeUi();
+    return null;
+  }
+  const suggestions = await apiPost("/v1/providers/suggest", providerSuggestionRequest());
+  applyProviderSuggestions(suggestions);
+  syncProviderModeUi();
+  return suggestions;
+}
+
+async function resolveProviderFormSubmission() {
+  const createMode = isProviderCreateMode();
+  const requestedProviderId = trimToNull(elements.providerId.value);
+  const requestedAliasName = trimToNull(elements.providerAliasName.value);
+  let defaultModel = applySuggestedProviderModelDefaults();
+  let providerId = requestedProviderId;
+  let aliasName = requestedAliasName;
+  let aliasModel = trimToNull(elements.providerAliasModel.value) || (aliasName ? defaultModel : null);
+  const displayName = trimToNull(elements.providerName.value);
+
+  if (createMode) {
+    const suggestions = await apiPost("/v1/providers/suggest", providerSuggestionRequest());
+    applyProviderSuggestions(suggestions);
+    providerId = suggestions.provider_id;
+    aliasName = suggestions.alias_name;
+    aliasModel = suggestions.alias_model;
+    defaultModel = suggestions.alias_model || defaultModel;
+
+    const providerAdjusted =
+      requestedProviderId !== providerId;
+    const aliasAdjusted =
+      (requestedAliasName || null) !== aliasName;
+    if (providerAdjusted || aliasAdjusted) {
+      setStatus(
+        `Using safe multi-provider defaults for ${displayName || providerId}.`,
+        "neutral"
+      );
+    }
+  }
+
+  if (!providerId || !displayName) {
+    throw new Error("Provider ID and display name are required.");
+  }
+  if (aliasName && !aliasModel) {
+    throw new Error("Set a default model or alias model before creating an alias.");
+  }
+
+  let setAsMain = false;
+  if (aliasName) {
+    if (createMode) {
+      setAsMain = window.confirm(`Make '${aliasName}' the default alias?`);
+    } else {
+      setAsMain = elements.providerSetMain.checked;
+    }
+  }
+
+  return {
+    providerId,
+    displayName,
+    defaultModel,
+    aliasName,
+    aliasModel,
+    setAsMain,
+  };
+}
+
+function currentProviderBrowserAuthDescriptor() {
+  const preset = providerPresets[elements.providerPreset.value] || providerPresets.custom;
+  if (!state.editingProviderId && preset.browserAuthKind) {
+    return {
+      kind: preset.browserAuthKind,
+      label: preset.browserAuthLabel || providerBrowserAuthLabel(preset.browserAuthKind),
+    };
+  }
+  if (elements.providerKind.value === "chat_gpt_codex") {
+    return { kind: "codex", label: "Codex" };
+  }
+  if (elements.providerKind.value === "anthropic") {
+    return { kind: "claude", label: "Claude" };
+  }
+  return null;
+}
+
+function renderProviderBrowserAuthState() {
+  const descriptor = currentProviderBrowserAuthDescriptor();
+  const activeKind = state.providerAuthKind || descriptor?.kind || null;
+  const activeLabel = activeKind ? providerBrowserAuthLabel(activeKind) : "browser";
+  const isPending = !!state.providerAuthSessionId;
+  elements.providerBrowserAuth.textContent = isPending
+    ? `Waiting for ${activeLabel}...`
+    : descriptor
+      ? `Sign in with ${descriptor.label}`
+      : "Sign in with browser";
+  elements.providerBrowserAuth.disabled = !hasDashboardAuth() || isPending || !descriptor;
+  const fallbackMessage = descriptor
+    ? `${descriptor.label} browser sign-in will save credentials directly into this provider.`
+    : "Browser sign-in is available for ChatGPT Codex and Claude providers.";
+  elements.providerBrowserAuthStatus.textContent =
+    state.providerAuthStatusMessage || fallbackMessage;
+  elements.providerBrowserAuthStatus.dataset.tone =
+    state.providerAuthStatusTone || "neutral";
+}
+
+function setProviderBrowserAuthStatus(message, tone = "neutral") {
+  state.providerAuthStatusMessage = message;
+  state.providerAuthStatusTone = tone;
+  renderProviderBrowserAuthState();
+}
+
+function clearProviderBrowserAuthPolling() {
+  if (state.providerAuthPollTimer) {
+    clearInterval(state.providerAuthPollTimer);
+    state.providerAuthPollTimer = null;
+  }
+}
+
+async function pollProviderBrowserAuthSession(sessionId, { refresh = true } = {}) {
+  const session = await apiGet(`/v1/provider-auth/${encodeURIComponent(sessionId)}`);
+  if (state.providerAuthSessionId && state.providerAuthSessionId !== sessionId) {
+    return session;
+  }
+  if (session.status === "pending") {
+    const label = providerBrowserAuthLabel(session.kind);
+    setProviderBrowserAuthStatus(
+      `Continue the ${label} sign-in flow in the popup window.`,
+      "neutral"
+    );
+    return session;
+  }
+
+  clearProviderBrowserAuthPolling();
+  state.providerAuthSessionId = null;
+  state.providerAuthKind = null;
+  state.providerAuthWindow = null;
+  if (session.status === "completed") {
+    elements.providerApiKey.value = "";
+    elements.providerOauthToken.value = "";
+    state.editingProviderId = session.provider_id;
+    setProviderBrowserAuthStatus(
+      `${providerBrowserAuthLabel(session.kind)} credentials saved for ${session.provider_id}.`,
+      "ok"
+    );
+    if (refresh) {
+      await refreshDashboard({ includeLoadedPanels: false });
+      try {
+        populateProviderForm(session.provider_id);
+      } catch (_) {
+      }
+    }
+  } else {
+    setProviderBrowserAuthStatus(
+      session.error || `${providerBrowserAuthLabel(session.kind)} sign-in failed.`,
+      "warn"
+    );
+  }
+  renderProviderBrowserAuthState();
+  return session;
+}
+
+function startProviderBrowserAuthPolling(sessionId) {
+  clearProviderBrowserAuthPolling();
+  state.providerAuthPollTimer = window.setInterval(() => {
+    pollProviderBrowserAuthSession(sessionId, { refresh: true }).catch((error) => {
+      setProviderBrowserAuthStatus(`Browser sign-in check failed: ${error.message}`, "warn");
+      clearProviderBrowserAuthPolling();
+      state.providerAuthSessionId = null;
+      state.providerAuthKind = null;
+      state.providerAuthWindow = null;
+      renderProviderBrowserAuthState();
+    });
+  }, 1500);
+}
+
+async function startProviderBrowserAuth() {
+  const descriptor = currentProviderBrowserAuthDescriptor();
+  if (!descriptor) {
+    throw new Error("Browser sign-in is only available for Claude and Codex providers.");
+  }
+  const submission = await resolveProviderFormSubmission();
+  const { providerId, displayName, defaultModel, aliasName, aliasModel, setAsMain } = submission;
+
+  const popup = window.open(
+    "",
+    `provider-auth-${Date.now()}`,
+    "popup=yes,width=720,height=840"
+  );
+  if (!popup) {
+    throw new Error("The browser blocked the sign-in popup.");
+  }
+  popup.document.title = `Starting ${descriptor.label} sign-in`;
+  popup.document.body.innerHTML =
+    "<main style=\"font-family:sans-serif;max-width:560px;margin:48px auto;padding:0 16px;\"><h1>Starting sign-in...</h1><p>The daemon is preparing the provider authorization flow.</p></main>";
+
+  setProviderBrowserAuthStatus(`Starting ${descriptor.label} browser sign-in...`, "neutral");
+  try {
+    const response = await apiPost("/v1/provider-auth/start", {
+      kind: descriptor.kind,
+      provider_id: providerId,
+      display_name: displayName,
+      default_model: defaultModel,
+      alias_name: aliasName,
+      alias_model: aliasModel,
+      alias_description: trimToNull(elements.providerAliasDescription.value),
+      set_as_main: setAsMain,
+    });
+    if (response.status === "completed") {
+      popup.close();
+      state.providerAuthSessionId = null;
+      state.providerAuthKind = null;
+      state.providerAuthWindow = null;
+      setProviderBrowserAuthStatus(
+        `${descriptor.label} credentials saved for ${providerId}.`,
+        "ok"
+      );
+      await refreshDashboard({ includeLoadedPanels: false });
+      populateProviderForm(providerId);
+      return;
+    }
+    if (!response.authorization_url) {
+      popup.close();
+      throw new Error("The daemon did not return an authorization URL.");
+    }
+    state.providerAuthSessionId = response.session_id;
+    state.providerAuthKind = descriptor.kind;
+    state.providerAuthWindow = popup;
+    popup.location.replace(response.authorization_url);
+    setProviderBrowserAuthStatus(
+      `Continue the ${descriptor.label} sign-in flow in the popup window.`,
+      "neutral"
+    );
+    renderProviderBrowserAuthState();
+    startProviderBrowserAuthPolling(response.session_id);
+  } catch (error) {
+    popup.close();
+    clearProviderBrowserAuthPolling();
+    state.providerAuthSessionId = null;
+    state.providerAuthKind = null;
+    state.providerAuthWindow = null;
+    setProviderBrowserAuthStatus(`Browser sign-in failed: ${error.message}`, "warn");
+    throw error;
+  }
 }
 
 function escapeHtml(value) {
@@ -181,6 +726,36 @@ function fmtBoolean(value) {
   return value ? "yes" : "no";
 }
 
+function parseDelimitedList(value, mapper = (item) => item) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map(mapper);
+}
+
+function parseLimitInput(value, fallback) {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized === "unlimited") {
+    return { mode: "unlimited" };
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw new Error("Delegation limits must be a positive integer or 'unlimited'.");
+  }
+  return { mode: "limited", value: parsed };
+}
+
+function displayLimit(limit) {
+  if (!limit) {
+    return "-";
+  }
+  return limit.mode === "unlimited" ? "unlimited" : fmt(limit.value);
+}
+
 function setStatus(text, tone = "neutral") {
   elements.connectionStatus.textContent = text;
   elements.connectionStatus.dataset.tone = tone;
@@ -205,7 +780,42 @@ function renderEmpty(message) {
   return `<div class="empty-state">${escapeHtml(message)}</div>`;
 }
 
-function renderStatus(status, health) {
+function stableKey(value) {
+  return JSON.stringify(value, (_key, current) => (current === undefined ? null : current));
+}
+
+function renderWhenChanged(key, value, render) {
+  const next = stableKey(value);
+  if (state.renderCache[key] === next) {
+    return false;
+  }
+  state.renderCache[key] = next;
+  render();
+  return true;
+}
+
+function mergeLastData(patch) {
+  state.lastData = {
+    ...(state.lastData || {}),
+    ...patch,
+  };
+  return state.lastData;
+}
+
+function panelElement(panelId) {
+  return document.getElementById(panelId);
+}
+
+function isPanelNearViewport(panelId) {
+  const panel = panelElement(panelId);
+  if (!panel) {
+    return false;
+  }
+  const rect = panel.getBoundingClientRect();
+  return rect.top <= window.innerHeight * 1.2 && rect.bottom >= -window.innerHeight * 0.2;
+}
+
+function renderStatus(status) {
   const cards = [
     ["Providers", status.providers, `${status.aliases} aliases configured`],
     [
@@ -234,8 +844,9 @@ function renderStatus(status, health) {
         status.home_assistant_connectors +
         status.webhook_connectors +
         status.inbox_connectors +
-        (status.gmail_connectors || 0),
-      "telegram, discord, slack, signal, home assistant, webhook, inbox, gmail",
+        (status.gmail_connectors || 0) +
+        (status.brave_connectors || 0),
+      "telegram, discord, slack, signal, home assistant, webhook, inbox, gmail, brave",
     ],
   ];
   elements.statusCards.innerHTML = cards
@@ -286,11 +897,24 @@ function renderStatus(status, health) {
     heroChip(`Skills: ${status.skill_drafts}/${status.published_skills} published`),
     heroChip(`Approvals: ${status.pending_connector_approvals}`),
   ].join("");
+}
+
+function renderHealth(status, health) {
+  if (!health) {
+    elements.healthSummary.innerHTML = [
+      heroChip("Health checks pending"),
+      heroChip(`Config ${fmt(status?.persistence_mode)}`),
+    ].join("");
+    elements.providerHealth.innerHTML = renderEmpty(
+      "Provider health checks run on a slower background cadence."
+    );
+    return;
+  }
 
   elements.healthSummary.innerHTML = [
     heroChip(`Daemon ${health.daemon_running ? "running" : "down"}`),
     heroChip(`Keyring ${health.keyring_ok ? "ok" : "issue"}`),
-    heroChip(`Config ${status.persistence_mode}`),
+    heroChip(`Config ${fmt(status?.persistence_mode)}`),
   ].join("");
 
   elements.providerHealth.innerHTML = health.providers.length
@@ -528,6 +1152,7 @@ function renderProfile(profileMemories) {
 
 function connectorRow(kind, connector, target, detail, pollable, path) {
   const actions = [
+    buttonHtml("Edit", { connectorEdit: `${kind}:${connector.id}` }, "button-ghost"),
     buttonHtml(
       connector.enabled ? "Disable" : "Enable",
       { connectorToggle: `${kind}:${connector.id}` },
@@ -565,9 +1190,11 @@ function renderConnectors(
   homeAssistants,
   webhooks,
   inboxes,
-  gmails
+  gmails,
+  braves
 ) {
   gmails = gmails || [];
+  braves = braves || [];
   const cards = [
     ["Telegram", status.telegram_connectors],
     ["Discord", status.discord_connectors],
@@ -577,6 +1204,7 @@ function renderConnectors(
     ["Webhooks", status.webhook_connectors],
     ["Inboxes", status.inbox_connectors],
     ["Gmail", gmails.length],
+    ["Brave", braves.length],
   ];
   elements.connectorCards.innerHTML = cards
     .map(
@@ -671,6 +1299,16 @@ function renderConnectors(
         connector.cwd || connector.credentials_path || "-"
       )
     ),
+    ...braves.map((connector) =>
+      connectorRow(
+        "brave",
+        connector,
+        "web/news/images/local",
+        connector.requested_model || connector.alias || "online search",
+        false,
+        connector.cwd || "Brave Search API"
+      )
+    ),
   ];
   elements.connectorSummary.textContent = `${rows.length} connector entry/entries loaded`;
   elements.connectorsBody.innerHTML = rows.length
@@ -723,6 +1361,7 @@ function renderEvents(events) {
 
 function renderProviders(providers, aliases) {
   elements.providersSummary.textContent = `${providers.length} provider(s), ${aliases.length} alias(es)`;
+  const mainAlias = state.lastData?.status?.main_agent_alias || null;
   elements.providersList.innerHTML = providers.length
     ? providers
         .map(
@@ -731,14 +1370,22 @@ function renderProviders(providers, aliases) {
               <div class="card-title-row">
                 <div>
                   <h4>${escapeHtml(provider.id)}</h4>
-                  <p class="card-subtitle">${escapeHtml(provider.kind || provider.provider_kind || "-")}</p>
+                  <p class="card-subtitle">${escapeHtml(provider.display_name || provider.id)} · ${escapeHtml(provider.kind || "-")}</p>
                 </div>
                 ${badge(provider.auth_mode || "unknown", "info")}
               </div>
               <ul class="micro-list">
                 <li>base_url: ${escapeHtml(fmt(provider.base_url))}</li>
-                <li>keychain: ${escapeHtml(fmt(provider.keychain_entry || provider.keychain_ok))}</li>
+                <li>default_model: ${escapeHtml(fmt(provider.default_model))}</li>
+                <li>local: ${escapeHtml(fmtBoolean(provider.local))}</li>
+                <li>keychain: ${escapeHtml(fmt(provider.keychain_account))}</li>
               </ul>
+              <div class="inline-actions">
+                ${buttonHtml("Edit", { providerEdit: provider.id }, "button-ghost")}
+                ${buttonHtml("Models", { providerModels: provider.id }, "button-muted")}
+                ${buttonHtml("Clear creds", { providerClearCreds: provider.id }, "button-small--ghost")}
+                ${buttonHtml("Delete", { providerDelete: provider.id }, "button-small--ghost")}
+              </div>
             </article>
           `
         )
@@ -754,9 +1401,14 @@ function renderProviders(providers, aliases) {
                   <h4>${escapeHtml(alias.alias || alias.name || alias.id)}</h4>
                   <p class="card-subtitle">${escapeHtml(alias.provider_id || "-")} / ${escapeHtml(alias.model || "-")}</p>
                 </div>
-                ${alias.main || alias.is_main ? badge("main", "good") : ""}
+                ${mainAlias === alias.alias ? badge("main", "good") : ""}
               </div>
               ${alias.description ? `<p class="card-copy">${escapeHtml(alias.description)}</p>` : ""}
+              <div class="inline-actions">
+                ${buttonHtml("Edit", { aliasEdit: alias.alias }, "button-ghost")}
+                ${mainAlias === alias.alias ? "" : buttonHtml("Set main", { aliasMakeMain: alias.alias }, "button-muted")}
+                ${buttonHtml("Delete", { aliasDelete: alias.alias }, "button-small--ghost")}
+              </div>
             </article>
           `
         )
@@ -765,17 +1417,23 @@ function renderProviders(providers, aliases) {
 }
 
 function renderPermissions(permissions) {
-  const preset = permissions.preset || permissions.mode || "unknown";
+  const preset = typeof permissions === "string" ? permissions : permissions?.preset || permissions?.mode || "unknown";
   elements.permissionsSummary.textContent = `Preset: ${preset}`;
-  const presets = ["Suggest", "AutoEdit", "FullAuto"];
+  const presets = [
+    ["Suggest", "suggest"],
+    ["AutoEdit", "auto_edit"],
+    ["FullAuto", "full_auto"],
+  ];
   elements.permissionPresetActions.innerHTML = presets
-    .map((p) =>
-      buttonHtml(p, { permissionPreset: p.toLowerCase() }, preset.toLowerCase() === p.toLowerCase() ? "" : "button-ghost")
+    .map(([label, value]) =>
+      buttonHtml(label, { permissionPreset: value }, preset.toLowerCase() === value ? "" : "button-ghost")
     )
     .join("");
-  const details = Object.entries(permissions)
-    .filter(([key]) => key !== "preset" && key !== "mode")
-    .slice(0, 10);
+  const details = typeof permissions === "string"
+    ? []
+    : Object.entries(permissions || {})
+        .filter(([key]) => key !== "preset" && key !== "mode")
+        .slice(0, 10);
   elements.permissionsDetails.innerHTML = details.length
     ? details
         .map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(fmt(typeof value === "boolean" ? fmtBoolean(value) : value))}</dd>`)
@@ -795,6 +1453,19 @@ function renderTrust(trust) {
       `
     )
     .join("");
+  elements.trustPaths.innerHTML = Array.isArray(trust.trusted_paths) && trust.trusted_paths.length
+    ? trust.trusted_paths
+        .map(
+          (path) => `
+            <article class="stack-card">
+              <div class="card-title-row">
+                <div><h4>${escapeHtml(path)}</h4></div>
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No trusted paths configured.");
 }
 
 function renderLogs(logs) {
@@ -834,7 +1505,7 @@ function renderSessions(sessions) {
               <td>${escapeHtml(fmt(session.message_count))}</td>
               <td>${escapeHtml(fmtDate(session.created_at))}</td>
               <td>${escapeHtml(fmtDate(session.updated_at))}</td>
-              <td><div class="inline-actions">${buttonHtml("View", { sessionView: session.id }, "button-ghost")}</div></td>
+              <td><div class="inline-actions">${buttonHtml("Chat", { sessionUse: session.id }, "button-muted")}${buttonHtml("View", { sessionView: session.id }, "button-ghost")}${buttonHtml("Rename", { sessionRename: session.id }, "button-small--ghost")}</div></td>
             </tr>
           `
         )
@@ -885,120 +1556,390 @@ function renderDaemonConfig(status) {
   ].join("");
 }
 
-async function refreshDashboard() {
-  if (!state.token) {
+function updateDelegationFormInputs(delegationConfig, fallbackDelegation) {
+  if (document.activeElement !== elements.delegationMaxDepth) {
+    elements.delegationMaxDepth.value = displayLimit(
+      delegationConfig.max_depth || fallbackDelegation?.max_depth
+    );
+  }
+  if (document.activeElement !== elements.delegationMaxParallel) {
+    elements.delegationMaxParallel.value = displayLimit(
+      delegationConfig.max_parallel_subagents || fallbackDelegation?.max_parallel_subagents
+    );
+  }
+  if (document.activeElement !== elements.delegationDisabledProviders) {
+    elements.delegationDisabledProviders.value = (delegationConfig.disabled_provider_ids || []).join(", ");
+  }
+}
+
+function normalizeBootstrapData(payload) {
+  return {
+    status: payload.status,
+    providers: payload.providers || [],
+    aliases: payload.aliases || [],
+    delegationTargets: payload.delegation_targets || [],
+    telegrams: payload.telegram_connectors || [],
+    discords: payload.discord_connectors || [],
+    slacks: payload.slack_connectors || [],
+    signals: payload.signal_connectors || [],
+    homeAssistants: payload.home_assistant_connectors || [],
+    webhooks: payload.webhook_connectors || [],
+    inboxes: payload.inbox_connectors || [],
+    gmails: payload.gmail_connectors || [],
+    braves: payload.brave_connectors || [],
+    sessions: payload.sessions || [],
+    events: payload.events || [],
+    permissions: payload.permissions || "unknown",
+    trust: payload.trust || { trusted_paths: [] },
+    delegationConfig: payload.delegation_config || {},
+  };
+}
+
+function renderBootstrapData(data) {
+  renderWhenChanged("status", data.status, () => renderStatus(data.status));
+  renderWhenChanged(
+    "health",
+    { status: data.status?.persistence_mode, health: state.lastData?.health || null },
+    () => renderHealth(data.status, state.lastData?.health || null)
+  );
+  renderWhenChanged(
+    "autopilot",
+    {
+      autonomy: data.status?.autonomy,
+      autopilot: data.status?.autopilot,
+      evolve: data.status?.evolve,
+    },
+    () => renderAutopilot(data.status)
+  );
+  renderWhenChanged(
+    "connectors",
+    {
+      status: data.status,
+      telegrams: data.telegrams,
+      discords: data.discords,
+      slacks: data.slacks,
+      signals: data.signals,
+      homeAssistants: data.homeAssistants,
+      webhooks: data.webhooks,
+      inboxes: data.inboxes,
+      gmails: data.gmails,
+      braves: data.braves,
+    },
+    () =>
+      renderConnectors(
+        data.status,
+        data.telegrams,
+        data.discords,
+        data.slacks,
+        data.signals,
+        data.homeAssistants,
+        data.webhooks,
+        data.inboxes,
+        data.gmails,
+        data.braves
+      )
+  );
+  renderWhenChanged("delegation", data.delegationTargets, () => renderDelegation(data.delegationTargets));
+  renderWhenChanged("events", data.events, () => renderEvents(data.events));
+  renderWhenChanged(
+    "providers",
+    { providers: data.providers, aliases: data.aliases, mainAlias: data.status?.main_agent_alias },
+    () => renderProviders(data.providers, data.aliases)
+  );
+  renderWhenChanged("permissions", data.permissions, () => renderPermissions(data.permissions));
+  renderWhenChanged("trust", data.trust, () => renderTrust(data.trust));
+  renderWhenChanged("sessions", data.sessions, () => renderSessions(data.sessions));
+  renderWhenChanged(
+    "daemon-config",
+    { persistence: data.status?.persistence_mode, autoStart: data.status?.auto_start },
+    () => renderDaemonConfig(data.status)
+  );
+  updateDelegationFormInputs(data.delegationConfig, data.status?.delegation);
+}
+
+async function loadMissionsPanel() {
+  const missions = await apiGet("/v1/missions?limit=25");
+  mergeLastData({ missions });
+  renderWhenChanged("missions", missions, () => renderMissions(missions));
+  return missions;
+}
+
+async function loadApprovalsPanel() {
+  const approvals = await apiGet("/v1/connector-approvals?status=pending&limit=25");
+  mergeLastData({ approvals });
+  renderWhenChanged("approvals", approvals, () => renderApprovals(approvals));
+  return approvals;
+}
+
+async function loadMemoryReviewPanel() {
+  const memoryReview = await apiGet("/v1/memory/review?limit=25");
+  mergeLastData({ memoryReview });
+  renderWhenChanged("memory", memoryReview, () => renderMemory(memoryReview));
+  return memoryReview;
+}
+
+async function loadProfilePanel() {
+  const profileMemories = await apiGet("/v1/memory/profile");
+  mergeLastData({ profileMemories });
+  renderWhenChanged("profile", profileMemories, () => renderProfile(profileMemories));
+  return profileMemories;
+}
+
+async function loadSkillsPanel() {
+  const skillDrafts = await apiGet("/v1/skills/drafts");
+  mergeLastData({ skillDrafts });
+  renderWhenChanged("skills", skillDrafts, () => renderSkills(skillDrafts));
+  return skillDrafts;
+}
+
+async function loadLogsPanel() {
+  const logs = await apiGet("/v1/logs?limit=100").catch(() => []);
+  mergeLastData({ logs });
+  renderWhenChanged("logs", logs, () => renderLogs(logs));
+  return logs;
+}
+
+async function loadMcpPanel() {
+  const mcpServers = await apiGet("/v1/mcp").catch(() => []);
+  mergeLastData({ mcpServers });
+  renderWhenChanged("mcp", mcpServers, () => renderMcpServers(mcpServers));
+  return mcpServers;
+}
+
+const lazyPanelLoaders = {
+  missions: loadMissionsPanel,
+  approvals: loadApprovalsPanel,
+  memory: loadMemoryReviewPanel,
+  skills: loadSkillsPanel,
+  profile: loadProfilePanel,
+  logs: loadLogsPanel,
+  mcp: loadMcpPanel,
+};
+
+async function ensurePanelLoaded(panelId, { force = false } = {}) {
+  if (panelId === "sessions") {
+    state.loadedPanels.add(panelId);
+    renderActiveSessionDetail();
+    return null;
+  }
+
+  const loader = lazyPanelLoaders[panelId];
+  if (!loader || !hasDashboardAuth()) {
+    return null;
+  }
+  if (!force && state.loadedPanels.has(panelId)) {
+    return null;
+  }
+  if (state.panelInFlight[panelId]) {
+    return state.panelInFlight[panelId];
+  }
+
+  const request = loader()
+    .then((result) => {
+      state.loadedPanels.add(panelId);
+      return result;
+    })
+    .finally(() => {
+      delete state.panelInFlight[panelId];
+    });
+  state.panelInFlight[panelId] = request;
+  return request;
+}
+
+async function refreshLoadedPanels(forcePanels = []) {
+  const panels = [...new Set([...Array.from(state.loadedPanels), ...forcePanels])]
+    .filter((panelId) => panelId === "sessions" || lazyPanelLoaders[panelId]);
+  if (!panels.length) {
+    return;
+  }
+  await Promise.all(panels.map((panelId) => ensurePanelLoaded(panelId, { force: true })));
+}
+
+async function refreshHealth({ silent = false } = {}) {
+  if (!hasDashboardAuth()) {
+    return null;
+  }
+  if (state.healthInFlight) {
+    return state.healthInFlight;
+  }
+  state.healthInFlight = (async () => {
+    const health = await apiGet("/v1/doctor");
+    mergeLastData({ health });
+    renderWhenChanged(
+      "health",
+      { status: state.lastData?.status?.persistence_mode, health },
+      () => renderHealth(state.lastData?.status, health)
+    );
+    return health;
+  })();
+  try {
+    return await state.healthInFlight;
+  } catch (error) {
+    if (!silent) {
+      setStatus(`Health check failed: ${error.message}`, "warn");
+    }
+    throw error;
+  } finally {
+    state.healthInFlight = null;
+  }
+}
+
+function loadVisiblePanels() {
+  ["missions", "approvals", "memory", "skills", "profile", "sessions", "logs", "mcp"].forEach((panelId) => {
+    if (isPanelNearViewport(panelId)) {
+      ensurePanelLoaded(panelId).catch((error) => {
+        setStatus(`Panel load failed: ${error.message}`, "warn");
+      });
+    }
+  });
+}
+
+function setupLazyPanels() {
+  if (state.lazyObserver) {
+    state.lazyObserver.disconnect();
+  }
+  if (!("IntersectionObserver" in window)) {
+    return;
+  }
+  state.lazyObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) {
+          return;
+        }
+        ensurePanelLoaded(entry.target.id).catch((error) => {
+          setStatus(`Panel load failed: ${error.message}`, "warn");
+        });
+      });
+    },
+    { rootMargin: "240px 0px" }
+  );
+
+  ["missions", "approvals", "memory", "skills", "profile", "sessions", "logs", "mcp"].forEach((panelId) => {
+    const panel = panelElement(panelId);
+    if (panel) {
+      state.lazyObserver.observe(panel);
+    }
+  });
+}
+
+function initializeLazyPanelPlaceholders() {
+  elements.missionSummary.textContent = "Loads when visible";
+  elements.missionsBody.innerHTML =
+    `<tr><td colspan="7" class="empty-table">Scroll this panel into view to load recent missions.</td></tr>`;
+  elements.approvalsSummary.textContent = "Loads when visible";
+  elements.approvalsList.innerHTML = renderEmpty("Open this panel to load pending approvals.");
+  elements.memorySummary.textContent = "Loads when visible";
+  elements.memoryList.innerHTML = renderEmpty("Open this panel to load memory review candidates.");
+  elements.skillsSummary.textContent = "Loads when visible";
+  elements.skillsList.innerHTML = renderEmpty("Open this panel to load skill drafts.");
+  elements.profileSummary.textContent = "Loads when visible";
+  elements.profileList.innerHTML = renderEmpty("Open this panel to load profile memories.");
+  elements.logsSummary.textContent = "Loads when visible";
+  elements.logsList.innerHTML = renderEmpty("Open this panel to load daemon logs.");
+  elements.mcpSummary.textContent = "Loads when visible";
+  elements.mcpList.innerHTML = renderEmpty("Open this panel to load MCP servers.");
+  elements.sessionDetail.innerHTML = renderEmpty("No session selected.");
+}
+
+function resetDashboardSurface() {
+  elements.heroChips.innerHTML = "";
+  elements.statusCards.innerHTML = "";
+  elements.statusDetails.innerHTML = "";
+  renderHealth(null, null);
+  elements.controlSummary.textContent = "No control data yet";
+  elements.autopilotActions.innerHTML = "";
+  elements.autopilotDetails.innerHTML = "";
+  initializeLazyPanelPlaceholders();
+  elements.connectorSummary.textContent = "No connector data yet";
+  elements.connectorCards.innerHTML = "";
+  elements.connectorsBody.innerHTML =
+    `<tr><td colspan="6" class="empty-table">No connectors configured.</td></tr>`;
+  elements.delegationSummary.textContent = "No delegation data yet";
+  elements.delegationList.innerHTML = renderEmpty("No delegation targets available.");
+  elements.eventsSummary.textContent = "No event data yet";
+  elements.eventsList.innerHTML = renderEmpty("No daemon events yet.");
+  elements.providersSummary.textContent = "No provider data yet";
+  elements.providersList.innerHTML = renderEmpty("No providers configured.");
+  elements.aliasesList.innerHTML = renderEmpty("No aliases configured.");
+  elements.permissionsSummary.textContent = "No permissions data yet";
+  elements.permissionPresetActions.innerHTML = "";
+  elements.permissionsDetails.innerHTML = "";
+  renderTrust({ trusted_paths: [] });
+  renderSessions([]);
+  elements.daemonConfigSummary.textContent = "No daemon config yet";
+  elements.daemonPersistenceActions.innerHTML = "";
+  elements.daemonAutostartActions.innerHTML = "";
+}
+
+async function refreshSessionsSummary() {
+  const sessions = await apiGet("/v1/sessions?limit=25").catch(() => []);
+  mergeLastData({ sessions });
+  renderWhenChanged("sessions", sessions, () => renderSessions(sessions));
+  return sessions;
+}
+
+async function refreshDashboard(options = {}) {
+  const refreshOptions = {
+    includeLoadedPanels: true,
+    includeHealth: true,
+    silent: false,
+    allowUnauthenticatedAttempt: false,
+    forcePanels: [],
+    ...options,
+  };
+  if (!refreshOptions.allowUnauthenticatedAttempt && !hasDashboardAuth()) {
     setStatus("Waiting for a daemon token.", "neutral");
     return;
   }
-  setStatus("Refreshing dashboard...", "neutral");
-  try {
-    const [
-      status,
-      health,
-      missions,
-      approvals,
-      memoryReview,
-      profileMemories,
-      skillDrafts,
-      delegationTargets,
-      events,
-      telegrams,
-      discords,
-      slacks,
-      signals,
-      homeAssistants,
-      webhooks,
-      inboxes,
-      gmails,
-      providers,
-      aliases,
-      logs,
-      sessions,
-      mcpServers,
-      permissions,
-    ] = await Promise.all([
-      apiGet("/v1/status"),
-      apiGet("/v1/doctor"),
-      apiGet("/v1/missions"),
-      apiGet("/v1/connector-approvals?status=pending&limit=25"),
-      apiGet("/v1/memory/review?limit=25"),
-      apiGet("/v1/memory/profile"),
-      apiGet("/v1/skills/drafts"),
-      apiGet("/v1/delegation/targets"),
-      apiGet("/v1/events?limit=40"),
-      apiGet("/v1/telegram"),
-      apiGet("/v1/discord"),
-      apiGet("/v1/slack"),
-      apiGet("/v1/signal"),
-      apiGet("/v1/home-assistant"),
-      apiGet("/v1/webhooks"),
-      apiGet("/v1/inboxes"),
-      apiGet("/v1/gmail").catch(() => []),
-      apiGet("/v1/providers").catch(() => []),
-      apiGet("/v1/aliases").catch(() => []),
-      apiGet("/v1/logs?limit=100").catch(() => []),
-      apiGet("/v1/sessions?limit=25").catch(() => []),
-      apiGet("/v1/mcp").catch(() => []),
-      apiGet("/v1/permissions").catch(() => ({})),
-    ]);
-
-    state.lastData = {
-      status,
-      health,
-      missions,
-      approvals,
-      memoryReview,
-      profileMemories,
-      skillDrafts,
-      delegationTargets,
-      events,
-      telegrams,
-      discords,
-      slacks,
-      signals,
-      homeAssistants,
-      webhooks,
-      inboxes,
-      gmails,
-      providers,
-      aliases,
-      logs,
-      sessions,
-      mcpServers,
-      permissions,
-    };
-
-    renderStatus(status, health);
-    renderAutopilot(status);
-    renderMissions(missions);
-    renderApprovals(approvals);
-    renderMemory(memoryReview);
-    renderSkills(skillDrafts);
-    renderProfile(profileMemories);
-    renderConnectors(
-      status,
-      telegrams,
-      discords,
-      slacks,
-      signals,
-      homeAssistants,
-      webhooks,
-      inboxes,
-      gmails
-    );
-    renderDelegation(delegationTargets);
-    renderEvents(events);
-    renderProviders(providers, aliases);
-    renderPermissions(permissions);
-    renderTrust(permissions);
-    renderLogs(logs);
-    renderSessions(sessions);
-    renderMcpServers(mcpServers);
-    renderDaemonConfig(status);
+  if (state.refreshInFlight) {
+    await state.refreshInFlight;
+    if (refreshOptions.includeLoadedPanels || refreshOptions.includeHealth || refreshOptions.forcePanels.length) {
+      return refreshDashboard({ ...refreshOptions, silent: true });
+    }
+    return;
+  }
+  if (!refreshOptions.silent) {
+    setStatus("Refreshing dashboard...", "neutral");
+  }
+  state.refreshInFlight = (async () => {
+    const bootstrap = normalizeBootstrapData(await apiGet("/v1/dashboard/bootstrap"));
+    state.dashboardSessionAuthenticated = true;
+    mergeLastData(bootstrap);
+    renderBootstrapData(bootstrap);
+    if (refreshOptions.includeLoadedPanels || refreshOptions.forcePanels.length) {
+      await refreshLoadedPanels(refreshOptions.forcePanels);
+    }
+    if (refreshOptions.includeHealth) {
+      await refreshHealth({ silent: true }).catch(() => null);
+    }
     elements.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     setStatus("Connected.", "ok");
+    if (isProviderCreateMode()) {
+      try {
+        await refreshProviderCreateSuggestions();
+      } catch (error) {
+        setStatus(`Provider suggestion failed: ${error.message}`, "warn");
+      }
+    } else {
+      syncProviderModeUi();
+    }
+    renderProviderBrowserAuthState();
+    loadVisiblePanels();
+  })();
+  try {
+    await state.refreshInFlight;
   } catch (error) {
+    if (isUnauthorizedError(error)) {
+      clearDashboardConnectionState();
+      setStatus("Waiting for a daemon token.", "neutral");
+      return;
+    }
     setStatus(`Refresh failed: ${error.message}`, "warn");
+    renderProviderBrowserAuthState();
+    throw error;
+  } finally {
+    state.refreshInFlight = null;
   }
 }
 
@@ -1006,28 +1947,340 @@ function scheduleRefresh() {
   if (state.refreshTimer) {
     clearInterval(state.refreshTimer);
   }
-  if (state.autoRefresh) {
-    state.refreshTimer = setInterval(() => {
-      refreshDashboard().catch(() => {});
-    }, 12000);
+  if (state.healthTimer) {
+    clearInterval(state.healthTimer);
   }
+  if (state.autoRefresh && hasDashboardAuth()) {
+    state.refreshTimer = setInterval(() => {
+      refreshDashboard({
+        includeLoadedPanels: false,
+        includeHealth: false,
+        silent: true,
+      }).catch(() => {});
+    }, 12000);
+    state.healthTimer = setInterval(() => {
+      refreshHealth({ silent: true }).catch(() => {});
+    }, 60000);
+  }
+}
+
+function providerPresetKeyFor(provider) {
+  if (!provider) {
+    return "custom";
+  }
+  if (provider.kind === "chat_gpt_codex") {
+    return "codex";
+  }
+  if (provider.kind === "anthropic" && provider.base_url === "https://api.anthropic.com") {
+    return "anthropic";
+  }
+  if (provider.kind === "open_ai_compatible" && provider.base_url === "https://api.openai.com/v1") {
+    return "openai";
+  }
+  if (provider.kind === "open_ai_compatible" && provider.base_url === "https://openrouter.ai/api/v1") {
+    return "openrouter";
+  }
+  if (provider.kind === "open_ai_compatible" && provider.base_url === "https://api.moonshot.ai/v1") {
+    return "moonshot";
+  }
+  if (provider.kind === "open_ai_compatible" && provider.base_url === "https://api.venice.ai/api/v1") {
+    return "venice";
+  }
+  if (provider.kind === "ollama") {
+    return "ollama";
+  }
+  return "custom";
+}
+
+function resetProviderForm(applyPreset = true) {
+  state.editingProviderId = null;
+  state.providerAutoDefaults = null;
+  elements.providerForm.reset();
+  if (!state.providerAuthSessionId) {
+    state.providerAuthStatusMessage = "";
+    state.providerAuthStatusTone = "neutral";
+  }
+  syncProviderModeUi();
+  if (applyPreset) {
+    applyProviderPreset(elements.providerPreset.value || "codex");
+    refreshProviderCreateSuggestions().catch((error) => {
+      setStatus(`Provider suggestion failed: ${error.message}`, "warn");
+    });
+  }
+  elements.providerModelResults.innerHTML = "";
+  renderProviderBrowserAuthState();
+}
+
+function applyProviderPreset(presetKey) {
+  const preset = providerPresets[presetKey] || providerPresets.custom;
+  const previous = state.providerAutoDefaults;
+  const currentProviderId = trimToNull(elements.providerId.value);
+  if (!currentProviderId || (previous && currentProviderId === previous.provider_id)) {
+    elements.providerId.value = preset.id;
+  }
+  elements.providerName.value = preset.name;
+  elements.providerKind.value = preset.kind;
+  elements.providerBaseUrl.value = preset.baseUrl;
+  elements.providerAuthMode.value = preset.authMode;
+  elements.providerLocal.checked = preset.local;
+  if (!state.editingProviderId) {
+    elements.providerDefaultModel.value = preset.defaultModel || "";
+    const currentAliasName = trimToNull(elements.providerAliasName.value);
+    const previousAliasName = previous?.alias_name || null;
+    if (!currentAliasName || currentAliasName === previousAliasName) {
+      elements.providerAliasName.value = "";
+    }
+    const currentAliasModel = trimToNull(elements.providerAliasModel.value);
+    const previousAliasModel = previous?.alias_model || null;
+    if (!currentAliasModel || currentAliasModel === previousAliasModel) {
+      elements.providerAliasModel.value = preset.defaultModel || "";
+    }
+    elements.providerAliasDescription.value = "";
+  }
+  if (!state.providerAuthSessionId) {
+    state.providerAuthStatusMessage = "";
+    state.providerAuthStatusTone = "neutral";
+  }
+  applySuggestedProviderModelDefaults();
+  syncProviderModeUi();
+  renderProviderBrowserAuthState();
+}
+
+function populateProviderForm(providerId) {
+  const provider = (state.lastData?.providers || []).find((entry) => entry.id === providerId);
+  if (!provider) {
+    throw new Error(`Unknown provider '${providerId}'.`);
+  }
+  state.editingProviderId = providerId;
+  state.providerAutoDefaults = null;
+  elements.providerPreset.value = providerPresetKeyFor(provider);
+  elements.providerId.value = provider.id;
+  elements.providerName.value = provider.display_name || provider.id;
+  elements.providerKind.value = provider.kind;
+  elements.providerBaseUrl.value = provider.base_url || "";
+  elements.providerAuthMode.value = provider.auth_mode || "api_key";
+  elements.providerDefaultModel.value = provider.default_model || "";
+  elements.providerLocal.checked = !!provider.local;
+  elements.providerApiKey.value = "";
+  elements.providerOauthConfig.value = provider.oauth ? JSON.stringify(provider.oauth, null, 2) : "";
+  elements.providerOauthToken.value = "";
+  const aliases = (state.lastData?.aliases || []).filter((entry) => entry.provider_id === provider.id);
+  const primaryAlias = aliases[0];
+  elements.providerAliasName.value = primaryAlias?.alias || "";
+  elements.providerAliasModel.value = primaryAlias?.model || provider.default_model || "";
+  elements.providerAliasDescription.value = primaryAlias?.description || "";
+  elements.providerSetMain.checked = state.lastData?.status?.main_agent_alias === primaryAlias?.alias;
+  applySuggestedProviderModelDefaults();
+  syncProviderModeUi();
+  if (!state.providerAuthSessionId) {
+    state.providerAuthStatusMessage = "";
+    state.providerAuthStatusTone = "neutral";
+  }
+  renderProviderBrowserAuthState();
+}
+
+async function discoverProviderModels(providerId) {
+  const models = await apiGet(`/v1/providers/${encodeURIComponent(providerId)}/models`);
+  elements.providerModelResults.innerHTML = Array.isArray(models) && models.length
+    ? models
+        .map(
+          (model) => `
+            <article class="stack-card">
+              <div class="card-title-row">
+                <div><h4>${escapeHtml(model)}</h4></div>
+                ${buttonHtml("Use", { useModel: model }, "button-ghost")}
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No models reported by the provider.");
+}
+
+function renderActiveSessionDetail() {
+  if (!state.loadedPanels.has("sessions")) {
+    return;
+  }
+  elements.sessionDetail.innerHTML = state.activeChatSessionId
+    ? renderSessionMessages(state.activeTranscript || [])
+    : renderEmpty("No session selected.");
+}
+
+async function loadChatSession(sessionId, { focusChat = false } = {}) {
+  const transcript = await apiGet(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+  state.activeChatSessionId = transcript.session.id;
+  state.activeTranscript = transcript.messages || [];
+  elements.runTaskAlias.value = transcript.session.alias || "";
+  elements.runTaskModel.value = "";
+  elements.chatSessionMeta.textContent = [
+    transcript.session.title || transcript.session.id,
+    transcript.session.alias,
+    transcript.session.model,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+  renderChatTranscript(transcript.messages || []);
+  renderActiveSessionDetail();
+  if (focusChat) {
+    document.getElementById("run-task").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function startNewChat() {
+  state.activeChatSessionId = null;
+  state.activeTranscript = [];
+  elements.runTaskPrompt.value = "";
+  elements.chatSessionMeta.textContent = "New chat";
+  renderChatTranscript([]);
+  renderActiveSessionDetail();
+}
+
+function renderSessionMessages(messages) {
+  return messages.length
+    ? messages
+        .map(
+          (msg) => `
+            <article class="stack-card">
+              <div class="card-title-row">
+                <div><h4>${escapeHtml(msg.role || "unknown")}</h4></div>
+                ${badge(fmtDate(msg.created_at || msg.timestamp))}
+              </div>
+              <p class="card-copy" style="white-space:pre-wrap">${escapeHtml(
+                typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2)
+              )}</p>
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No messages in this session.");
+}
+
+function renderChatTranscript(messages) {
+  elements.chatTranscript.innerHTML = messages.length
+    ? messages
+        .map(
+          (msg) => `
+            <article class="stack-card">
+              <div class="card-title-row">
+                <div>
+                  <h4>${escapeHtml(msg.role || "unknown")}</h4>
+                  <p class="card-subtitle">${escapeHtml(fmt(msg.model || msg.provider_id || ""))}</p>
+                </div>
+                ${badge(fmtDate(msg.created_at || msg.timestamp))}
+              </div>
+              <p class="card-copy" style="white-space:pre-wrap">${escapeHtml(
+                typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2)
+              )}</p>
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No active chat yet.");
+  elements.chatTranscript.scrollTop = elements.chatTranscript.scrollHeight;
+}
+
+function resetConnectorForm() {
+  state.editingConnectorKey = null;
+  elements.connectorAddForm.reset();
+  elements.connectorAddEnabled.checked = true;
+  updateConnectorAddFields();
+}
+
+function populateConnectorForm(kind, id) {
+  const connector = lookupConnector(kind, id);
+  if (!connector) {
+    throw new Error("Unknown connector.");
+  }
+  state.editingConnectorKey = `${kind}:${id}`;
+  elements.connectorAddType.value = kind;
+  updateConnectorAddFields();
+  elements.connectorAddName.value = connector.name || "";
+  elements.connectorAddId.value = connector.id || "";
+  elements.connectorAddDescription.value = connector.description || "";
+  elements.connectorAddAlias.value = connector.alias || "";
+  elements.connectorAddModel.value = connector.requested_model || "";
+  elements.connectorAddCwd.value = connector.cwd || "";
+  elements.connectorAddEnabled.checked = connector.enabled !== false;
+  const fieldValues = {
+    path: connector.path,
+    prompt_template: connector.prompt_template,
+    delete_after_read: !!connector.delete_after_read,
+    require_pairing_approval: connector.require_pairing_approval !== false,
+    allowed_chat_ids: (connector.allowed_chat_ids || []).join(", "),
+    allowed_user_ids: (connector.allowed_user_ids || []).join(", "),
+    monitored_channel_ids: (connector.monitored_channel_ids || []).join(", "),
+    allowed_channel_ids: (connector.allowed_channel_ids || []).join(", "),
+    monitored_group_ids: (connector.monitored_group_ids || []).join(", "),
+    allowed_group_ids: (connector.allowed_group_ids || []).join(", "),
+    monitored_entity_ids: (connector.monitored_entity_ids || []).join(", "),
+    allowed_service_domains: (connector.allowed_service_domains || []).join(", "),
+    allowed_service_entity_ids: (connector.allowed_service_entity_ids || []).join(", "),
+    allowed_sender_addresses: (connector.allowed_sender_addresses || []).join(", "),
+    label_filter: connector.label_filter,
+    base_url: connector.base_url,
+    api_key: "",
+    account: connector.account,
+    cli_path: connector.cli_path,
+  };
+  elements.connectorAddFields.querySelectorAll("[data-connector-field]").forEach((input) => {
+    const key = input.dataset.connectorField;
+    if (input instanceof HTMLInputElement && input.type === "checkbox") {
+      input.checked = Boolean(fieldValues[key]);
+    } else {
+      input.value = fieldValues[key] || "";
+    }
+  });
 }
 
 function persistToken(token) {
   state.token = token.trim();
-  if (state.token) {
-    window.localStorage.setItem("agent-daemon-token", state.token);
-  } else {
-    window.localStorage.removeItem("agent-daemon-token");
-  }
+  renderProviderBrowserAuthState();
 }
 
 function bootstrapToken() {
   const params = new URLSearchParams(window.location.search);
   const tokenFromUrl = params.get("token");
-  const savedToken = window.localStorage.getItem("agent-daemon-token");
-  state.token = tokenFromUrl || savedToken || "";
+  state.token = (tokenFromUrl || "").trim();
+  if (tokenFromUrl) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("token");
+    const cleanedSearch = url.searchParams.toString();
+    const cleanedUrl = `${url.pathname}${cleanedSearch ? `?${cleanedSearch}` : ""}${url.hash}`;
+    window.history.replaceState({}, document.title, cleanedUrl);
+  }
   elements.tokenInput.value = state.token;
+}
+
+function clearDashboardConnectionState({ clearTokenInput = false } = {}) {
+  clearProviderBrowserAuthPolling();
+  state.dashboardSessionAuthenticated = false;
+  state.token = "";
+  if (clearTokenInput) {
+    elements.tokenInput.value = "";
+  }
+  scheduleRefresh();
+  state.lastData = null;
+  state.loadedPanels.clear();
+  state.renderCache = {};
+  state.panelInFlight = {};
+  elements.lastUpdated.textContent = "Not connected";
+  resetDashboardSurface();
+  renderChatTranscript([]);
+  elements.chatSessionMeta.textContent = "New chat";
+  renderProviderBrowserAuthState();
+}
+
+async function initializeDashboardConnection() {
+  if (state.token) {
+    await createDashboardSession(state.token);
+  }
+  try {
+    await refreshDashboard({ allowUnauthenticatedAttempt: true });
+  } catch (error) {
+    if (!isUnauthorizedError(error)) {
+      throw error;
+    }
+  }
 }
 
 function buildMissionPayload({ scheduled }) {
@@ -1105,6 +2358,7 @@ function lookupConnector(kind, id) {
     webhook: state.lastData.webhooks,
     inbox: state.lastData.inboxes,
     gmail: state.lastData.gmails,
+    brave: state.lastData.braves,
   };
   return (groups[kind] || []).find((entry) => entry.id === id) || null;
 }
@@ -1119,6 +2373,7 @@ function connectorBasePath(kind) {
     webhook: "/v1/webhooks",
     inbox: "/v1/inboxes",
     gmail: "/v1/gmail",
+    brave: "/v1/brave",
   }[kind];
 }
 
@@ -1139,10 +2394,10 @@ async function toggleConnector(kind, id) {
 
 async function pollConnector(kind, id) {
   const basePath = connectorBasePath(kind);
-  if (!basePath || kind === "webhook") {
+  if (!basePath || kind === "webhook" || kind === "brave") {
     throw new Error("This connector does not support polling.");
   }
-  await apiPost(`${basePath}/${id}/poll`, {});
+  await apiPost(`${basePath}/${encodeURIComponent(id)}/poll`, {});
   await refreshDashboard();
 }
 
@@ -1234,25 +2489,68 @@ function bindActions() {
       } else if (target.dataset.connectorToggle) {
         const [kind, id] = target.dataset.connectorToggle.split(":");
         await toggleConnector(kind, id);
+      } else if (target.dataset.connectorEdit) {
+        const [kind, id] = target.dataset.connectorEdit.split(":");
+        populateConnectorForm(kind, id);
+        document.getElementById("connector-add").scrollIntoView({ behavior: "smooth", block: "start" });
       } else if (target.dataset.connectorPoll) {
         const [kind, id] = target.dataset.connectorPoll.split(":");
         await pollConnector(kind, id);
+      } else if (target.dataset.providerEdit) {
+        populateProviderForm(target.dataset.providerEdit);
+        document.getElementById("providers").scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (target.dataset.providerModels) {
+        await discoverProviderModels(target.dataset.providerModels);
+      } else if (target.dataset.providerClearCreds) {
+        await apiDelete(`/v1/providers/${encodeURIComponent(target.dataset.providerClearCreds)}/credentials`);
+        await refreshDashboard();
+      } else if (target.dataset.providerDelete) {
+        if (window.confirm(`Delete provider ${target.dataset.providerDelete}? Aliases pointing at it will also be removed.`)) {
+          await apiDelete(`/v1/providers/${encodeURIComponent(target.dataset.providerDelete)}`);
+          await refreshDashboard();
+          resetProviderForm();
+        }
+      } else if (target.dataset.aliasEdit) {
+        const alias = (state.lastData?.aliases || []).find((entry) => entry.alias === target.dataset.aliasEdit);
+        if (!alias) {
+          throw new Error("Unknown alias.");
+        }
+        elements.aliasName.value = alias.alias;
+        elements.aliasProvider.value = alias.provider_id;
+        elements.aliasModel.value = alias.model;
+        elements.aliasDescription.value = alias.description || "";
+        elements.aliasMain.checked = state.lastData?.status?.main_agent_alias === alias.alias;
+      } else if (target.dataset.aliasMakeMain) {
+        const alias = (state.lastData?.aliases || []).find((entry) => entry.alias === target.dataset.aliasMakeMain);
+        if (!alias) {
+          throw new Error("Unknown alias.");
+        }
+        await apiPost("/v1/aliases", {
+          alias,
+          set_as_main: true,
+        });
+        await refreshDashboard();
+      } else if (target.dataset.aliasDelete) {
+        if (window.confirm(`Delete alias ${target.dataset.aliasDelete}?`)) {
+          await apiDelete(`/v1/aliases/${encodeURIComponent(target.dataset.aliasDelete)}`);
+          await refreshDashboard();
+        }
       } else if (target.dataset.connectorDelete) {
         const [kind, id] = target.dataset.connectorDelete.split(":");
         if (window.confirm(`Delete ${kind} connector ${id}?`)) {
           const basePath = connectorBasePath(kind);
           if (basePath) {
-            await apiDelete(`${basePath}/${id}`);
+            await apiDelete(`${basePath}/${encodeURIComponent(id)}`);
             await refreshDashboard();
           }
         }
       } else if (target.dataset.permissionPreset) {
-        await apiPut("/v1/permissions", { preset: target.dataset.permissionPreset });
+        await apiPut("/v1/permissions", { permission_preset: target.dataset.permissionPreset });
         await refreshDashboard();
       } else if (target.dataset.trustFlag) {
         const flag = target.dataset.trustFlag;
-        const checked = target.checked;
-        const trust = { ...(state.lastData?.permissions || {}) };
+        const checked = target instanceof HTMLInputElement ? target.checked : false;
+        const trust = { ...(state.lastData?.trust || {}) };
         trust[flag] = checked;
         await apiPut("/v1/trust", trust);
         await refreshDashboard();
@@ -1261,27 +2559,33 @@ function bindActions() {
           await apiDelete(`/v1/memory/${target.dataset.memoryDelete}`);
           await refreshDashboard();
         }
+      } else if (target.dataset.useModel) {
+        elements.providerDefaultModel.value = target.dataset.useModel;
+        if (!elements.providerAliasModel.value.trim()) {
+          elements.providerAliasModel.value = target.dataset.useModel;
+        }
+        await refreshProviderCreateSuggestions();
       } else if (target.dataset.sessionView) {
         try {
-          const session = await apiGet(`/v1/sessions/${target.dataset.sessionView}`);
+          state.loadedPanels.add("sessions");
+          const session = await apiGet(`/v1/sessions/${encodeURIComponent(target.dataset.sessionView)}`);
           const messages = session.messages || session.history || [];
-          elements.sessionDetail.innerHTML = messages.length
-            ? messages
-                .map(
-                  (msg) => `
-                    <article class="stack-card">
-                      <div class="card-title-row">
-                        <div><h4>${escapeHtml(msg.role || "unknown")}</h4></div>
-                        ${badge(fmtDate(msg.created_at || msg.timestamp))}
-                      </div>
-                      <p class="card-copy">${escapeHtml(typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content))}</p>
-                    </article>
-                  `
-                )
-                .join("")
-            : renderEmpty("No messages in this session.");
+          elements.sessionDetail.innerHTML = renderSessionMessages(messages);
         } catch (err) {
           elements.sessionDetail.innerHTML = renderEmpty(`Failed to load session: ${err.message}`);
+        }
+      } else if (target.dataset.sessionUse) {
+        state.loadedPanels.add("sessions");
+        await loadChatSession(target.dataset.sessionUse, { focusChat: true });
+      } else if (target.dataset.sessionRename) {
+        const title = window.prompt("New session title:", "") || "";
+        if (!title.trim()) {
+          return;
+        }
+        await apiPut(`/v1/sessions/${encodeURIComponent(target.dataset.sessionRename)}/title`, { title });
+        await refreshSessionsSummary();
+        if (state.activeChatSessionId === target.dataset.sessionRename) {
+          await loadChatSession(target.dataset.sessionRename);
         }
       } else if (target.dataset.mcpDelete) {
         if (window.confirm(`Delete MCP server ${target.dataset.mcpDelete}?`)) {
@@ -1304,18 +2608,35 @@ function bindActions() {
 elements.form.addEventListener("submit", async (event) => {
   event.preventDefault();
   persistToken(elements.tokenInput.value);
-  await refreshDashboard();
+  if (state.token) {
+    await createDashboardSession(state.token);
+  }
+  scheduleRefresh();
+  await refreshDashboard({ allowUnauthenticatedAttempt: true });
 });
 
 elements.refreshButton.addEventListener("click", async () => {
   persistToken(elements.tokenInput.value);
-  await refreshDashboard();
+  if (state.token) {
+    await createDashboardSession(state.token);
+  }
+  scheduleRefresh();
+  await refreshDashboard({ allowUnauthenticatedAttempt: true });
 });
 
-elements.clearButton.addEventListener("click", () => {
-  persistToken("");
-  elements.tokenInput.value = "";
-  elements.lastUpdated.textContent = "Not connected";
+elements.clearButton.addEventListener("click", async () => {
+  try {
+    await clearDashboardSession();
+  } catch (_) {
+  }
+  clearDashboardConnectionState({ clearTokenInput: true });
+  state.activeChatSessionId = null;
+  state.activeTranscript = [];
+  state.providerAuthSessionId = null;
+  state.providerAuthKind = null;
+  state.providerAuthWindow = null;
+  state.providerAuthStatusMessage = "";
+  state.providerAuthStatusTone = "neutral";
   setStatus("Waiting for a daemon token.", "neutral");
 });
 
@@ -1341,6 +2662,135 @@ elements.missionSchedule.addEventListener("click", async () => {
   }
 });
 
+elements.providerPreset.addEventListener("change", () => {
+  if (!state.editingProviderId) {
+    applyProviderPreset(elements.providerPreset.value);
+    refreshProviderCreateSuggestions().catch((error) => {
+      setStatus(`Provider suggestion failed: ${error.message}`, "warn");
+    });
+  }
+});
+
+elements.providerReset.addEventListener("click", () => {
+  resetProviderForm();
+});
+
+elements.providerBrowserAuth.addEventListener("click", async () => {
+  try {
+    await startProviderBrowserAuth();
+  } catch (error) {
+    setStatus(`Browser sign-in failed: ${error.message}`, "warn");
+  }
+});
+
+elements.providerKind.addEventListener("change", () => {
+  if (!state.providerAuthSessionId) {
+    state.providerAuthStatusMessage = "";
+    state.providerAuthStatusTone = "neutral";
+  }
+  applySuggestedProviderModelDefaults();
+  renderProviderBrowserAuthState();
+  refreshProviderCreateSuggestions().catch((error) => {
+    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
+  });
+});
+
+elements.providerBaseUrl.addEventListener("change", () => {
+  applySuggestedProviderModelDefaults();
+  renderProviderBrowserAuthState();
+  refreshProviderCreateSuggestions().catch((error) => {
+    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
+  });
+});
+
+elements.providerDefaultModel.addEventListener("change", () => {
+  if (trimToNull(elements.providerAliasName.value) && !trimToNull(elements.providerAliasModel.value)) {
+    elements.providerAliasModel.value = trimToNull(elements.providerDefaultModel.value) || "";
+  }
+  refreshProviderCreateSuggestions().catch((error) => {
+    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
+  });
+});
+
+elements.providerId.addEventListener("change", () => {
+  refreshProviderCreateSuggestions().catch((error) => {
+    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
+  });
+});
+
+elements.providerAliasName.addEventListener("change", () => {
+  applySuggestedProviderModelDefaults();
+  renderProviderBrowserAuthState();
+  refreshProviderCreateSuggestions().catch((error) => {
+    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
+  });
+});
+
+elements.providerDiscoverModels.addEventListener("click", async () => {
+  try {
+    const providerId = elements.providerId.value.trim();
+    if (!providerId) {
+      throw new Error("Save or enter a provider ID first.");
+    }
+    await discoverProviderModels(providerId);
+  } catch (error) {
+    setStatus(`Model discovery failed: ${error.message}`, "warn");
+  }
+});
+
+elements.providerForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const submission = await resolveProviderFormSubmission();
+    const { providerId, displayName, defaultModel, aliasName, aliasModel, setAsMain } = submission;
+    const provider = {
+      id: providerId,
+      display_name: displayName,
+      kind: elements.providerKind.value,
+      base_url: elements.providerBaseUrl.value.trim(),
+      auth_mode: elements.providerAuthMode.value,
+      default_model: defaultModel,
+      keychain_account: null,
+      oauth: null,
+      local: elements.providerLocal.checked,
+    };
+    const oauthConfigText = elements.providerOauthConfig.value.trim();
+    if (oauthConfigText) {
+      provider.oauth = JSON.parse(oauthConfigText);
+    }
+    const payload = {
+      provider,
+      api_key: elements.providerApiKey.value.trim() || null,
+      oauth_token: null,
+    };
+    const oauthTokenText = elements.providerOauthToken.value.trim();
+    if (oauthTokenText) {
+      payload.oauth_token = JSON.parse(oauthTokenText);
+    }
+    await apiPost("/v1/providers", payload);
+
+    if (aliasName) {
+      if (!trimToNull(elements.providerAliasModel.value) && aliasModel) {
+        elements.providerAliasModel.value = aliasModel;
+      }
+      await apiPost("/v1/aliases", {
+        alias: {
+          alias: aliasName,
+          provider_id: providerId,
+          model: aliasModel,
+          description: elements.providerAliasDescription.value.trim() || null,
+        },
+        set_as_main: setAsMain,
+      });
+    }
+    await refreshDashboard();
+    populateProviderForm(providerId);
+    setStatus(`Provider ${providerId} saved.`, "ok");
+  } catch (error) {
+    setStatus(`Provider save failed: ${error.message}`, "warn");
+  }
+});
+
 elements.aliasForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -1351,16 +2801,50 @@ elements.aliasForm.addEventListener("submit", async (event) => {
       throw new Error("Alias name, provider ID, and model are required.");
     }
     await apiPost("/v1/aliases", {
-      alias: name,
-      provider_id: providerId,
-      model,
-      description: elements.aliasDescription.value.trim() || null,
-      main: elements.aliasMain.checked,
+      alias: {
+        alias: name,
+        provider_id: providerId,
+        model,
+        description: elements.aliasDescription.value.trim() || null,
+      },
+      set_as_main: elements.aliasMain.checked,
     });
     elements.aliasForm.reset();
     await refreshDashboard();
   } catch (error) {
-    setStatus(`Alias create failed: ${error.message}`, "warn");
+    setStatus(`Alias save failed: ${error.message}`, "warn");
+  }
+});
+
+elements.trustPathForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const path = elements.trustPathInput.value.trim();
+    if (!path) {
+      throw new Error("Trusted path is required.");
+    }
+    await apiPut("/v1/trust", { trusted_path: path });
+    elements.trustPathForm.reset();
+    await refreshDashboard();
+  } catch (error) {
+    setStatus(`Trusted path update failed: ${error.message}`, "warn");
+  }
+});
+
+elements.delegationForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await apiPut("/v1/delegation/config", {
+      max_depth: parseLimitInput(elements.delegationMaxDepth.value, state.lastData?.delegationConfig?.max_depth || state.lastData?.status?.delegation?.max_depth),
+      max_parallel_subagents: parseLimitInput(
+        elements.delegationMaxParallel.value,
+        state.lastData?.delegationConfig?.max_parallel_subagents || state.lastData?.status?.delegation?.max_parallel_subagents
+      ),
+      disabled_provider_ids: parseDelimitedList(elements.delegationDisabledProviders.value),
+    });
+    await refreshDashboard();
+  } catch (error) {
+    setStatus(`Delegation update failed: ${error.message}`, "warn");
   }
 });
 
@@ -1420,37 +2904,56 @@ elements.memoryCreateForm.addEventListener("submit", async (event) => {
 function connectorTypeFields(type) {
   const fieldMap = {
     telegram: [
+      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
       { label: "Bot token", id: "bot_token", placeholder: "123456:ABC-DEF..." },
       { label: "Allowed chat IDs (comma-separated)", id: "allowed_chat_ids", placeholder: "12345,67890" },
+      { label: "Allowed user IDs (comma-separated)", id: "allowed_user_ids", placeholder: "12345,67890" },
     ],
     discord: [
+      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
       { label: "Bot token", id: "bot_token", placeholder: "Discord bot token" },
       { label: "Monitored channel IDs (comma-separated)", id: "monitored_channel_ids", placeholder: "123,456" },
+      { label: "Allowed channel IDs (comma-separated)", id: "allowed_channel_ids", placeholder: "123,456" },
+      { label: "Allowed user IDs (comma-separated)", id: "allowed_user_ids", placeholder: "123,456" },
     ],
     slack: [
+      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
       { label: "Bot token", id: "bot_token", placeholder: "xoxb-..." },
-      { label: "App token", id: "app_token", placeholder: "xapp-..." },
       { label: "Monitored channel IDs (comma-separated)", id: "monitored_channel_ids", placeholder: "C01..." },
+      { label: "Allowed channel IDs (comma-separated)", id: "allowed_channel_ids", placeholder: "C01..." },
+      { label: "Allowed user IDs (comma-separated)", id: "allowed_user_ids", placeholder: "U01..." },
     ],
     signal: [
       { label: "Account", id: "account", placeholder: "+1234567890" },
       { label: "CLI path", id: "cli_path", placeholder: "/usr/bin/signal-cli" },
+      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
       { label: "Monitored group IDs (comma-separated)", id: "monitored_group_ids", placeholder: "group-id" },
+      { label: "Allowed group IDs (comma-separated)", id: "allowed_group_ids", placeholder: "group-id" },
+      { label: "Allowed user IDs (comma-separated)", id: "allowed_user_ids", placeholder: "+1234567890" },
     ],
     "home-assistant": [
       { label: "Base URL", id: "base_url", placeholder: "http://homeassistant.local:8123" },
       { label: "Access token", id: "access_token", placeholder: "HA long-lived access token" },
       { label: "Monitored entity IDs (comma-separated)", id: "monitored_entity_ids", placeholder: "sensor.temp" },
+      { label: "Allowed service domains (comma-separated)", id: "allowed_service_domains", placeholder: "light,switch" },
+      { label: "Allowed service entity IDs (comma-separated)", id: "allowed_service_entity_ids", placeholder: "light.office" },
     ],
     webhook: [
       { label: "Prompt template", id: "prompt_template", placeholder: "Handle: {{body}}" },
+      { label: "Webhook token", id: "webhook_token", placeholder: "Generated or pasted shared secret" },
     ],
     inbox: [
       { label: "Path", id: "path", placeholder: "/path/to/inbox" },
+      { label: "Delete after read", id: "delete_after_read", type: "checkbox" },
     ],
     gmail: [
-      { label: "Allowed emails (comma-separated)", id: "allowed_emails", placeholder: "user@example.com" },
-      { label: "Credentials path", id: "credentials_path", placeholder: "/path/to/credentials.json" },
+      { label: "OAuth token", id: "oauth_token", placeholder: "Gmail OAuth access token" },
+      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
+      { label: "Allowed senders (comma-separated)", id: "allowed_sender_addresses", placeholder: "user@example.com" },
+      { label: "Label filter", id: "label_filter", placeholder: "INBOX" },
+    ],
+    brave: [
+      { label: "API key", id: "api_key", placeholder: "BSA..." },
     ],
   };
   return fieldMap[type] || [];
@@ -1461,10 +2964,18 @@ function updateConnectorAddFields() {
   const fields = connectorTypeFields(type);
   elements.connectorAddFields.innerHTML = fields
     .map(
-      (field) => `
+      (field) =>
+        field.type === "checkbox"
+          ? `
+        <label class="checkbox-field">
+          <input type="checkbox" data-connector-field="${escapeHtml(field.id)}">
+          <span>${escapeHtml(field.label)}</span>
+        </label>
+      `
+          : `
         <label class="field">
           <span>${escapeHtml(field.label)}</span>
-          <input type="text" data-connector-field="${escapeHtml(field.id)}" autocomplete="off" placeholder="${escapeHtml(field.placeholder)}">
+          <input type="text" data-connector-field="${escapeHtml(field.id)}" autocomplete="off" placeholder="${escapeHtml(field.placeholder || "")}">
         </label>
       `
     )
@@ -1473,6 +2984,9 @@ function updateConnectorAddFields() {
 
 elements.connectorAddType.addEventListener("change", updateConnectorAddFields);
 updateConnectorAddFields();
+elements.connectorReset.addEventListener("click", () => {
+  resetConnectorForm();
+});
 
 elements.connectorAddForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1485,30 +2999,49 @@ elements.connectorAddForm.addEventListener("submit", async (event) => {
     const connector = {
       id: elements.connectorAddId.value.trim() || crypto.randomUUID(),
       name,
-      enabled: true,
+      description: elements.connectorAddDescription.value.trim(),
+      enabled: elements.connectorAddEnabled.checked,
     };
+    if (elements.connectorAddAlias.value.trim()) {
+      connector.alias = elements.connectorAddAlias.value.trim();
+    }
+    if (elements.connectorAddModel.value.trim()) {
+      connector.requested_model = elements.connectorAddModel.value.trim();
+    }
+    if (elements.connectorAddCwd.value.trim()) {
+      connector.cwd = elements.connectorAddCwd.value.trim();
+    }
     const fieldInputs = elements.connectorAddFields.querySelectorAll("[data-connector-field]");
+    const payload = { connector };
     for (const input of fieldInputs) {
       const key = input.dataset.connectorField;
+      if (input instanceof HTMLInputElement && input.type === "checkbox") {
+        connector[key] = input.checked;
+        continue;
+      }
       const value = input.value.trim();
-      if (value) {
-        if (key.endsWith("_ids") || key.endsWith("_emails") || key.endsWith("_labels")) {
-          connector[key] = value.split(",").map((s) => s.trim()).filter(Boolean);
-        } else {
-          connector[key] = value;
-        }
+      if (!value) {
+        continue;
+      }
+      if (["bot_token", "access_token", "oauth_token", "webhook_token", "api_key"].includes(key)) {
+        payload[key] = value;
+      } else if (key === "allowed_chat_ids" || key === "allowed_user_ids") {
+        connector[key] = parseDelimitedList(value, (item) => Number.parseInt(item, 10)).filter((item) => Number.isFinite(item));
+      } else if (key.endsWith("_ids") || key.endsWith("_addresses") || key.endsWith("_domains")) {
+        connector[key] = parseDelimitedList(value);
+      } else {
+        connector[key] = value;
       }
     }
     const basePath = connectorBasePath(type);
     if (!basePath) {
       throw new Error(`Unknown connector type: ${type}`);
     }
-    await apiPost(basePath, { connector });
-    elements.connectorAddForm.reset();
-    updateConnectorAddFields();
+    await apiPost(basePath, payload);
+    resetConnectorForm();
     await refreshDashboard();
   } catch (error) {
-    setStatus(`Connector add failed: ${error.message}`, "warn");
+    setStatus(`Connector save failed: ${error.message}`, "warn");
   }
 });
 
@@ -1519,24 +3052,49 @@ elements.runTaskForm.addEventListener("submit", async (event) => {
     if (!prompt) {
       throw new Error("Prompt is required.");
     }
-    const payload = { prompt };
+    const payload = {
+      prompt,
+      session_id: state.activeChatSessionId,
+    };
     const alias = elements.runTaskAlias.value.trim();
     const model = elements.runTaskModel.value.trim();
     const thinking = elements.runTaskThinking.value;
+    const permissionPreset = elements.runTaskPermission.value;
     if (alias) payload.alias = alias;
-    if (model) payload.model = model;
+    if (model) payload.requested_model = model;
     if (thinking) payload.thinking_level = thinking;
-    elements.runTaskResult.innerHTML = renderEmpty("Running task...");
+    if (permissionPreset) payload.permission_preset = permissionPreset;
+    elements.runTaskResult.innerHTML = renderEmpty("Sending...");
     const result = await apiPost("/v1/run", payload);
-    const text = typeof result === "string" ? result : result.text || result.response || JSON.stringify(result, null, 2);
-    elements.runTaskResult.innerHTML = `
-      <article class="stack-card">
-        <div class="card-title-row"><div><h4>Response</h4></div></div>
-        <p class="card-copy" style="white-space:pre-wrap">${escapeHtml(text)}</p>
-      </article>
-    `;
+    elements.runTaskPrompt.value = "";
+    elements.runTaskResult.innerHTML = renderEmpty("Response received.");
+    if (result && result.session_id) {
+      await loadChatSession(result.session_id);
+    }
+    await refreshSessionsSummary();
   } catch (error) {
     elements.runTaskResult.innerHTML = renderEmpty(`Task failed: ${error.message}`);
+  }
+});
+
+elements.chatNewSession.addEventListener("click", () => {
+  startNewChat();
+});
+
+elements.chatRenameButton.addEventListener("click", async () => {
+  try {
+    if (!state.activeChatSessionId) {
+      throw new Error("No active chat to rename.");
+    }
+    const title = window.prompt("New chat title:", "") || "";
+    if (!title.trim()) {
+      return;
+    }
+    await apiPut(`/v1/sessions/${encodeURIComponent(state.activeChatSessionId)}/title`, { title });
+    await refreshSessionsSummary();
+    await loadChatSession(state.activeChatSessionId);
+  } catch (error) {
+    setStatus(`Chat rename failed: ${error.message}`, "warn");
   }
 });
 
@@ -1567,10 +3125,36 @@ elements.mcpAddForm.addEventListener("submit", async (event) => {
 });
 
 bootstrapToken();
+initializeLazyPanelPlaceholders();
+resetProviderForm();
+startNewChat();
 bindActions();
+setupLazyPanels();
 scheduleRefresh();
-if (state.token) {
-  refreshDashboard().catch((error) => setStatus(`Refresh failed: ${error.message}`, "warn"));
-} else {
-  setStatus("Waiting for a daemon token.", "neutral");
-}
+window.addEventListener("hashchange", () => {
+  const panelId = window.location.hash.replace(/^#/, "");
+  if (panelId) {
+    ensurePanelLoaded(panelId).catch((error) => {
+      setStatus(`Panel load failed: ${error.message}`, "warn");
+    });
+  }
+});
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin) {
+    return;
+  }
+  const data = event.data;
+  if (!data || data.type !== "provider-auth" || !data.sessionId) {
+    return;
+  }
+  if (state.providerAuthSessionId && state.providerAuthSessionId !== data.sessionId) {
+    return;
+  }
+  pollProviderBrowserAuthSession(data.sessionId, { refresh: true }).catch((error) => {
+    setProviderBrowserAuthStatus(`Browser sign-in failed: ${error.message}`, "warn");
+    setStatus(`Browser sign-in failed: ${error.message}`, "warn");
+  });
+});
+initializeDashboardConnection().catch((error) => {
+  setStatus(`Refresh failed: ${error.message}`, "warn");
+});

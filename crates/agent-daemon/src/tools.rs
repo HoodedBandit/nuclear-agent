@@ -6,12 +6,13 @@ use std::{
 };
 
 use agent_core::{
-    AppConnectorConfig, AutonomyProfile, BatchTaskRequest, ConversationMessage, DelegationConfig,
-    DelegationTarget, DiscordConnectorConfig, DiscordSendRequest, HomeAssistantConnectorConfig,
-    HomeAssistantServiceCallRequest, McpServerConfig, MessageRole, PermissionPreset,
-    SignalConnectorConfig, SignalSendRequest, SlackConnectorConfig, SlackSendRequest,
-    SubAgentStrategy, TelegramConnectorConfig, TelegramSendRequest, ThinkingLevel, ToolCall,
-    ToolDefinition, ToolExecutionOutcome, ToolExecutionRecord, TrustPolicy,
+    AppConnectorConfig, AutonomyProfile, BatchTaskRequest, BraveConnectorConfig,
+    ConversationMessage, DelegationConfig, DelegationTarget, DiscordConnectorConfig,
+    DiscordSendRequest, HomeAssistantConnectorConfig, HomeAssistantServiceCallRequest,
+    McpServerConfig, MessageRole, PermissionPreset, SignalConnectorConfig, SignalSendRequest,
+    SlackConnectorConfig, SlackSendRequest, SubAgentStrategy, TelegramConnectorConfig,
+    TelegramSendRequest, ThinkingLevel, ToolCall, ToolDefinition, ToolExecutionOutcome,
+    ToolExecutionRecord, TrustPolicy,
 };
 use agent_policy::{allow_network, allow_self_edit, allow_shell, path_is_trusted};
 use anyhow::{anyhow, bail, Context, Result};
@@ -61,6 +62,7 @@ const MAX_DIRECTORY_ENTRIES: usize = 200;
 const MAX_FIND_RESULTS: usize = 200;
 const MAX_GIT_LOG_ENTRIES: usize = 50;
 const SIGNAL_CLI_TIMEOUT_SECS: u64 = 15;
+const REDACTED_SECRET_ARGUMENT: &str = "[REDACTED]";
 
 #[derive(Clone)]
 pub(crate) struct ToolContext {
@@ -72,6 +74,7 @@ pub(crate) struct ToolContext {
     pub http_client: Client,
     pub mcp_servers: Vec<McpServerConfig>,
     pub app_connectors: Vec<AppConnectorConfig>,
+    pub brave_connectors: Vec<BraveConnectorConfig>,
     pub current_alias: Option<String>,
     pub default_thinking_level: Option<ThinkingLevel>,
     pub delegation: DelegationConfig,
@@ -455,6 +458,7 @@ pub(crate) async fn execute_tool_call(context: &ToolContext, call: &ToolCall) ->
         Ok(output) => (output, ToolExecutionOutcome::Success),
         Err(error) => (format!("ERROR: {error:#}"), ToolExecutionOutcome::Error),
     };
+    let sanitized_arguments = sanitize_tool_arguments(&call.name, &call.arguments);
 
     ToolCallExecution {
         message: ConversationMessage {
@@ -469,11 +473,37 @@ pub(crate) async fn execute_tool_call(context: &ToolContext, call: &ToolCall) ->
         record: ToolExecutionRecord {
             call_id: call.id.clone(),
             name: call.name.clone(),
-            arguments: call.arguments.clone(),
+            arguments: sanitized_arguments,
             outcome,
             output: content,
         },
     }
+}
+
+pub(crate) fn sanitize_tool_call(call: &ToolCall) -> ToolCall {
+    ToolCall {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        arguments: sanitize_tool_arguments(&call.name, &call.arguments),
+    }
+}
+
+pub(crate) fn tool_call_has_sensitive_arguments(call: &ToolCall) -> bool {
+    !sensitive_tool_argument_fields(&call.name).is_empty()
+}
+
+pub(crate) fn sanitize_tool_arguments(tool_name: &str, arguments: &str) -> String {
+    let sensitive_fields = sensitive_tool_argument_fields(tool_name);
+    if sensitive_fields.is_empty() {
+        return arguments.to_string();
+    }
+    let Ok(mut value) = serde_json::from_str::<Value>(arguments) else {
+        return arguments.to_string();
+    };
+    if !redact_sensitive_argument_fields(&mut value, sensitive_fields) {
+        return arguments.to_string();
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| arguments.to_string())
 }
 
 async fn execute_tool_call_inner(context: &ToolContext, call: &ToolCall) -> Result<String> {
@@ -520,6 +550,59 @@ fn tool(name: &str, description: &str, input_schema: Value) -> ToolDefinition {
     }
 }
 
+fn sensitive_tool_argument_fields(tool_name: &str) -> &'static [&'static str] {
+    match tool_name {
+        "configure_telegram_connector"
+        | "configure_discord_connector"
+        | "configure_slack_connector" => &["bot_token"],
+        "configure_home_assistant_connector" => &["access_token"],
+        _ => &[],
+    }
+}
+
+fn redact_sensitive_argument_fields(value: &mut Value, sensitive_fields: &[&str]) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut changed = false;
+            for (key, nested) in map {
+                if sensitive_fields.contains(&key.as_str()) {
+                    redact_secret_value(nested);
+                    changed = true;
+                } else {
+                    changed |= redact_sensitive_argument_fields(nested, sensitive_fields);
+                }
+            }
+            changed
+        }
+        Value::Array(values) => {
+            let mut changed = false;
+            for nested in values {
+                changed |= redact_sensitive_argument_fields(nested, sensitive_fields);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn redact_secret_value(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for nested in map.values_mut() {
+                redact_secret_value(nested);
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                redact_secret_value(nested);
+            }
+        }
+        _ => {
+            *value = Value::String(REDACTED_SECRET_ARGUMENT.to_string());
+        }
+    }
+}
+
 fn shell_command(command: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
@@ -557,6 +640,7 @@ mod tests {
             http_client: Client::new(),
             mcp_servers: Vec::new(),
             app_connectors: Vec::new(),
+            brave_connectors: Vec::new(),
             current_alias: Some("main".to_string()),
             default_thinking_level: None,
             delegation: agent_core::DelegationConfig::default(),
@@ -578,6 +662,8 @@ mod tests {
             storage,
             config: std::sync::Arc::new(tokio::sync::RwLock::new(agent_core::AppConfig::default())),
             http_client: Client::new(),
+            browser_auth_sessions: crate::new_browser_auth_store(),
+            dashboard_sessions: crate::new_dashboard_session_store(),
             started_at: Utc::now(),
             shutdown: tokio::sync::mpsc::unbounded_channel().0,
             autopilot_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -801,6 +887,44 @@ mod tests {
         assert!(error
             .to_string()
             .contains("sensitive environment variables"));
+    }
+
+    #[test]
+    fn sanitize_tool_arguments_redacts_secret_fields() {
+        let sanitized = sanitize_tool_arguments(
+            "configure_telegram_connector",
+            r#"{"bot_token":"123:abc","id":"telegram-main"}"#,
+        );
+        let parsed: Value = serde_json::from_str(&sanitized).unwrap();
+        assert_eq!(parsed["bot_token"], Value::String("[REDACTED]".to_string()));
+        assert_eq!(parsed["id"], Value::String("telegram-main".to_string()));
+    }
+
+    #[test]
+    fn sanitize_tool_arguments_redacts_nested_secret_values() {
+        let sanitized = sanitize_tool_arguments(
+            "configure_home_assistant_connector",
+            r#"{"base_url":"http://ha.local","access_token":{"value":"secret-token","refresh":"refresh-token"}}"#,
+        );
+        let parsed: Value = serde_json::from_str(&sanitized).unwrap();
+        assert_eq!(
+            parsed["access_token"]["value"],
+            Value::String("[REDACTED]".to_string())
+        );
+        assert_eq!(
+            parsed["access_token"]["refresh"],
+            Value::String("[REDACTED]".to_string())
+        );
+        assert_eq!(
+            parsed["base_url"],
+            Value::String("http://ha.local".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_tool_arguments_leaves_non_sensitive_tools_unchanged() {
+        let arguments = r#"{"path":"README.md"}"#;
+        assert_eq!(sanitize_tool_arguments("read_file", arguments), arguments);
     }
 
     #[test]

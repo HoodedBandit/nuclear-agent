@@ -949,8 +949,19 @@ impl Storage {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "
-            SELECT id, title, alias, provider_id, model, cwd, created_at, updated_at
+            SELECT
+                sessions.id,
+                sessions.title,
+                sessions.alias,
+                sessions.provider_id,
+                sessions.model,
+                sessions.cwd,
+                sessions.created_at,
+                sessions.updated_at,
+                COUNT(messages.id) AS message_count
             FROM sessions
+            LEFT JOIN messages ON messages.session_id = sessions.id
+            GROUP BY sessions.id, sessions.title, sessions.alias, sessions.provider_id, sessions.model, sessions.cwd, sessions.created_at, sessions.updated_at
             ORDER BY updated_at DESC
             LIMIT ?1
             ",
@@ -965,6 +976,7 @@ impl Storage {
                 alias: row.get(2)?,
                 provider_id: row.get(3)?,
                 model: row.get(4)?,
+                message_count: row.get(8)?,
                 cwd: cwd.map(PathBuf::from),
                 created_at: parse_datetime(&created_at)?,
                 updated_at: parse_datetime(&updated_at)?,
@@ -979,9 +991,20 @@ impl Storage {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "
-            SELECT id, title, alias, provider_id, model, cwd, created_at, updated_at
+            SELECT
+                sessions.id,
+                sessions.title,
+                sessions.alias,
+                sessions.provider_id,
+                sessions.model,
+                sessions.cwd,
+                sessions.created_at,
+                sessions.updated_at,
+                COUNT(messages.id) AS message_count
             FROM sessions
-            WHERE id = ?1
+            LEFT JOIN messages ON messages.session_id = sessions.id
+            WHERE sessions.id = ?1
+            GROUP BY sessions.id, sessions.title, sessions.alias, sessions.provider_id, sessions.model, sessions.cwd, sessions.created_at, sessions.updated_at
             ",
         )?;
         let session = statement
@@ -995,6 +1018,7 @@ impl Storage {
                     alias: row.get(2)?,
                     provider_id: row.get(3)?,
                     model: row.get(4)?,
+                    message_count: row.get(8)?,
                     cwd: cwd.map(PathBuf::from),
                     created_at: parse_datetime(&created_at)?,
                     updated_at: parse_datetime(&updated_at)?,
@@ -1097,8 +1121,26 @@ impl Storage {
     }
 
     pub fn list_missions(&self) -> Result<Vec<Mission>> {
+        self.list_missions_limited(None)
+    }
+
+    pub fn list_missions_limited(&self, limit: Option<usize>) -> Result<Vec<Mission>> {
         let connection = self.connection()?;
-        let mut statement = connection.prepare(
+        let query = if let Some(limit) = limit {
+            format!(
+                "
+            SELECT
+                id, title, details, status_json, created_at, updated_at, alias, requested_model,
+                session_id, phase_json, handoff_summary, workspace_key, watch_path, watch_recursive,
+                watch_fingerprint, wake_trigger_json, wake_at, scheduled_for_at,
+                repeat_interval_seconds, repeat_anchor_at, last_error, retries, max_retries, evolve
+            FROM missions
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT {}
+            ",
+                limit.max(1)
+            )
+        } else {
             "
             SELECT
                 id, title, details, status_json, created_at, updated_at, alias, requested_model,
@@ -1107,8 +1149,10 @@ impl Storage {
                 repeat_interval_seconds, repeat_anchor_at, last_error, retries, max_retries, evolve
             FROM missions
             ORDER BY updated_at DESC, created_at DESC
-            ",
-        )?;
+            "
+            .to_string()
+        };
+        let mut statement = connection.prepare(&query)?;
         let rows = statement.query_map([], row_to_mission)?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1136,11 +1180,23 @@ impl Storage {
     }
 
     pub fn count_active_missions(&self) -> Result<usize> {
-        Ok(self
-            .list_missions()?
-            .into_iter()
-            .filter(|mission| !mission.status.is_terminal())
-            .count())
+        let connection = self.connection()?;
+        let completed = serde_json::to_string(&MissionStatus::Completed)?;
+        let failed = serde_json::to_string(&MissionStatus::Failed)?;
+        let cancelled = serde_json::to_string(&MissionStatus::Cancelled)?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM missions WHERE status_json NOT IN (?1, ?2, ?3)",
+            params![completed, failed, cancelled],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    pub fn count_missions(&self) -> Result<usize> {
+        let connection = self.connection()?;
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM missions", [], |row| row.get(0))?;
+        Ok(count as usize)
     }
 
     pub fn save_mission_checkpoint(&self, checkpoint: &MissionCheckpoint) -> Result<()> {
@@ -2672,8 +2728,8 @@ fn sync_directory(_: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use agent_core::{
-        ConnectorApprovalRecord, ConnectorApprovalStatus, ConnectorKind, MemoryKind,
-        MemoryReviewStatus, MemoryScope, MessageRole, SkillDraftStatus, ToolCall,
+        ConnectorApprovalRecord, ConnectorApprovalStatus, ConnectorKind, MemoryKind, Mission,
+        MissionStatus, MemoryReviewStatus, MemoryScope, MessageRole, SkillDraftStatus, ToolCall,
     };
 
     fn temp_storage() -> Storage {
@@ -2847,6 +2903,36 @@ mod tests {
         let logs = storage.list_logs_after(second.created_at, 10).unwrap();
         let ids = logs.into_iter().map(|entry| entry.id).collect::<Vec<_>>();
         assert_eq!(ids, vec!["log-2".to_string(), "log-3".to_string()]);
+    }
+
+    #[test]
+    fn mission_counts_and_limited_listing_round_trip() {
+        let storage = temp_storage();
+
+        let mut queued = Mission::new("Queued".to_string(), "Pending".to_string());
+        queued.status = MissionStatus::Queued;
+        queued.updated_at = Utc::now();
+        storage.upsert_mission(&queued).unwrap();
+
+        let mut waiting = Mission::new("Waiting".to_string(), "Sleeping".to_string());
+        waiting.status = MissionStatus::Waiting;
+        waiting.updated_at = queued.updated_at + chrono::Duration::seconds(1);
+        storage.upsert_mission(&waiting).unwrap();
+
+        let mut completed = Mission::new("Completed".to_string(), "Done".to_string());
+        completed.status = MissionStatus::Completed;
+        completed.updated_at = waiting.updated_at + chrono::Duration::seconds(1);
+        storage.upsert_mission(&completed).unwrap();
+
+        assert_eq!(storage.count_missions().unwrap(), 3);
+        assert_eq!(storage.count_active_missions().unwrap(), 2);
+
+        let limited = storage.list_missions_limited(Some(2)).unwrap();
+        let ids = limited.into_iter().map(|mission| mission.id).collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&completed.id));
+        assert!(ids.contains(&waiting.id));
+        assert!(!ids.contains(&queued.id));
     }
 
     #[test]

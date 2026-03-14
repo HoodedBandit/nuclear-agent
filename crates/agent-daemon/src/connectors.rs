@@ -1,7 +1,8 @@
 use crate::{append_log, resolve_request_cwd, ApiError, AppState};
 use agent_core::{
-    AppConnectorConfig, AppConnectorUpsertRequest, ConnectorApprovalRecord,
-    ConnectorApprovalStatus, ConnectorApprovalUpdateRequest, ConnectorKind, DiscordConnectorConfig,
+    AppConnectorConfig, AppConnectorUpsertRequest, BraveConnectorConfig,
+    BraveConnectorUpsertRequest, ConnectorApprovalRecord, ConnectorApprovalStatus,
+    ConnectorApprovalUpdateRequest, ConnectorKind, DiscordConnectorConfig,
     DiscordConnectorUpsertRequest, DiscordPollResponse, DiscordSendRequest, DiscordSendResponse,
     GmailConnectorConfig, GmailConnectorUpsertRequest, GmailPollResponse, GmailSendRequest,
     GmailSendResponse, HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest,
@@ -32,16 +33,17 @@ mod telegram;
 mod webhook;
 
 pub(crate) use admin::{
-    delete_app_connector, delete_discord_connector, delete_gmail_connector,
+    delete_app_connector, delete_brave_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_signal_connector,
     delete_slack_connector, delete_telegram_connector, delete_webhook_connector,
-    get_discord_connector, get_gmail_connector, get_home_assistant_connector, get_inbox_connector,
-    get_signal_connector, get_slack_connector, get_telegram_connector, get_webhook_connector,
-    list_app_connectors, list_discord_connectors, list_gmail_connectors,
+    get_brave_connector, get_discord_connector, get_gmail_connector,
+    get_home_assistant_connector, get_inbox_connector, get_signal_connector, get_slack_connector,
+    get_telegram_connector, get_webhook_connector, list_app_connectors, list_brave_connectors,
+    list_discord_connectors, list_gmail_connectors,
     list_home_assistant_connectors, list_inbox_connectors, list_signal_connectors,
     list_slack_connectors, list_telegram_connectors, list_webhook_connectors, upsert_app_connector,
-    upsert_discord_connector, upsert_gmail_connector, upsert_home_assistant_connector,
-    upsert_inbox_connector, upsert_signal_connector, upsert_slack_connector,
+    upsert_brave_connector, upsert_discord_connector, upsert_gmail_connector,
+    upsert_home_assistant_connector, upsert_inbox_connector, upsert_signal_connector, upsert_slack_connector,
     upsert_telegram_connector, upsert_webhook_connector,
 };
 pub(crate) use approvals::{
@@ -658,6 +660,7 @@ fn connector_display_name(kind: ConnectorKind) -> &'static str {
         ConnectorKind::HomeAssistant => "home assistant",
         ConnectorKind::Signal => "signal",
         ConnectorKind::Gmail => "gmail",
+        ConnectorKind::Brave => "brave",
     }
 }
 
@@ -672,6 +675,7 @@ fn connector_log_category(kind: ConnectorKind) -> &'static str {
         ConnectorKind::HomeAssistant => "home_assistant",
         ConnectorKind::Signal => "signal",
         ConnectorKind::Gmail => "gmail",
+        ConnectorKind::Brave => "brave",
     }
 }
 

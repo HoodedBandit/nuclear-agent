@@ -12,6 +12,7 @@ mod connectors;
 mod control;
 mod dashboard;
 mod delegation;
+mod auth;
 mod memory;
 mod missions;
 mod patch;
@@ -31,20 +32,24 @@ use agent_core::{
 };
 #[cfg(test)]
 use agent_core::{
-    AuthMode, BatchTaskRequest, DelegationLimit, SubAgentStrategy, SubAgentTask, ThinkingLevel,
+    AuthMode, BatchTaskRequest, DelegationLimit, ProviderSuggestionRequest, SubAgentStrategy,
+    SubAgentTask, ThinkingLevel,
 };
 use agent_storage::Storage;
 use anyhow::{Context, Result};
 use axum::{http::StatusCode, response::IntoResponse, Json};
+#[cfg(test)]
+use axum::extract::State;
 use chrono::{DateTime, Utc};
 pub(crate) use connectors::{
     approve_connector_approval, call_home_assistant_service_route, delete_app_connector,
-    delete_discord_connector, delete_gmail_connector, delete_home_assistant_connector,
-    delete_inbox_connector, delete_signal_connector, delete_slack_connector,
-    delete_telegram_connector, delete_webhook_connector, get_discord_connector,
-    get_gmail_connector, get_home_assistant_connector, get_home_assistant_entity_state_route,
-    get_inbox_connector, get_signal_connector, get_slack_connector, get_telegram_connector,
-    get_webhook_connector, list_app_connectors, list_connector_approvals, list_discord_connectors,
+    delete_brave_connector, delete_discord_connector, delete_gmail_connector,
+    delete_home_assistant_connector, delete_inbox_connector, delete_signal_connector,
+    delete_slack_connector, delete_telegram_connector, delete_webhook_connector,
+    get_brave_connector, get_discord_connector, get_gmail_connector, get_home_assistant_connector,
+    get_home_assistant_entity_state_route, get_inbox_connector, get_signal_connector,
+    get_slack_connector, get_telegram_connector, get_webhook_connector, list_app_connectors,
+    list_brave_connectors, list_connector_approvals, list_discord_connectors,
     list_gmail_connectors, list_home_assistant_connectors, list_inbox_connectors,
     list_signal_connectors, list_slack_connectors, list_telegram_connectors,
     list_webhook_connectors, poll_discord_connector_route, poll_gmail_connector_route,
@@ -52,18 +57,24 @@ pub(crate) use connectors::{
     poll_signal_connector_route, poll_slack_connector_route, poll_telegram_connector_route,
     receive_webhook_event, reject_connector_approval, send_discord_message_route,
     send_gmail_message_route, send_signal_message_route, send_slack_message_route,
-    send_telegram_message_route, upsert_app_connector, upsert_discord_connector,
-    upsert_gmail_connector, upsert_home_assistant_connector, upsert_inbox_connector,
-    upsert_signal_connector, upsert_slack_connector, upsert_telegram_connector,
-    upsert_webhook_connector,
+    send_telegram_message_route, upsert_app_connector, upsert_brave_connector,
+    upsert_discord_connector, upsert_gmail_connector, upsert_home_assistant_connector,
+    upsert_inbox_connector, upsert_signal_connector, upsert_slack_connector,
+    upsert_telegram_connector, upsert_webhook_connector,
+};
+pub(crate) use auth::{
+    get_provider_browser_auth_status, new_browser_auth_store, provider_browser_auth_callback,
+    provider_browser_auth_complete, start_provider_browser_auth,
 };
 pub(crate) use control::{
-    autonomy_status, autopilot_status, clear_provider_credentials, delegation_status,
-    delete_mcp_server, doctor, enable_autonomy, get_permission_preset, list_aliases,
+    autonomy_status, autopilot_status, clear_provider_credentials, dashboard_bootstrap,
+    delegation_status, delete_alias, delete_mcp_server, delete_provider, doctor,
+    enable_autonomy, get_permission_preset, get_trust, list_aliases,
     list_delegation_targets, list_enabled_skills, list_events, list_logs, list_mcp_servers,
     list_provider_models, list_providers, pause_autonomy, resume_autonomy, shutdown, status,
-    update_autopilot, update_daemon_config, update_delegation_config, update_enabled_skills,
-    update_permission_preset, update_trust, upsert_alias, upsert_mcp_server, upsert_provider,
+    suggest_provider_defaults, update_autopilot, update_daemon_config,
+    update_delegation_config, update_enabled_skills, update_permission_preset, update_trust,
+    upsert_alias, upsert_mcp_server, upsert_provider,
 };
 pub(crate) use delegation::{
     delegation_targets_from_config, normalize_delegation_limit,
@@ -94,7 +105,7 @@ pub(crate) use runtime::{
     ToolLoopResolution,
 };
 use serde::Deserialize;
-pub(crate) use sessions::{get_session, list_sessions};
+pub(crate) use sessions::{get_session, list_sessions, rename_session};
 #[cfg(test)]
 use std::path::PathBuf;
 use tokio::{
@@ -110,6 +121,7 @@ const MAX_RESOLVED_SUBAGENT_RUNS: usize = 16;
 const MAX_TOOL_LOOP_ITERATIONS: usize = 8;
 const REPEATED_TOOL_BATCH_LIMIT: usize = 2;
 const DEFAULT_DAEMON_HTTP_TIMEOUT_SECS: u64 = 20;
+pub(crate) type DashboardSessionStore = Arc<RwLock<HashMap<String, DateTime<Utc>>>>;
 pub(crate) const AUTOPILOT_DIRECTIVE_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {
@@ -220,12 +232,18 @@ pub(crate) struct AppState {
     storage: Storage,
     config: Arc<RwLock<AppConfig>>,
     http_client: Client,
+    browser_auth_sessions: auth::BrowserAuthStore,
+    dashboard_sessions: DashboardSessionStore,
     started_at: DateTime<Utc>,
     shutdown: mpsc::UnboundedSender<()>,
     autopilot_wake: Arc<Notify>,
     log_wake: Arc<Notify>,
     restart_requested: Arc<AtomicBool>,
     rate_limiter: ProviderRateLimiter,
+}
+
+pub(crate) fn new_dashboard_session_store() -> DashboardSessionStore {
+    Arc::new(RwLock::new(HashMap::new()))
 }
 
 #[derive(Deserialize)]
@@ -269,6 +287,8 @@ pub async fn run_daemon() -> Result<()> {
         http_client: Client::builder()
             .timeout(Duration::from_secs(DEFAULT_DAEMON_HTTP_TIMEOUT_SECS))
             .build()?,
+        browser_auth_sessions: new_browser_auth_store(),
+        dashboard_sessions: new_dashboard_session_store(),
         started_at: Utc::now(),
         shutdown: shutdown_tx,
         autopilot_wake: autopilot_wake.clone(),
@@ -465,6 +485,8 @@ mod tests {
             .unwrap(),
             config: Arc::new(tokio::sync::RwLock::new(config)),
             http_client: reqwest::Client::new(),
+            browser_auth_sessions: new_browser_auth_store(),
+            dashboard_sessions: new_dashboard_session_store(),
             started_at: Utc::now(),
             shutdown: tokio::sync::mpsc::unbounded_channel().0,
             autopilot_wake: Arc::new(tokio::sync::Notify::new()),
@@ -472,6 +494,74 @@ mod tests {
             restart_requested: Arc::new(AtomicBool::new(false)),
             rate_limiter: ProviderRateLimiter::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn status_reports_mission_counts_from_storage() {
+        let state = test_state_with_config(config_with_aliases());
+
+        let mut queued = Mission::new("Queued mission".to_string(), "Inspect repo".to_string());
+        queued.status = MissionStatus::Queued;
+        queued.updated_at = Utc::now();
+        state.storage.upsert_mission(&queued).unwrap();
+
+        let mut waiting = Mission::new("Waiting mission".to_string(), "Wait for a timer".to_string());
+        waiting.status = MissionStatus::Waiting;
+        waiting.updated_at = queued.updated_at + chrono::Duration::seconds(1);
+        state.storage.upsert_mission(&waiting).unwrap();
+
+        let mut completed =
+            Mission::new("Completed mission".to_string(), "Already done".to_string());
+        completed.status = MissionStatus::Completed;
+        completed.updated_at = waiting.updated_at + chrono::Duration::seconds(1);
+        state.storage.upsert_mission(&completed).unwrap();
+
+        let Json(response) = status(State(state)).await.unwrap();
+        assert_eq!(response.missions, 3);
+        assert_eq!(response.active_missions, 2);
+    }
+
+    #[tokio::test]
+    async fn dashboard_bootstrap_returns_summary_state_and_recent_activity() {
+        let mut config = config_with_aliases();
+        config.trust_policy.allow_network = true;
+        config.delegation.disabled_provider_ids = vec!["anthropic".to_string()];
+        let main_alias = config
+            .aliases
+            .iter()
+            .find(|alias| alias.alias == "main")
+            .cloned()
+            .unwrap();
+
+        let state = test_state_with_config(config.clone());
+        state
+            .storage
+            .ensure_session("session-1", &main_alias, "openai", "gpt-5.4")
+            .unwrap();
+        state
+            .storage
+            .append_log(&LogEntry {
+                id: "event-1".to_string(),
+                level: "info".to_string(),
+                scope: "tests".to_string(),
+                message: "dashboard bootstrap".to_string(),
+                created_at: Utc::now(),
+            })
+            .unwrap();
+
+        let Json(response) = dashboard_bootstrap(State(state)).await.unwrap();
+        assert_eq!(response.providers.len(), config.providers.len());
+        assert_eq!(response.aliases.len(), config.aliases.len());
+        assert_eq!(response.sessions.len(), 1);
+        assert_eq!(response.events.len(), 1);
+        assert_eq!(response.permissions, config.permission_preset);
+        assert!(response.trust.allow_network);
+        assert_eq!(
+            response.delegation_config.disabled_provider_ids,
+            vec!["anthropic".to_string()]
+        );
+        assert_eq!(response.status.providers, config.providers.len());
+        assert_eq!(response.status.aliases, config.aliases.len());
     }
 
     #[test]
@@ -643,6 +733,100 @@ mod tests {
             .map(|(alias, _)| alias.alias)
             .collect::<Vec<_>>();
         assert_eq!(aliases, vec!["main", "local"]);
+    }
+
+    #[tokio::test]
+    async fn suggest_provider_defaults_avoids_logged_in_provider_collisions() {
+        let state = test_state_with_config(config_with_aliases());
+        let response = suggest_provider_defaults(
+            State(state),
+            Json(ProviderSuggestionRequest {
+                preferred_provider_id: "anthropic".to_string(),
+                preferred_alias_name: None,
+                default_model: Some("claude-sonnet-4-20250514".to_string()),
+                editing_provider_id: None,
+                editing_alias_name: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(response.provider_id, "anthropic-2");
+        assert_eq!(
+            response.alias_name.as_deref(),
+            Some("anthropic-2-claude-sonnet-4")
+        );
+        assert_eq!(
+            response.alias_model.as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+        assert!(!response.would_be_first_main);
+    }
+
+    #[tokio::test]
+    async fn suggest_provider_defaults_preserves_existing_ids_in_edit_mode() {
+        let state = test_state_with_config(config_with_aliases());
+        let response = suggest_provider_defaults(
+            State(state),
+            Json(ProviderSuggestionRequest {
+                preferred_provider_id: "anthropic".to_string(),
+                preferred_alias_name: Some("claude".to_string()),
+                default_model: Some("claude-sonnet".to_string()),
+                editing_provider_id: Some("anthropic".to_string()),
+                editing_alias_name: Some("claude".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(response.provider_id, "anthropic");
+        assert_eq!(response.alias_name.as_deref(), Some("claude"));
+        assert_eq!(response.alias_model.as_deref(), Some("claude-sonnet"));
+    }
+
+    #[test]
+    fn provider_pool_includes_secondary_logged_in_provider_for_parallel_spawns() {
+        let mut config = config_with_aliases();
+        config.providers.push(ProviderConfig {
+            id: "anthropic-2".to_string(),
+            display_name: "Anthropic Backup".to_string(),
+            kind: ProviderKind::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            auth_mode: AuthMode::OAuth,
+            default_model: Some("claude-opus-4-1".to_string()),
+            keychain_account: Some("provider:anthropic-2".to_string()),
+            oauth: None,
+            local: false,
+        });
+        config
+            .aliases
+            .push(alias("claude-backup", "anthropic-2", "claude-opus-4-1"));
+
+        let pool = provider_pool_candidates(&config, Some("main")).unwrap();
+        assert!(pool.iter().any(|(_, provider)| provider.id == "anthropic"));
+        assert!(pool.iter().any(|(_, provider)| provider.id == "anthropic-2"));
+
+        let resolved = resolve_subagent_candidates(
+            &config,
+            Some("main"),
+            &SubAgentTask {
+                prompt: "Review this patch".to_string(),
+                target: None,
+                alias: None,
+                provider_id: Some("anthropic-2".to_string()),
+                requested_model: None,
+                cwd: None,
+                thinking_level: None,
+                output_schema_json: None,
+                strategy: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0.alias, "claude-backup");
+        assert_eq!(resolved[0].1.id, "anthropic-2");
     }
 
     #[test]

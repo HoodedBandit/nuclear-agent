@@ -1267,6 +1267,7 @@ impl<'a> TuiApp<'a> {
                         "/v1/webhooks",
                         &WebhookConnectorUpsertRequest {
                             connector: connector.clone(),
+                            webhook_token: None,
                         },
                     )
                     .await?;
@@ -1372,6 +1373,7 @@ impl<'a> TuiApp<'a> {
                         "/v1/telegram",
                         &TelegramConnectorUpsertRequest {
                             connector: connector.clone(),
+                            bot_token: None,
                         },
                     )
                     .await?;
@@ -1454,6 +1456,7 @@ impl<'a> TuiApp<'a> {
                         "/v1/discord",
                         &DiscordConnectorUpsertRequest {
                             connector: connector.clone(),
+                            bot_token: None,
                         },
                     )
                     .await?;
@@ -1534,6 +1537,7 @@ impl<'a> TuiApp<'a> {
                         "/v1/slack",
                         &SlackConnectorUpsertRequest {
                             connector: connector.clone(),
+                            bot_token: None,
                         },
                     )
                     .await?;
@@ -1698,6 +1702,7 @@ impl<'a> TuiApp<'a> {
                         "/v1/home-assistant",
                         &HomeAssistantConnectorUpsertRequest {
                             connector: connector.clone(),
+                            access_token: None,
                         },
                     )
                     .await?;
@@ -2990,8 +2995,10 @@ impl<'a> TuiApp<'a> {
                         + daemon_status.home_assistant_connectors
                         + daemon_status.webhook_connectors
                         + daemon_status.inbox_connectors
+                        + daemon_status.gmail_connectors
+                        + daemon_status.brave_connectors
                 )),
-                search_text: "connectors telegram discord slack signal home assistant webhook inbox approvals".to_string(),
+                search_text: "connectors telegram discord slack signal home assistant webhook inbox gmail brave approvals".to_string(),
                 current: false,
                 action: PickerAction::OpenSettingsSection(SettingsSection::Connectors),
             },
@@ -5170,6 +5177,7 @@ impl<'a> TuiApp<'a> {
                 "/v1/webhooks",
                 &WebhookConnectorUpsertRequest {
                     connector: connector.clone(),
+                    webhook_token: Some(token.clone()),
                 },
             )
             .await?;
@@ -5286,6 +5294,7 @@ impl<'a> TuiApp<'a> {
                 "/v1/telegram",
                 &TelegramConnectorUpsertRequest {
                     connector: connector.clone(),
+                    bot_token: Some(bot_token),
                 },
             )
             .await?;
@@ -5354,6 +5363,7 @@ impl<'a> TuiApp<'a> {
                 "/v1/discord",
                 &DiscordConnectorUpsertRequest {
                     connector: connector.clone(),
+                    bot_token: Some(bot_token),
                 },
             )
             .await?;
@@ -5420,6 +5430,7 @@ impl<'a> TuiApp<'a> {
                 "/v1/slack",
                 &SlackConnectorUpsertRequest {
                     connector: connector.clone(),
+                    bot_token: Some(bot_token),
                 },
             )
             .await?;
@@ -5554,6 +5565,7 @@ impl<'a> TuiApp<'a> {
                 "/v1/home-assistant",
                 &HomeAssistantConnectorUpsertRequest {
                     connector: connector.clone(),
+                    access_token: Some(access_token),
                 },
             )
             .await?;

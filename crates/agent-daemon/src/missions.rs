@@ -90,8 +90,13 @@ const EVOLVE_DIRECTIVE_SCHEMA: &str = r#"{
 
 pub(crate) async fn list_missions(
     State(state): State<AppState>,
+    Query(query): Query<LimitQuery>,
 ) -> Result<Json<Vec<Mission>>, ApiError> {
-    Ok(Json(state.storage.list_missions()?))
+    Ok(Json(
+        state
+            .storage
+            .list_missions_limited(query.limit.map(|limit| limit.clamp(1, 200)))?,
+    ))
 }
 
 pub(crate) async fn evolve_status(
@@ -1687,6 +1692,8 @@ mod tests {
             .unwrap(),
             config: Arc::new(RwLock::new(AppConfig::default())),
             http_client: Client::new(),
+            browser_auth_sessions: crate::new_browser_auth_store(),
+            dashboard_sessions: crate::new_dashboard_session_store(),
             started_at: Utc::now(),
             shutdown: mpsc::unbounded_channel().0,
             autopilot_wake: Arc::new(Notify::new()),

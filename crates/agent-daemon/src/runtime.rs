@@ -7,9 +7,11 @@ use agent_core::{
     AuthMode, AutonomyMode, AutonomyState, BatchTaskRequest, BatchTaskResponse,
     ConversationMessage, InputAttachment, MessageRole, ModelAlias, PermissionPreset,
     ProviderConfig, ProviderReply, RunTaskResponse, SessionMessage, SubAgentResult, ThinkingLevel,
-    ToolExecutionOutcome, ToolExecutionRecord,
+    ToolCall, ToolExecutionOutcome, ToolExecutionRecord,
 };
-use agent_policy::{allow_network, allow_shell, permission_summary, tool_allowed_by_preset};
+use agent_policy::{
+    allow_network, allow_shell, is_network_tool, permission_summary, tool_allowed_by_preset,
+};
 use agent_providers::{load_api_key, load_oauth_token, run_prompt};
 use agent_storage::PersistSessionTurnInput;
 use anyhow::Result;
@@ -25,7 +27,10 @@ use crate::{
     },
     learn_from_interaction, load_enabled_skill_guidance, load_pattern_guidance,
     sync_system_profile_memories,
-    tools::{execute_tool_call, tool_definitions, ToolContext},
+    tools::{
+        execute_tool_call, sanitize_tool_arguments, sanitize_tool_call,
+        tool_call_has_sensitive_arguments, tool_definitions, ToolContext,
+    },
     ApiError, AppState, MAX_TOOL_LOOP_ITERATIONS, REPEATED_TOOL_BATCH_LIMIT,
 };
 
@@ -413,7 +418,7 @@ async fn drive_tool_loop(
     if !context.background_network_allowed
         || !allow_network(&context.trust_policy, &context.autonomy)
     {
-        tools.retain(|tool| tool.name != "fetch_url" && tool.name != "http_request");
+        tools.retain(|tool| !is_network_tool(&tool.name));
     }
     let mut transcript_messages = Vec::new();
     let mut tool_events = Vec::new();
@@ -477,7 +482,7 @@ async fn drive_tool_loop(
             tool_events.push(tool_execution.record.clone());
             current_tool_batch.push(ToolBatchExecution {
                 name: tool_call.name.clone(),
-                arguments: tool_call.arguments.clone(),
+                arguments: sanitize_tool_arguments(&tool_call.name, &tool_call.arguments),
                 outcome: match tool_execution.record.outcome {
                     ToolExecutionOutcome::Success => "success",
                     ToolExecutionOutcome::Error => "error",
@@ -613,8 +618,11 @@ fn persist_execution(state: &AppState, input: PersistExecutionInput<'_>) -> Resu
             Some(reply.model.clone()),
         )
         .with_tool_metadata(message.tool_call_id.clone(), message.tool_name.clone())
-        .with_tool_calls(message.tool_calls.clone())
-        .with_provider_payload(message.provider_payload_json.clone())
+        .with_tool_calls(sanitized_tool_calls(&message.tool_calls))
+        .with_provider_payload(sanitized_provider_payload(
+            &message.tool_calls,
+            message.provider_payload_json.clone(),
+        ))
         .with_attachments(message.attachments.clone())
     }));
     persisted_messages.push(
@@ -625,8 +633,11 @@ fn persist_execution(state: &AppState, input: PersistExecutionInput<'_>) -> Resu
             Some(provider.id.clone()),
             Some(reply.model.clone()),
         )
-        .with_tool_calls(reply.tool_calls.clone())
-        .with_provider_payload(reply.provider_payload_json.clone()),
+        .with_tool_calls(sanitized_tool_calls(&reply.tool_calls))
+        .with_provider_payload(sanitized_provider_payload(
+            &reply.tool_calls,
+            reply.provider_payload_json.clone(),
+        )),
     );
     state
         .storage
@@ -640,6 +651,21 @@ fn persist_execution(state: &AppState, input: PersistExecutionInput<'_>) -> Resu
             messages: &persisted_messages,
         })?;
     Ok(())
+}
+
+fn sanitized_tool_calls(tool_calls: &[ToolCall]) -> Vec<ToolCall> {
+    tool_calls.iter().map(sanitize_tool_call).collect()
+}
+
+fn sanitized_provider_payload(
+    tool_calls: &[ToolCall],
+    provider_payload_json: Option<String>,
+) -> Option<String> {
+    if tool_calls.iter().any(tool_call_has_sensitive_arguments) {
+        None
+    } else {
+        provider_payload_json
+    }
 }
 
 fn load_history_messages(
@@ -701,6 +727,7 @@ async fn tool_context(
         http_client: state.http_client.clone(),
         mcp_servers: config.mcp_servers.clone(),
         app_connectors: config.app_connectors.clone(),
+        brave_connectors: config.brave_connectors.clone(),
         current_alias: Some(alias.alias.clone()),
         default_thinking_level: thinking_level,
         delegation,
@@ -966,4 +993,54 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitized_provider_payload, sanitized_tool_calls};
+    use agent_core::ToolCall;
+    use serde_json::Value;
+
+    #[test]
+    fn sanitized_tool_calls_redacts_secret_fields() {
+        let tool_calls = vec![ToolCall {
+            id: "call-1".to_string(),
+            name: "configure_telegram_connector".to_string(),
+            arguments: r#"{"bot_token":"123:abc","id":"telegram-main"}"#.to_string(),
+        }];
+
+        let sanitized = sanitized_tool_calls(&tool_calls);
+
+        let parsed: Value = serde_json::from_str(&sanitized[0].arguments).unwrap();
+        assert_eq!(parsed["bot_token"], Value::String("[REDACTED]".to_string()));
+        assert_eq!(parsed["id"], Value::String("telegram-main".to_string()));
+    }
+
+    #[test]
+    fn sanitized_provider_payload_drops_raw_payload_for_sensitive_tool_calls() {
+        let tool_calls = vec![ToolCall {
+            id: "call-1".to_string(),
+            name: "configure_home_assistant_connector".to_string(),
+            arguments: r#"{"access_token":"secret-token"}"#.to_string(),
+        }];
+
+        assert_eq!(
+            sanitized_provider_payload(&tool_calls, Some("{\"raw\":true}".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn sanitized_provider_payload_keeps_non_sensitive_payloads() {
+        let tool_calls = vec![ToolCall {
+            id: "call-1".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path":"README.md"}"#.to_string(),
+        }];
+
+        assert_eq!(
+            sanitized_provider_payload(&tool_calls, Some("{\"raw\":true}".to_string())),
+            Some("{\"raw\":true}".to_string())
+        );
+    }
 }

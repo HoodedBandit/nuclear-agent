@@ -18,6 +18,12 @@ pub const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
 pub const DEFAULT_MOONSHOT_URL: &str = "https://api.moonshot.ai/v1";
 pub const DEFAULT_OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 pub const DEFAULT_VENICE_URL: &str = "https://api.venice.ai/api/v1";
+pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5";
+pub const DEFAULT_CHATGPT_CODEX_MODEL: &str = "gpt-5-codex";
+pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
+pub const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-4.1";
+pub const DEFAULT_MOONSHOT_MODEL: &str = "kimi-k2";
+pub const DEFAULT_VENICE_MODEL: &str = "venice-large";
 pub const KEYCHAIN_SERVICE: &str = "agent-builder";
 pub const INTERNAL_DAEMON_ARG: &str = "__daemon";
 
@@ -225,6 +231,7 @@ pub enum ConnectorKind {
     HomeAssistant,
     Signal,
     Gmail,
+    Brave,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -933,6 +940,8 @@ pub struct SessionSummary {
     pub provider_id: String,
     pub model: String,
     #[serde(default)]
+    pub message_count: usize,
+    #[serde(default)]
     pub cwd: Option<PathBuf>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1087,6 +1096,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub gmail_connectors: Vec<GmailConnectorConfig>,
     #[serde(default)]
+    pub brave_connectors: Vec<BraveConnectorConfig>,
+    #[serde(default)]
     pub enabled_skills: Vec<String>,
     #[serde(default)]
     pub autopilot: AutopilotConfig,
@@ -1120,6 +1131,7 @@ impl Default for AppConfig {
             home_assistant_connectors: Vec::new(),
             signal_connectors: Vec::new(),
             gmail_connectors: Vec::new(),
+            brave_connectors: Vec::new(),
             enabled_skills: Vec::new(),
             autopilot: AutopilotConfig::default(),
             delegation: DelegationConfig::default(),
@@ -1153,6 +1165,101 @@ impl AppConfig {
             .ok_or_else(|| anyhow!("configured main alias '{alias}' is missing"))
     }
 
+    pub fn has_usable_main_alias(&self) -> bool {
+        self.main_alias()
+            .ok()
+            .is_some_and(|alias| self.get_provider(&alias.provider_id).is_some())
+    }
+
+    pub fn next_available_provider_id(&self, preferred: &str) -> String {
+        self.next_available_provider_id_excluding(preferred, None)
+    }
+
+    pub fn next_available_provider_id_excluding(
+        &self,
+        preferred: &str,
+        existing_id: Option<&str>,
+    ) -> String {
+        let preferred = preferred.trim();
+        let preferred = if preferred.is_empty() {
+            "provider"
+        } else {
+            preferred
+        };
+        if !self.provider_id_taken(preferred, existing_id) {
+            return preferred.to_string();
+        }
+
+        let mut index = 2;
+        loop {
+            let candidate = format!("{preferred}-{index}");
+            if !self.provider_id_taken(&candidate, existing_id) {
+                return candidate;
+            }
+            index += 1;
+        }
+    }
+
+    pub fn next_available_alias_name(&self, preferred: &str) -> String {
+        self.next_available_alias_name_excluding(preferred, None)
+    }
+
+    pub fn next_available_alias_name_excluding(
+        &self,
+        preferred: &str,
+        existing_alias: Option<&str>,
+    ) -> String {
+        let preferred = preferred.trim();
+        let preferred = if preferred.is_empty() { "alias" } else { preferred };
+        if !self.alias_name_taken(preferred, existing_alias) {
+            return preferred.to_string();
+        }
+
+        let mut index = 2;
+        loop {
+            let candidate = format!("{preferred}-{index}");
+            if !self.alias_name_taken(&candidate, existing_alias) {
+                return candidate;
+            }
+            index += 1;
+        }
+    }
+
+    pub fn default_alias_name_for(&self, provider_id: &str, model: &str) -> String {
+        let preferred = if self.main_agent_alias.is_none() && self.aliases.is_empty() {
+            "main".to_string()
+        } else {
+            let model_slug = model
+                .chars()
+                .map(|ch| match ch {
+                    'a'..='z' | 'A'..='Z' | '0'..='9' => ch.to_ascii_lowercase(),
+                    _ => '-',
+                })
+                .collect::<String>()
+                .split('-')
+                .filter(|segment| !segment.is_empty())
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("-");
+            if model_slug.is_empty() {
+                provider_id.to_string()
+            } else {
+                format!("{provider_id}-{model_slug}")
+            }
+        };
+        self.next_available_alias_name(&preferred)
+    }
+
+    fn provider_id_taken(&self, candidate: &str, existing_id: Option<&str>) -> bool {
+        self.get_provider(candidate)
+            .is_some_and(|provider| Some(provider.id.as_str()) != existing_id)
+    }
+
+    fn alias_name_taken(&self, candidate: &str, existing_alias: Option<&str>) -> bool {
+        self.get_alias(candidate)
+            .is_some_and(|alias| Some(alias.alias.as_str()) != existing_alias)
+    }
+
     pub fn upsert_provider(&mut self, provider: ProviderConfig) {
         if let Some(existing) = self
             .providers
@@ -1175,6 +1282,37 @@ impl AppConfig {
         } else {
             self.aliases.push(alias);
         }
+    }
+
+    pub fn remove_provider(&mut self, provider_id: &str) -> bool {
+        let before = self.providers.len();
+        self.providers.retain(|provider| provider.id != provider_id);
+        let removed = before != self.providers.len();
+        if removed {
+            self.aliases.retain(|alias| alias.provider_id != provider_id);
+            if self
+                .main_agent_alias
+                .as_deref()
+                .and_then(|alias_name| self.get_alias(alias_name))
+                .is_none()
+            {
+                self.main_agent_alias = None;
+            }
+            self.delegation
+                .disabled_provider_ids
+                .retain(|entry| entry != provider_id);
+        }
+        removed
+    }
+
+    pub fn remove_alias(&mut self, alias_name: &str) -> bool {
+        let before = self.aliases.len();
+        self.aliases.retain(|alias| alias.alias != alias_name);
+        let removed = before != self.aliases.len();
+        if removed && self.main_agent_alias.as_deref() == Some(alias_name) {
+            self.main_agent_alias = None;
+        }
+        removed
     }
 
     pub fn upsert_mcp_server(&mut self, server: McpServerConfig) {
@@ -1361,6 +1499,24 @@ impl AppConfig {
         self.gmail_connectors
             .retain(|connector| connector.id != id);
         before != self.gmail_connectors.len()
+    }
+
+    pub fn upsert_brave_connector(&mut self, connector: BraveConnectorConfig) {
+        if let Some(existing) = self
+            .brave_connectors
+            .iter_mut()
+            .find(|entry| entry.id == connector.id)
+        {
+            *existing = connector;
+        } else {
+            self.brave_connectors.push(connector);
+        }
+    }
+
+    pub fn remove_brave_connector(&mut self, id: &str) -> bool {
+        let before = self.brave_connectors.len();
+        self.brave_connectors.retain(|connector| connector.id != id);
+        before != self.brave_connectors.len()
     }
 }
 
@@ -1628,6 +1784,23 @@ pub struct SignalConnectorConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BraveConnectorConfig {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_key_keychain_account: Option<String>,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectorApprovalRecord {
     pub id: String,
     pub connector_kind: ConnectorKind,
@@ -1824,10 +1997,89 @@ pub struct AliasUpsertRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRenameRequest {
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderUpsertRequest {
     pub provider: ProviderConfig,
     pub api_key: Option<String>,
     pub oauth_token: Option<OAuthToken>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSuggestionRequest {
+    pub preferred_provider_id: String,
+    #[serde(default)]
+    pub preferred_alias_name: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub editing_provider_id: Option<String>,
+    #[serde(default)]
+    pub editing_alias_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSuggestionResponse {
+    pub provider_id: String,
+    #[serde(default)]
+    pub alias_name: Option<String>,
+    #[serde(default)]
+    pub alias_model: Option<String>,
+    pub would_be_first_main: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserProviderAuthKind {
+    Codex,
+    Claude,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserProviderAuthSessionStatus {
+    Pending,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserProviderAuthStartRequest {
+    pub kind: BrowserProviderAuthKind,
+    pub provider_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub alias_name: Option<String>,
+    #[serde(default)]
+    pub alias_model: Option<String>,
+    #[serde(default)]
+    pub alias_description: Option<String>,
+    #[serde(default)]
+    pub set_as_main: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserProviderAuthStartResponse {
+    pub session_id: String,
+    pub status: BrowserProviderAuthSessionStatus,
+    #[serde(default)]
+    pub authorization_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserProviderAuthStatusResponse {
+    pub session_id: String,
+    pub kind: BrowserProviderAuthKind,
+    pub provider_id: String,
+    pub display_name: String,
+    pub status: BrowserProviderAuthSessionStatus,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1930,6 +2182,8 @@ pub struct AppConnectorUpsertRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WebhookConnectorUpsertRequest {
     pub connector: WebhookConnectorConfig,
+    #[serde(default)]
+    pub webhook_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1940,21 +2194,29 @@ pub struct InboxConnectorUpsertRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TelegramConnectorUpsertRequest {
     pub connector: TelegramConnectorConfig,
+    #[serde(default)]
+    pub bot_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiscordConnectorUpsertRequest {
     pub connector: DiscordConnectorConfig,
+    #[serde(default)]
+    pub bot_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SlackConnectorUpsertRequest {
     pub connector: SlackConnectorConfig,
+    #[serde(default)]
+    pub bot_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HomeAssistantConnectorUpsertRequest {
     pub connector: HomeAssistantConnectorConfig,
+    #[serde(default)]
+    pub access_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2165,6 +2427,15 @@ pub struct GmailConnectorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GmailConnectorUpsertRequest {
     pub connector: GmailConnectorConfig,
+    #[serde(default)]
+    pub oauth_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BraveConnectorUpsertRequest {
+    pub connector: BraveConnectorConfig,
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2201,6 +2472,10 @@ pub struct DaemonStatus {
     pub started_at: DateTime<Utc>,
     pub persistence_mode: PersistenceMode,
     pub auto_start: bool,
+    #[serde(default)]
+    pub main_agent_alias: Option<String>,
+    #[serde(default)]
+    pub onboarding_complete: bool,
     pub autonomy: AutonomyProfile,
     #[serde(default)]
     pub evolve: EvolveConfig,
@@ -2226,6 +2501,8 @@ pub struct DaemonStatus {
     #[serde(default)]
     pub gmail_connectors: usize,
     #[serde(default)]
+    pub brave_connectors: usize,
+    #[serde(default)]
     pub pending_connector_approvals: usize,
     pub missions: usize,
     pub active_missions: usize,
@@ -2236,6 +2513,42 @@ pub struct DaemonStatus {
     pub skill_drafts: usize,
     #[serde(default)]
     pub published_skills: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DashboardBootstrapResponse {
+    pub status: DaemonStatus,
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
+    #[serde(default)]
+    pub aliases: Vec<ModelAlias>,
+    #[serde(default)]
+    pub delegation_targets: Vec<DelegationTarget>,
+    #[serde(default)]
+    pub telegram_connectors: Vec<TelegramConnectorConfig>,
+    #[serde(default)]
+    pub discord_connectors: Vec<DiscordConnectorConfig>,
+    #[serde(default)]
+    pub slack_connectors: Vec<SlackConnectorConfig>,
+    #[serde(default)]
+    pub signal_connectors: Vec<SignalConnectorConfig>,
+    #[serde(default)]
+    pub home_assistant_connectors: Vec<HomeAssistantConnectorConfig>,
+    #[serde(default)]
+    pub webhook_connectors: Vec<WebhookConnectorConfig>,
+    #[serde(default)]
+    pub inbox_connectors: Vec<InboxConnectorConfig>,
+    #[serde(default)]
+    pub gmail_connectors: Vec<GmailConnectorConfig>,
+    #[serde(default)]
+    pub brave_connectors: Vec<BraveConnectorConfig>,
+    #[serde(default)]
+    pub sessions: Vec<SessionSummary>,
+    #[serde(default)]
+    pub events: Vec<LogEntry>,
+    pub permissions: PermissionPreset,
+    pub trust: TrustPolicy,
+    pub delegation_config: DelegationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
