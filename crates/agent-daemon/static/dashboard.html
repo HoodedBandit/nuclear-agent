@@ -21,7 +21,7 @@
       </div>
       <form id="auth-form" class="auth-panel">
         <label class="field">
-          <span>Bearer token</span>
+          <span>Daemon token</span>
           <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste daemon token">
         </label>
         <div class="auth-panel__actions">
@@ -265,9 +265,110 @@
         <div class="split-grid">
           <article class="subpanel">
             <div class="subpanel__header">
-              <h3>Providers</h3>
+              <h3>Provider setup</h3>
             </div>
-            <div id="providers-list" class="stacked-list"></div>
+            <p id="provider-form-mode" class="panel__meta">Create or update a provider, then optionally create an alias.</p>
+            <form id="provider-form" class="inline-form">
+              <div class="field-grid">
+                <label class="field">
+                  <span>Preset</span>
+                  <select id="provider-preset">
+                    <option value="codex">ChatGPT Codex</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Claude / Anthropic</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="moonshot">Moonshot</option>
+                    <option value="venice">Venice</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Provider ID</span>
+                  <input id="provider-id" type="text" autocomplete="off" placeholder="openai">
+                </label>
+                <label class="field">
+                  <span>Display name</span>
+                  <input id="provider-name" type="text" autocomplete="off" placeholder="OpenAI">
+                </label>
+              </div>
+              <div class="field-grid">
+                <label class="field">
+                  <span>Kind</span>
+                  <select id="provider-kind">
+                    <option value="open_ai_compatible">open_ai_compatible</option>
+                    <option value="chat_gpt_codex">chat_gpt_codex</option>
+                    <option value="anthropic">anthropic</option>
+                    <option value="ollama">ollama</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Base URL</span>
+                  <input id="provider-base-url" type="text" autocomplete="off" placeholder="https://api.openai.com/v1">
+                </label>
+                <label class="field">
+                  <span>Auth mode</span>
+                  <select id="provider-auth-mode">
+                    <option value="api_key">api_key</option>
+                    <option value="oauth">oauth</option>
+                    <option value="none">none</option>
+                  </select>
+                </label>
+              </div>
+              <div class="field-grid">
+                <label class="field">
+                  <span>Default model</span>
+                  <input id="provider-default-model" type="text" autocomplete="off" placeholder="gpt-4.1">
+                </label>
+                <label class="toggle">
+                  <input id="provider-local" type="checkbox">
+                  <span>Local provider</span>
+                </label>
+              </div>
+              <label class="field">
+                <span>API key / secret</span>
+                <input id="provider-api-key" type="password" autocomplete="off" placeholder="Optional for api_key mode">
+              </label>
+              <div class="provider-auth-toolbar">
+                <button id="provider-browser-auth" type="button" class="button-muted">Sign in with browser</button>
+                <p id="provider-browser-auth-status" class="provider-auth-status">
+                  Browser sign-in is available for ChatGPT Codex and Claude.
+                </p>
+              </div>
+              <label class="field">
+                <span>OAuth config JSON (advanced)</span>
+                <textarea id="provider-oauth-config" rows="4" placeholder='{"client_id":"...","authorization_url":"...","token_url":"...","scopes":[]}'></textarea>
+              </label>
+              <label class="field">
+                <span>OAuth token JSON (advanced)</span>
+                <textarea id="provider-oauth-token" rows="4" placeholder='{"access_token":"...","refresh_token":"..."}'></textarea>
+              </label>
+              <div class="field-grid">
+                <label class="field">
+                  <span>Alias name</span>
+                  <input id="provider-alias-name" type="text" autocomplete="off" placeholder="main">
+                </label>
+                <label class="field">
+                  <span>Alias model</span>
+                  <input id="provider-alias-model" type="text" autocomplete="off" placeholder="Uses default model if blank">
+                </label>
+                <label class="field">
+                  <span>Alias description</span>
+                  <input id="provider-alias-description" type="text" autocomplete="off" placeholder="Optional">
+                </label>
+              </div>
+              <label id="provider-set-main-row" class="toggle">
+                <input id="provider-set-main" type="checkbox" checked>
+                <span>Set alias as main</span>
+              </label>
+              <div class="auth-panel__actions">
+                <button id="provider-save" type="submit">Save provider</button>
+                <button id="provider-discover-models" type="button" class="button-muted">Discover models</button>
+                <button id="provider-reset" type="button" class="button-ghost">Reset</button>
+              </div>
+            </form>
+            <div id="provider-model-results" class="stacked-list" style="margin-top:14px"></div>
+            <div id="providers-list" class="stacked-list" style="margin-top:14px"></div>
           </article>
           <article class="subpanel">
             <div class="subpanel__header">
@@ -300,7 +401,7 @@
                 </label>
               </div>
               <div class="auth-panel__actions">
-                <button id="alias-submit" type="submit">Add alias</button>
+                <button id="alias-submit" type="submit">Save alias</button>
               </div>
             </form>
           </article>
@@ -391,6 +492,38 @@
               <h3>Trust policy</h3>
             </div>
             <div id="trust-toggles" class="inline-form"></div>
+            <form id="trust-path-form" class="inline-form" style="margin-top:14px">
+              <label class="field">
+                <span>Add trusted path</span>
+                <input id="trust-path-input" type="text" autocomplete="off" placeholder="J:\Workspace\Project">
+              </label>
+              <div class="auth-panel__actions">
+                <button type="submit">Add path</button>
+              </div>
+            </form>
+            <div id="trust-paths" class="stacked-list" style="margin-top:14px"></div>
+            <div class="subpanel__header" style="margin-top:22px">
+              <h3>Delegation</h3>
+            </div>
+            <form id="delegation-form" class="inline-form">
+              <div class="field-grid">
+                <label class="field">
+                  <span>Max depth</span>
+                  <input id="delegation-max-depth" type="text" autocomplete="off" placeholder="1 or unlimited">
+                </label>
+                <label class="field">
+                  <span>Max parallel subagents</span>
+                  <input id="delegation-max-parallel" type="text" autocomplete="off" placeholder="8 or unlimited">
+                </label>
+              </div>
+              <label class="field">
+                <span>Disabled provider IDs (comma-separated)</span>
+                <input id="delegation-disabled-providers" type="text" autocomplete="off" placeholder="provider-a,provider-b">
+              </label>
+              <div class="auth-panel__actions">
+                <button type="submit">Save delegation</button>
+              </div>
+            </form>
           </article>
         </div>
       </section>
@@ -415,6 +548,7 @@
                 <option value="webhook">webhook</option>
                 <option value="inbox">inbox</option>
                 <option value="gmail">gmail</option>
+                <option value="brave">brave</option>
               </select>
             </label>
             <label class="field">
@@ -426,9 +560,32 @@
               <input id="connector-add-id" type="text" autocomplete="off" placeholder="auto-generated if empty">
             </label>
           </div>
+          <div class="field-grid">
+            <label class="field">
+              <span>Description</span>
+              <input id="connector-add-description" type="text" autocomplete="off" placeholder="Optional description">
+            </label>
+            <label class="field">
+              <span>Alias</span>
+              <input id="connector-add-alias" type="text" autocomplete="off" placeholder="main">
+            </label>
+            <label class="field">
+              <span>Model override</span>
+              <input id="connector-add-model" type="text" autocomplete="off" placeholder="optional">
+            </label>
+            <label class="field">
+              <span>Working directory</span>
+              <input id="connector-add-cwd" type="text" autocomplete="off" placeholder="optional">
+            </label>
+          </div>
+          <label class="toggle">
+            <input id="connector-add-enabled" type="checkbox" checked>
+            <span>Enabled</span>
+          </label>
           <div id="connector-add-fields" class="field-grid"></div>
           <div class="auth-panel__actions">
-            <button type="submit">Add connector</button>
+            <button id="connector-submit" type="submit">Save connector</button>
+            <button id="connector-reset" type="button" class="button-ghost">Reset</button>
           </div>
         </form>
       </section>
@@ -437,13 +594,22 @@
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Execution</p>
-            <h2>Run Task</h2>
+            <h2>Chat Workspace</h2>
           </div>
         </div>
+        <div class="chat-toolbar">
+          <div>
+            <p id="chat-session-meta" class="panel__meta">Start a new session or continue an existing one.</p>
+          </div>
+          <div class="auth-panel__actions">
+            <button id="chat-new-session" type="button" class="button-muted">New chat</button>
+          </div>
+        </div>
+        <div id="chat-transcript" class="stacked-list chat-transcript"></div>
         <form id="run-task-form" class="inline-form">
           <label class="field">
             <span>Prompt</span>
-            <textarea id="run-task-prompt" rows="4" placeholder="Enter a prompt to run..."></textarea>
+            <textarea id="run-task-prompt" rows="4" placeholder="Send a message to the agent..."></textarea>
           </label>
           <div class="field-grid">
             <label class="field">
@@ -459,14 +625,26 @@
               <select id="run-task-thinking">
                 <option value="">default</option>
                 <option value="none">none</option>
+                <option value="minimal">minimal</option>
                 <option value="low">low</option>
                 <option value="medium">medium</option>
                 <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Permission preset</span>
+              <select id="run-task-permission">
+                <option value="">default</option>
+                <option value="suggest">suggest</option>
+                <option value="auto_edit">auto_edit</option>
+                <option value="full_auto">full_auto</option>
               </select>
             </label>
           </div>
           <div class="auth-panel__actions">
-            <button type="submit">Run</button>
+            <button type="submit">Send</button>
+            <button id="chat-rename-button" type="button" class="button-ghost">Rename current chat</button>
           </div>
         </form>
         <div id="run-task-result" class="stacked-list" style="margin-top:14px"></div>

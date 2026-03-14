@@ -196,7 +196,19 @@ body {
   gap: 8px;
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: auto;
+}
+
 .field span,
+.checkbox-field span,
 .toggle span,
 .connection-status {
   font-size: 0.9rem;
@@ -645,6 +657,49 @@ button:disabled {
 .panel--mcp,
 .panel--daemon-config {
   grid-column: span 12;
+}
+
+.chat-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.chat-transcript {
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 4px;
+  margin-bottom: 16px;
+}
+
+.provider-auth-toolbar {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(31, 91, 71, 0.14);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.provider-auth-status {
+  min-height: 1.3em;
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.provider-auth-status[data-tone="ok"] {
+  color: var(--accent);
+}
+
+.provider-auth-status[data-tone="warn"] {
+  color: var(--amber);
+}
+
+.provider-auth-status[data-tone="error"] {
+  color: var(--danger);
 }
 
 select {

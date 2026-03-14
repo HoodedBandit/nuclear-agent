@@ -1,11 +1,13 @@
 use super::*;
 
+mod brave_tools;
 mod home_assistant_tools;
 mod messaging;
 
-pub(super) fn tool_definitions(_context: &ToolContext) -> Vec<ToolDefinition> {
+pub(super) fn tool_definitions(context: &ToolContext) -> Vec<ToolDefinition> {
     let mut tools = messaging::tool_definitions();
     tools.extend(home_assistant_tools::tool_definitions());
+    tools.extend(brave_tools::tool_definitions(context));
     tools
 }
 
@@ -15,6 +17,9 @@ pub(super) async fn execute_tool_call(
     args: &Value,
 ) -> Result<Option<String>> {
     if let Some(output) = messaging::execute_tool_call(context, tool_name, args).await? {
+        return Ok(Some(output));
+    }
+    if let Some(output) = brave_tools::execute_tool_call(context, tool_name, args).await? {
         return Ok(Some(output));
     }
     home_assistant_tools::execute_tool_call(context, tool_name, args).await

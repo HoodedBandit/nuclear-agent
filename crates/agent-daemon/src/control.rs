@@ -3,10 +3,11 @@ use std::time::Duration;
 use agent_core::{
     AliasUpsertRequest, AutonomyEnableRequest, AutonomyMode, AutonomyState, AutopilotConfig,
     AutopilotState, AutopilotUpdateRequest, DaemonConfigUpdateRequest, DaemonStatus,
-    DelegationConfig, DelegationConfigUpdateRequest, DelegationTarget, HealthReport, LogEntry,
-    McpServerConfig, McpServerUpsertRequest, MemoryReviewStatus, ModelAlias, PermissionPreset,
-    PermissionUpdateRequest, ProviderConfig, ProviderUpsertRequest, SkillDraftStatus,
-    SkillUpdateRequest, TrustUpdateRequest, INTERNAL_DAEMON_ARG,
+    DashboardBootstrapResponse, DelegationConfig, DelegationConfigUpdateRequest,
+    DelegationTarget, HealthReport, LogEntry, McpServerConfig, McpServerUpsertRequest,
+    MemoryReviewStatus, ModelAlias, PermissionPreset, PermissionUpdateRequest, ProviderConfig,
+    ProviderSuggestionRequest, ProviderSuggestionResponse, ProviderUpsertRequest,
+    SkillDraftStatus, SkillUpdateRequest, TrustUpdateRequest, INTERNAL_DAEMON_ARG,
 };
 use agent_policy::{autonomy_warning, permission_summary};
 use agent_providers::{delete_secret, health_check, store_api_key, store_oauth_token};
@@ -35,21 +36,54 @@ pub(crate) struct EventQuery {
 
 pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<DaemonStatus>, ApiError> {
     let config = state.config.read().await.clone();
-    let missions = state.storage.list_missions()?;
-    let active_missions = missions
-        .iter()
-        .filter(|mission| !mission.status.is_terminal())
-        .count();
-    let delegation_targets = delegation_targets_from_config(&config, None).len();
-    Ok(Json(DaemonStatus {
+    Ok(Json(build_daemon_status(&state, &config)?))
+}
+
+pub(crate) async fn dashboard_bootstrap(
+    State(state): State<AppState>,
+) -> Result<Json<DashboardBootstrapResponse>, ApiError> {
+    let config = state.config.read().await.clone();
+    let status = build_daemon_status(&state, &config)?;
+    let sessions = state.storage.list_sessions(25)?;
+    let events = load_events(&state, None, 40)?;
+    let delegation_targets = delegation_targets_from_config(&config, None);
+    Ok(Json(DashboardBootstrapResponse {
+        status,
+        providers: config.providers.clone(),
+        aliases: config.aliases.clone(),
+        delegation_targets,
+        telegram_connectors: config.telegram_connectors.clone(),
+        discord_connectors: config.discord_connectors.clone(),
+        slack_connectors: config.slack_connectors.clone(),
+        signal_connectors: config.signal_connectors.clone(),
+        home_assistant_connectors: config.home_assistant_connectors.clone(),
+        webhook_connectors: config.webhook_connectors.clone(),
+        inbox_connectors: config.inbox_connectors.clone(),
+        gmail_connectors: config.gmail_connectors.clone(),
+        brave_connectors: config.brave_connectors.clone(),
+        sessions,
+        events,
+        permissions: config.permission_preset,
+        trust: config.trust_policy.clone(),
+        delegation_config: config.delegation.clone(),
+    }))
+}
+
+fn build_daemon_status(state: &AppState, config: &agent_core::AppConfig) -> Result<DaemonStatus, ApiError> {
+    let mission_count = state.storage.count_missions()?;
+    let active_missions = state.storage.count_active_missions()?;
+    let delegation_targets = delegation_targets_from_config(config, None).len();
+    Ok(DaemonStatus {
         pid: std::process::id(),
         started_at: state.started_at,
-        persistence_mode: config.daemon.persistence_mode,
+        persistence_mode: config.daemon.persistence_mode.clone(),
         auto_start: config.daemon.auto_start,
-        autonomy: config.autonomy,
-        evolve: config.evolve,
-        autopilot: config.autopilot,
-        delegation: config.delegation,
+        main_agent_alias: config.main_agent_alias.clone(),
+        onboarding_complete: config.onboarding_complete,
+        autonomy: config.autonomy.clone(),
+        evolve: config.evolve.clone(),
+        autopilot: config.autopilot.clone(),
+        delegation: config.delegation.clone(),
         providers: config.providers.len(),
         aliases: config.aliases.len(),
         delegation_targets,
@@ -61,8 +95,9 @@ pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<DaemonS
         home_assistant_connectors: config.home_assistant_connectors.len(),
         signal_connectors: config.signal_connectors.len(),
         gmail_connectors: config.gmail_connectors.len(),
+        brave_connectors: config.brave_connectors.len(),
         pending_connector_approvals: state.storage.count_pending_connector_approvals()?,
-        missions: missions.len(),
+        missions: mission_count,
         active_missions,
         memories: state.storage.count_memories()?,
         pending_memory_reviews: state
@@ -72,7 +107,7 @@ pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<DaemonS
         published_skills: state
             .storage
             .count_skill_drafts_by_status(SkillDraftStatus::Published)?,
-    }))
+    })
 }
 
 pub(crate) async fn shutdown(
@@ -88,6 +123,57 @@ pub(crate) async fn list_providers(
 ) -> Result<Json<Vec<ProviderConfig>>, ApiError> {
     let config = state.config.read().await;
     Ok(Json(config.providers.clone()))
+}
+
+pub(crate) async fn suggest_provider_defaults(
+    State(state): State<AppState>,
+    Json(payload): Json<ProviderSuggestionRequest>,
+) -> Result<Json<ProviderSuggestionResponse>, ApiError> {
+    let preferred_provider_id = payload.preferred_provider_id.trim();
+    if preferred_provider_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "preferred_provider_id must not be empty",
+        ));
+    }
+
+    let config = state.config.read().await;
+    let editing_provider_id = payload
+        .editing_provider_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let provider_id =
+        config.next_available_provider_id_excluding(preferred_provider_id, editing_provider_id);
+
+    let default_model = payload
+        .default_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let editing_alias_name = payload
+        .editing_alias_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let alias_name = default_model.as_deref().map(|default_model| {
+        let preferred_alias_name = payload
+            .preferred_alias_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| config.default_alias_name_for(&provider_id, default_model));
+        config.next_available_alias_name_excluding(&preferred_alias_name, editing_alias_name)
+    });
+
+    Ok(Json(ProviderSuggestionResponse {
+        provider_id,
+        alias_name,
+        alias_model: default_model,
+        would_be_first_main: !config.has_usable_main_alias(),
+    }))
 }
 
 pub(crate) async fn upsert_provider(
@@ -117,6 +203,46 @@ pub(crate) async fn upsert_provider(
         format!("provider '{}' updated", payload.provider.id),
     )?;
     Ok(Json(payload.provider))
+}
+
+pub(crate) async fn delete_provider(
+    State(state): State<AppState>,
+    Path(provider_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let (removed, removed_aliases, secret_account) = {
+        let mut config = state.config.write().await;
+        let secret_account = config
+            .get_provider(&provider_id)
+            .and_then(|provider| provider.keychain_account.clone());
+        let aliases_before = config.aliases.len();
+        let removed = config.remove_provider(&provider_id);
+        let removed_aliases = aliases_before.saturating_sub(config.aliases.len());
+        if removed {
+            state.storage.save_config(&config)?;
+        }
+        (removed, removed_aliases, secret_account)
+    };
+
+    if !removed {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown provider"));
+    }
+
+    if let Some(account) = secret_account {
+        delete_secret(&account)?;
+    }
+
+    append_log(
+        &state,
+        "warn",
+        "providers",
+        format!(
+            "provider '{}' removed ({} alias{})",
+            provider_id,
+            removed_aliases,
+            if removed_aliases == 1 { "" } else { "es" }
+        ),
+    )?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub(crate) async fn list_provider_models(
@@ -201,6 +327,39 @@ pub(crate) async fn upsert_alias(
         ),
     )?;
     Ok(Json(payload.alias))
+}
+
+pub(crate) async fn delete_alias(
+    State(state): State<AppState>,
+    Path(alias_name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let removed = {
+        let mut config = state.config.write().await;
+        let removed = config.remove_alias(&alias_name);
+        if removed {
+            state.storage.save_config(&config)?;
+        }
+        removed
+    };
+
+    if !removed {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown alias"));
+    }
+
+    append_log(
+        &state,
+        "info",
+        "aliases",
+        format!("alias '{}' removed", alias_name),
+    )?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub(crate) async fn get_trust(
+    State(state): State<AppState>,
+) -> Result<Json<agent_core::TrustPolicy>, ApiError> {
+    let config = state.config.read().await;
+    Ok(Json(config.trust_policy.clone()))
 }
 
 pub(crate) async fn update_trust(

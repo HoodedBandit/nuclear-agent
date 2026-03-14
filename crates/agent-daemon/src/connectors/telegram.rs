@@ -199,7 +199,7 @@ async fn fetch_telegram_updates(
     let response = request.send().await.map_err(|error| {
         ApiError::new(
             StatusCode::BAD_GATEWAY,
-            format!("telegram getUpdates request failed: {error}"),
+            safe_telegram_request_error("telegram getUpdates request failed", &error),
         )
     })?;
     let status = response.status();
@@ -247,7 +247,7 @@ pub(super) async fn send_telegram_message(
         .map_err(|error| {
             ApiError::new(
                 StatusCode::BAD_GATEWAY,
-                format!("telegram sendMessage request failed: {error}"),
+                safe_telegram_request_error("telegram sendMessage request failed", &error),
             )
         })?;
     let status = response.status();
@@ -291,6 +291,36 @@ async fn persist_telegram_cursor(
     connector.last_update_id = last_update_id;
     state.storage.save_config(&config)?;
     Ok(())
+}
+
+fn safe_telegram_request_error(label: &str, error: &reqwest::Error) -> String {
+    let detail = redact_telegram_bot_token_in_text(&error.to_string());
+    if detail.trim().is_empty() {
+        label.to_string()
+    } else {
+        format!("{label}: {detail}")
+    }
+}
+
+fn redact_telegram_bot_token_in_text(text: &str) -> String {
+    const PREFIX: &str = "https://api.telegram.org/bot";
+    let mut cursor = 0usize;
+    let mut output = String::new();
+    while let Some(relative_index) = text[cursor..].find(PREFIX) {
+        let index = cursor + relative_index;
+        output.push_str(&text[cursor..index]);
+        let token_start = index + PREFIX.len();
+        let rest = &text[token_start..];
+        let token_end = rest
+            .find('/')
+            .or_else(|| rest.find(char::is_whitespace))
+            .unwrap_or(rest.len());
+        output.push_str(PREFIX);
+        output.push_str("[REDACTED]");
+        cursor = token_start + token_end;
+    }
+    output.push_str(&text[cursor..]);
+    output
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -369,6 +399,20 @@ pub(super) fn telegram_update_action(
 
     let _ = source;
     TelegramUpdateAction::Queue { title, details }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_telegram_bot_token_in_text;
+
+    #[test]
+    fn redact_telegram_bot_token_in_url_text() {
+        let redacted = redact_telegram_bot_token_in_text(
+            "telegram getUpdates request failed: error sending request for url (https://api.telegram.org/bot123:abc/getUpdates)",
+        );
+        assert!(!redacted.contains("123:abc"));
+        assert!(redacted.contains("https://api.telegram.org/bot[REDACTED]/getUpdates"));
+    }
 }
 
 fn build_telegram_pairing_approval(
