@@ -8,23 +8,24 @@ use std::{
 };
 
 use agent_core::{
-    AliasUpsertRequest, AuthMode, AutonomyEnableRequest, AutonomyMode, AutonomyProfile,
+    AliasUpsertRequest, AppConfig, AuthMode, AutonomyEnableRequest, AutonomyMode, AutonomyProfile,
     AutonomyState, AutopilotConfig, AutopilotState, AutopilotUpdateRequest,
     ConnectorApprovalRecord, ConnectorApprovalUpdateRequest, DaemonConfigUpdateRequest,
     DelegationConfig, DelegationConfigUpdateRequest, DelegationLimit, DelegationTarget,
     DiscordConnectorConfig, DiscordConnectorUpsertRequest, DiscordPollResponse, EvolveConfig,
     EvolveStartRequest, HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest,
     HomeAssistantPollResponse, InboxConnectorConfig, InboxConnectorUpsertRequest,
-    InboxPollResponse, InputAttachment, LogEntry, MemoryKind, MemoryRecord, MemoryReviewStatus,
+    InboxPollResponse, InputAttachment, LogEntry, MainTargetSummary, MemoryKind, MemoryRecord, MemoryReviewStatus,
     MemoryReviewUpdateRequest, MemoryScope, MemorySearchQuery, MemorySearchResponse,
     MemoryUpsertRequest, MessageRole, Mission, MissionStatus, PermissionPreset, PersistenceMode,
     ProviderConfig, ProviderKind, ProviderUpsertRequest, RunTaskResponse, SessionMessage,
     SessionSummary, SessionTranscript, SignalConnectorConfig, SignalConnectorUpsertRequest,
     SignalPollResponse, SkillDraft, SkillDraftStatus, SlackConnectorConfig,
     SlackConnectorUpsertRequest, SlackPollResponse, TelegramConnectorConfig,
-    TelegramConnectorUpsertRequest, TelegramPollResponse, ThinkingLevel, TrustUpdateRequest,
-    WakeTrigger, WebhookConnectorConfig, WebhookConnectorUpsertRequest, DEFAULT_CHATGPT_CODEX_URL,
-    DEFAULT_MOONSHOT_URL, DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL, DEFAULT_VENICE_URL,
+    TelegramConnectorUpsertRequest, TelegramPollResponse, ThinkingLevel, ToolCall,
+    TrustUpdateRequest, WakeTrigger, WebhookConnectorConfig, WebhookConnectorUpsertRequest,
+    DEFAULT_CHATGPT_CODEX_URL, DEFAULT_MOONSHOT_URL, DEFAULT_OPENAI_URL,
+    DEFAULT_OPENROUTER_URL, DEFAULT_VENICE_URL,
 };
 use agent_providers::{list_model_descriptors, store_api_key, ModelDescriptor};
 use agent_storage::Storage;
@@ -37,15 +38,18 @@ use crate::{
     autonomy_summary, browser_hosted_kind_to_provider_kind, build_compact_prompt,
     build_uncommitted_review_prompt, collect_image_attachments, compact_session,
     complete_browser_login, complete_oauth_login, copy_to_clipboard, current_request_cwd,
+    dashboard_ui_url,
     default_browser_hosted_url, default_hosted_url, execute_prompt, fork_session,
     hosted_kind_to_provider_kind, init_agents_file, interactive_provider_setup,
     load_transcript_for_interactive_fork, load_transcript_for_interactive_resume,
     openai_browser_oauth_config, parse_interactive_command, permission_summary,
-    persist_thinking_level, rank_sessions_for_picker, resolve_active_alias,
+    persist_thinking_level, provider_has_saved_access, rank_sessions_for_picker,
+    resolve_active_alias,
+    resolve_interactive_provider_selection,
     resolve_interactive_model_selection, resolve_requested_model_override,
     resolve_session_model_override, resolved_requested_model, run_bang_command,
-    thinking_level_label, BrowserLoginResult, DaemonClient, HostedKindArg, InteractiveCommand,
-    InteractiveModelSelection,
+    run_onboarding_reset, thinking_level_label, BrowserLoginResult, DaemonClient,
+    HostedKindArg, InteractiveCommand, InteractiveModelSelection, dashboard_launch_url,
 };
 
 use super::events::{spawn_prompt_task, AppEvent, AppEventSender, PromptTask};
@@ -115,12 +119,15 @@ pub(crate) enum PickerAction {
     Resume(SessionSummary),
     Fork(SessionSummary),
     SetModel(String),
-    SetAlias(String),
+    SwitchChatAlias(String),
+    SetMainAlias(String),
     SetThinking(Option<ThinkingLevel>),
     SetPermission(PermissionPreset),
     OpenConfig,
     OpenSettingsSection(SettingsSection),
-    OpenAliasPicker,
+    OpenAliasSwitcher,
+    OpenCurrentAliasPicker,
+    OpenMainAliasPicker,
     OpenModelPicker,
     OpenThinkingPicker,
     OpenPermissionPicker,
@@ -141,6 +148,7 @@ pub(crate) enum PickerAction {
     RejectSkillDraft(String),
     ShowDelegationTargets,
     EditApiKey(String),
+    OpenProviderSwitchPicker,
     OpenProviderPicker,
     OpenProviderActions(String),
     ShowProviderDetails(String),
@@ -377,7 +385,17 @@ pub(crate) enum ExternalAction {
     AddHomeAssistantConnector,
     ProviderBrowserLogin { provider_id: String },
     ProviderOAuthLogin { provider_id: String },
+    OnboardReset,
     OpenDashboard,
+}
+
+#[derive(Clone)]
+struct PromptSnapshot {
+    session_id: Option<String>,
+    alias: Option<String>,
+    requested_model: Option<String>,
+    transcript: Vec<SessionMessage>,
+    transcript_scroll_back: usize,
 }
 
 pub(crate) struct TuiApp<'a> {
@@ -406,6 +424,10 @@ pub(crate) struct TuiApp<'a> {
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) recent_events: Vec<LogEntry>,
     pub(crate) last_event_cursor: Option<DateTime<Utc>>,
+    pub(crate) pending_tool_calls: Vec<ToolCall>,
+    pub(crate) main_target: Option<MainTargetSummary>,
+    pub(crate) restart_event_poller: bool,
+    pending_prompt_snapshot: Option<PromptSnapshot>,
 }
 
 impl<'a> TuiApp<'a> {
@@ -462,12 +484,17 @@ impl<'a> TuiApp<'a> {
             context_window_percent: None,
             recent_events,
             last_event_cursor,
+            pending_tool_calls: Vec::new(),
+            main_target: config.main_target_summary(),
+            restart_event_poller: false,
+            pending_prompt_snapshot: None,
         };
         app.requested_model = resolve_session_model_override(
             storage,
             app.session_id.as_deref(),
             app.alias.as_deref(),
         )?;
+        app.refresh_main_target_summary()?;
         app.refresh_active_model_metadata().await?;
         Ok(app)
     }
@@ -480,6 +507,18 @@ impl<'a> TuiApp<'a> {
         self.pending_external_action.take()
     }
 
+    pub(super) fn take_restart_event_poller(&mut self) -> bool {
+        let restart = self.restart_event_poller;
+        self.restart_event_poller = false;
+        restart
+    }
+
+    fn refresh_main_target_summary(&mut self) -> Result<()> {
+        let config = self.storage.load_config()?;
+        self.main_target = config.main_target_summary();
+        Ok(())
+    }
+
     pub(super) fn record_error(&mut self, error: impl Into<String>) {
         self.busy = false;
         self.busy_since = None;
@@ -488,12 +527,19 @@ impl<'a> TuiApp<'a> {
 
     pub(super) async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
+            AppEvent::PromptProgress(event) => {
+                self.apply_prompt_progress(event);
+            }
             AppEvent::PromptFinished(result) => {
                 self.busy = false;
                 self.busy_since = None;
                 match result {
                     Ok(response) => self.complete_prompt(response).await?,
-                    Err(error) => self.open_static_overlay("Error", format!("error: {error}")),
+                    Err(error) => {
+                        self.restore_prompt_snapshot().await?;
+                        self.pending_tool_calls.clear();
+                        self.open_static_overlay("Error", format!("error: {error}"));
+                    }
                 }
             }
             AppEvent::DaemonEvents(events) => {
@@ -501,6 +547,35 @@ impl<'a> TuiApp<'a> {
             }
         }
         Ok(())
+    }
+
+    fn apply_prompt_progress(&mut self, event: agent_core::RunTaskStreamEvent) {
+        match event {
+            agent_core::RunTaskStreamEvent::SessionStarted {
+                alias, ..
+            } => {
+                self.alias = Some(alias);
+            }
+            agent_core::RunTaskStreamEvent::Message { message } => {
+                if message.role == MessageRole::Assistant {
+                    if message.tool_calls.is_empty() {
+                        self.pending_tool_calls.clear();
+                    } else {
+                        self.pending_tool_calls = message.tool_calls.clone();
+                    }
+                } else if message.role == MessageRole::Tool {
+                    if let Some(call_id) = message.tool_call_id.as_deref() {
+                        self.pending_tool_calls.retain(|call| call.id != call_id);
+                    }
+                }
+                self.transcript.push(message);
+                self.transcript_scroll_back = 0;
+            }
+            agent_core::RunTaskStreamEvent::Completed { .. } => {}
+            agent_core::RunTaskStreamEvent::Error { .. } => {
+                self.pending_tool_calls.clear();
+            }
+        }
     }
 
     pub(super) fn event_cursor(&self) -> Option<DateTime<Utc>> {
@@ -591,6 +666,13 @@ impl<'a> TuiApp<'a> {
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.open_transcript_overlay();
+            }
+            KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_alias_switcher().await?;
             }
             KeyEvent {
                 code: KeyCode::F(1),
@@ -791,6 +873,13 @@ impl<'a> TuiApp<'a> {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let selected_model =
             resolved_requested_model(active_alias, self.requested_model.as_deref()).to_string();
+        self.pending_prompt_snapshot = Some(PromptSnapshot {
+            session_id: self.session_id.clone(),
+            alias: self.alias.clone(),
+            requested_model: self.requested_model.clone(),
+            transcript: self.transcript.clone(),
+            transcript_scroll_back: self.transcript_scroll_back,
+        });
         self.transcript.push(
             SessionMessage::new(
                 session_id.clone(),
@@ -802,6 +891,7 @@ impl<'a> TuiApp<'a> {
             .with_attachments(self.attachments.clone()),
         );
         self.transcript_scroll_back = 0;
+        self.pending_tool_calls.clear();
         self.overlay = None;
         self.busy = true;
         self.busy_since = Some(Instant::now());
@@ -979,26 +1069,32 @@ impl<'a> TuiApp<'a> {
                 self.refresh_active_model_metadata().await?;
                 self.open_static_overlay("Models", format!("model override set to {model_id}"));
             }
-            PickerAction::SetAlias(alias) => {
+            PickerAction::SwitchChatAlias(alias) => {
                 let config = self.storage.load_config()?;
-                let alias_entry = config
+                config
                     .get_alias(&alias)
-                    .cloned()
                     .ok_or_else(|| anyhow!("unknown alias '{alias}'"))?;
-                let _: agent_core::ModelAlias = self
-                    .client
-                    .post(
-                        "/v1/aliases",
-                        &AliasUpsertRequest {
-                            alias: alias_entry,
-                            set_as_main: true,
-                        },
-                    )
-                    .await?;
                 self.alias = Some(alias.clone());
                 self.requested_model = None;
                 self.refresh_active_model_metadata().await?;
-                self.open_static_overlay("Settings", format!("default alias set to {alias}"));
+                self.open_static_overlay("Models", format!("current chat alias set to {alias}"));
+            }
+            PickerAction::SetMainAlias(alias) => {
+                let summary: MainTargetSummary = self
+                    .client
+                    .put(
+                        "/v1/main-alias",
+                        &agent_core::MainAliasUpdateRequest { alias: alias.clone() },
+                    )
+                    .await?;
+                self.refresh_main_target_summary()?;
+                self.open_static_overlay(
+                    "Settings",
+                    format!(
+                        "default alias set to {} ({}/{})",
+                        summary.alias, summary.provider_id, summary.model
+                    ),
+                );
             }
             PickerAction::SetThinking(level) => {
                 self.thinking_level = level;
@@ -1033,8 +1129,14 @@ impl<'a> TuiApp<'a> {
             PickerAction::OpenSettingsSection(section) => {
                 self.open_settings_section_picker(section).await?;
             }
-            PickerAction::OpenAliasPicker => {
-                self.open_alias_picker().await?;
+            PickerAction::OpenAliasSwitcher => {
+                self.open_alias_switcher().await?;
+            }
+            PickerAction::OpenCurrentAliasPicker => {
+                self.open_current_alias_picker().await?;
+            }
+            PickerAction::OpenMainAliasPicker => {
+                self.open_main_alias_picker().await?;
             }
             PickerAction::OpenModelPicker => {
                 self.open_model_picker().await?;
@@ -1176,6 +1278,9 @@ impl<'a> TuiApp<'a> {
                     true,
                     InputPromptAction::UpdateApiKey { provider_id },
                 );
+            }
+            PickerAction::OpenProviderSwitchPicker => {
+                self.open_provider_switch_picker()?;
             }
             PickerAction::OpenProviderPicker => {
                 self.open_provider_picker()?;
@@ -2471,6 +2576,7 @@ impl<'a> TuiApp<'a> {
                 self.transcript.clear();
                 self.transcript_scroll_back = 0;
                 self.requested_model = None;
+                self.pending_tool_calls.clear();
                 self.open_static_overlay("Session", "Started a new chat session.".to_string());
             }
             InteractiveCommand::Diff => {
@@ -2537,8 +2643,11 @@ impl<'a> TuiApp<'a> {
                     self.open_static_overlay("Init", format!("{} already exists.", path.display()));
                 }
             }
+            InteractiveCommand::Onboard => {
+                self.pending_external_action = Some(ExternalAction::OnboardReset);
+            }
             InteractiveCommand::ModelShow => {
-                self.open_model_picker().await?;
+                self.open_alias_switcher().await?;
             }
             InteractiveCommand::ModelSet(selection) => {
                 match resolve_interactive_model_selection(
@@ -2570,6 +2679,30 @@ impl<'a> TuiApp<'a> {
                         );
                     }
                 }
+            }
+            InteractiveCommand::ProviderShow => {
+                self.open_provider_switch_picker()?;
+            }
+            InteractiveCommand::ProviderSet(selection) => {
+                let new_alias = resolve_interactive_provider_selection(
+                    self.storage,
+                    self.alias.as_deref(),
+                    &selection,
+                )?;
+                let config = self.storage.load_config()?;
+                let summary = config
+                    .alias_target_summary(&new_alias)
+                    .ok_or_else(|| anyhow!("unknown alias '{new_alias}'"))?;
+                self.alias = Some(new_alias.clone());
+                self.requested_model = None;
+                self.refresh_active_model_metadata().await?;
+                self.open_static_overlay(
+                    "Providers",
+                    format!(
+                        "provider set to {} via alias {} ({})",
+                        summary.provider_display_name, summary.alias, summary.model
+                    ),
+                );
             }
             InteractiveCommand::ThinkingShow => {
                 self.open_thinking_picker().await?;
@@ -2637,6 +2770,7 @@ impl<'a> TuiApp<'a> {
     }
 
     async fn complete_prompt(&mut self, response: RunTaskResponse) -> Result<()> {
+        self.pending_prompt_snapshot = None;
         self.session_id = Some(response.session_id.clone());
         self.alias = Some(response.alias.clone());
         self.requested_model =
@@ -2644,7 +2778,21 @@ impl<'a> TuiApp<'a> {
         self.attachments.clear();
         self.transcript = self.storage.list_session_messages(&response.session_id)?;
         self.transcript_scroll_back = 0;
+        self.pending_tool_calls.clear();
         self.overlay = None;
+        self.refresh_active_model_metadata().await?;
+        Ok(())
+    }
+
+    async fn restore_prompt_snapshot(&mut self) -> Result<()> {
+        let Some(snapshot) = self.pending_prompt_snapshot.take() else {
+            return Ok(());
+        };
+        self.session_id = snapshot.session_id;
+        self.alias = snapshot.alias;
+        self.requested_model = snapshot.requested_model;
+        self.transcript = snapshot.transcript;
+        self.transcript_scroll_back = snapshot.transcript_scroll_back;
         self.refresh_active_model_metadata().await?;
         Ok(())
     }
@@ -2792,32 +2940,154 @@ impl<'a> TuiApp<'a> {
         Ok(())
     }
 
-    async fn open_alias_picker(&mut self) -> Result<()> {
+    async fn open_alias_switcher(&mut self) -> Result<()> {
         let config = self.storage.load_config()?;
-        let current_main_alias = config.main_agent_alias.clone();
+        let current_alias = self.alias.clone().unwrap_or_else(|| "main".to_string());
+        let main_target = config.main_target_summary();
+        let current_detail = config
+            .alias_target_summary(&current_alias)
+            .as_ref()
+            .map(|summary| format!("{} / {}", summary.provider_display_name, summary.model))
+            .unwrap_or_else(|| "current chat alias".to_string());
+        let main_detail = main_target
+            .as_ref()
+            .map(|summary| {
+                format!(
+                    "{} -> {} / {}",
+                    summary.alias, summary.provider_display_name, summary.model
+                )
+            })
+            .unwrap_or_else(|| "no default alias configured".to_string());
+        let selected_model = resolved_requested_model(
+            resolve_active_alias(&config, self.alias.as_deref())?,
+            self.requested_model.as_deref(),
+        )
+        .to_string();
+        let items = vec![
+            GenericPickerEntry {
+                label: "Switch current provider".to_string(),
+                detail: Some(current_detail.clone()),
+                search_text: "switch current provider logged in services".to_string(),
+                current: false,
+                action: PickerAction::OpenProviderSwitchPicker,
+            },
+            GenericPickerEntry {
+                label: "Switch current chat alias".to_string(),
+                detail: Some(format!("{} -> {}", current_alias, current_detail)),
+                search_text: format!("switch current chat alias {}", current_alias),
+                current: false,
+                action: PickerAction::OpenCurrentAliasPicker,
+            },
+            GenericPickerEntry {
+                label: "Set default main alias".to_string(),
+                detail: Some(main_detail),
+                search_text: "set default main alias provider".to_string(),
+                current: false,
+                action: PickerAction::OpenMainAliasPicker,
+            },
+            GenericPickerEntry {
+                label: "Model override".to_string(),
+                detail: Some(selected_model),
+                search_text: "model override current chat".to_string(),
+                current: false,
+                action: PickerAction::OpenModelPicker,
+            },
+        ];
+        self.open_generic_picker(
+            PickerMode::Alias,
+            "Provider and alias switcher",
+            "Enter select | Type to filter | Esc cancel",
+            "No matching switch action.",
+            items,
+        );
+        Ok(())
+    }
+
+    async fn open_current_alias_picker(&mut self) -> Result<()> {
+        let config = self.storage.load_config()?;
         let current_alias = self.alias.clone();
         let mut items = config
             .aliases
             .iter()
-            .map(|alias| GenericPickerEntry {
-                label: alias.alias.clone(),
-                detail: Some(format!("{} / {}", alias.provider_id, alias.model)),
-                search_text: format!(
-                    "{} {} {} {}",
-                    alias.alias,
-                    alias.provider_id,
-                    alias.model,
-                    alias.description.as_deref().unwrap_or_default()
-                ),
-                current: current_main_alias.as_deref() == Some(alias.alias.as_str())
-                    || current_alias.as_deref() == Some(alias.alias.as_str()),
-                action: PickerAction::SetAlias(alias.alias.clone()),
+            .filter_map(|alias| {
+                let provider = config.get_provider(&alias.provider_id)?;
+                let provider_name = if provider.display_name.trim().is_empty() {
+                    provider.id.clone()
+                } else {
+                    provider.display_name.clone()
+                };
+                Some(GenericPickerEntry {
+                    label: alias.alias.clone(),
+                    detail: Some(format!("{provider_name} / {}", alias.model)),
+                    search_text: format!(
+                        "{} {} {} {} {}",
+                        alias.alias,
+                        alias.provider_id,
+                        provider_name,
+                        alias.model,
+                        alias.description.as_deref().unwrap_or_default()
+                    ),
+                    current: current_alias.as_deref() == Some(alias.alias.as_str()),
+                    action: PickerAction::SwitchChatAlias(alias.alias.clone()),
+                })
             })
             .collect::<Vec<_>>();
-        items.sort_by(|left, right| left.label.cmp(&right.label));
+        items.sort_by(|left, right| {
+            left.detail
+                .as_deref()
+                .unwrap_or_default()
+                .cmp(right.detail.as_deref().unwrap_or_default())
+                .then_with(|| left.label.cmp(&right.label))
+        });
         self.open_generic_picker(
             PickerMode::Alias,
-            "Select a default alias",
+            "Switch current chat alias",
+            "Enter select | Type to filter | Esc cancel",
+            "No matching alias.",
+            items,
+        );
+        Ok(())
+    }
+
+    async fn open_main_alias_picker(&mut self) -> Result<()> {
+        let config = self.storage.load_config()?;
+        let current_main_alias = config.main_agent_alias.clone();
+        let mut items = config
+            .aliases
+            .iter()
+            .filter_map(|alias| {
+                let provider = config.get_provider(&alias.provider_id)?;
+                let provider_name = if provider.display_name.trim().is_empty() {
+                    provider.id.clone()
+                } else {
+                    provider.display_name.clone()
+                };
+                Some(GenericPickerEntry {
+                    label: alias.alias.clone(),
+                    detail: Some(format!("{provider_name} / {}", alias.model)),
+                    search_text: format!(
+                        "{} {} {} {} {}",
+                        alias.alias,
+                        alias.provider_id,
+                        provider_name,
+                        alias.model,
+                        alias.description.as_deref().unwrap_or_default()
+                    ),
+                    current: current_main_alias.as_deref() == Some(alias.alias.as_str()),
+                    action: PickerAction::SetMainAlias(alias.alias.clone()),
+                })
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            left.detail
+                .as_deref()
+                .unwrap_or_default()
+                .cmp(right.detail.as_deref().unwrap_or_default())
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        self.open_generic_picker(
+            PickerMode::Alias,
+            "Set default main alias",
             "Enter select | Type to filter | Esc cancel",
             "No matching alias.",
             items,
@@ -3071,17 +3341,17 @@ impl<'a> TuiApp<'a> {
                     action: PickerAction::OpenProviderPicker,
                 },
                 GenericPickerEntry {
-                    label: "Default alias / provider".to_string(),
+                    label: "Current chat and default main".to_string(),
                     detail: Some(format!(
-                        "{} -> {} / {}",
+                        "chat {} -> {} / {}",
                         active_alias.alias, active_alias.provider_id, active_alias.model
                     )),
                     search_text: format!(
-                        "default alias provider {} {} {}",
+                        "current chat default alias provider {} {} {}",
                         active_alias.alias, active_alias.provider_id, active_alias.model
                     ),
                     current: false,
-                    action: PickerAction::OpenAliasPicker,
+                    action: PickerAction::OpenAliasSwitcher,
                 },
             ]),
             SettingsSection::ModelThinking => items.extend([
@@ -3517,6 +3787,55 @@ impl<'a> TuiApp<'a> {
         Ok(())
     }
 
+    fn open_provider_switch_picker(&mut self) -> Result<()> {
+        let config = self.storage.load_config()?;
+        let active_provider = resolve_active_alias(&config, self.alias.as_deref())
+            .ok()
+            .map(|alias| alias.provider_id.clone());
+        let mut items = config
+            .providers
+            .iter()
+            .filter(|provider| provider_has_saved_access(provider))
+            .filter_map(|provider| {
+                let alias = self.preferred_provider_alias(&config, &provider.id)?;
+                let provider_name = if provider.display_name.trim().is_empty() {
+                    provider.id.clone()
+                } else {
+                    provider.display_name.clone()
+                };
+                Some(GenericPickerEntry {
+                    label: provider_name.clone(),
+                    detail: Some(format!(
+                        "{} | alias {} | model {}",
+                        provider.id, alias.alias, alias.model
+                    )),
+                    search_text: format!(
+                        "{} {} {} {}",
+                        provider.id, provider_name, alias.alias, alias.model
+                    ),
+                    current: active_provider.as_deref() == Some(provider.id.as_str()),
+                    action: PickerAction::SwitchChatAlias(alias.alias.clone()),
+                })
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.label.cmp(&right.label));
+        if items.is_empty() {
+            self.open_static_overlay(
+                "Providers",
+                "No logged-in providers with usable aliases are configured.".to_string(),
+            );
+            return Ok(());
+        }
+        self.open_generic_picker(
+            PickerMode::Provider,
+            "Switch current provider",
+            "Enter select | Type to filter | Esc cancel",
+            "No matching provider.",
+            items,
+        );
+        Ok(())
+    }
+
     fn open_provider_picker(&mut self) -> Result<()> {
         let config = self.storage.load_config()?;
         let active_provider = resolve_active_alias(&config, self.alias.as_deref())
@@ -3587,6 +3906,43 @@ impl<'a> TuiApp<'a> {
             items,
         );
         Ok(())
+    }
+
+    fn preferred_provider_alias<'b>(
+        &self,
+        config: &'b AppConfig,
+        provider_id: &str,
+    ) -> Option<&'b agent_core::ModelAlias> {
+        if let Some(alias) = self
+            .alias
+            .as_deref()
+            .and_then(|name| config.get_alias(name))
+            .filter(|alias| alias.provider_id == provider_id)
+        {
+            return Some(alias);
+        }
+
+        if let Some(alias) = config
+            .main_agent_alias
+            .as_deref()
+            .and_then(|name| config.get_alias(name))
+            .filter(|alias| alias.provider_id == provider_id)
+        {
+            return Some(alias);
+        }
+
+        if let Some(alias) = config
+            .get_alias(provider_id)
+            .filter(|alias| alias.provider_id == provider_id)
+        {
+            return Some(alias);
+        }
+
+        config
+            .aliases
+            .iter()
+            .filter(|alias| alias.provider_id == provider_id)
+            .min_by(|left, right| left.alias.cmp(&right.alias))
     }
 
     fn open_provider_action_picker(&mut self, provider_id: &str) -> Result<()> {
@@ -4920,7 +5276,7 @@ impl<'a> TuiApp<'a> {
             })
             .collect::<Vec<_>>();
         let body = format!(
-            "name={}\nid={}\nkind={}\nauth={}\nbase_url={}\ndefault_model={}\nlocal={}\nkeychain={}\ndelegation={}\naliases={}",
+            "name={}\nid={}\nkind={}\nauth={}\nbase_url={}\ndefault_model={}\nlocal={}\nsaved_access={}\ndelegation={}\naliases={}",
             provider.display_name,
             provider.id,
             provider_kind_label(provider),
@@ -4928,7 +5284,7 @@ impl<'a> TuiApp<'a> {
             provider.base_url,
             provider.default_model.as_deref().unwrap_or("(unset)"),
             provider.local,
-            provider.keychain_account.as_deref().unwrap_or("(none)"),
+            boolean_status(provider_has_saved_access(provider)),
             boolean_status(config.provider_delegation_enabled(&provider.id)),
             if aliases.is_empty() {
                 "(none)".to_string()
@@ -5082,22 +5438,55 @@ impl<'a> TuiApp<'a> {
             ExternalAction::ProviderOAuthLogin { provider_id } => {
                 self.run_provider_oauth_login(&provider_id).await
             }
+            ExternalAction::OnboardReset => self.run_onboarding_reset_flow().await,
             ExternalAction::OpenDashboard => self.open_dashboard().await,
         }
     }
 
-    async fn open_dashboard(&mut self) -> Result<()> {
-        let _ = crate::ensure_daemon(self.storage).await?;
+    async fn run_onboarding_reset_flow(&mut self) -> Result<()> {
+        run_onboarding_reset(self.storage, true).await?;
+        self.client = crate::ensure_daemon(self.storage).await?;
         let config = self.storage.load_config()?;
-        let url = format!(
-            "http://{}:{}/ui?token={}",
-            config.daemon.host, config.daemon.port, config.daemon.token
+        self.alias = config.main_agent_alias.clone();
+        self.session_id = None;
+        self.transcript.clear();
+        self.transcript_scroll_back = 0;
+        self.requested_model = None;
+        self.pending_tool_calls.clear();
+        self.attachments.clear();
+        self.main_target = config.main_target_summary();
+        self.thinking_level = config.thinking_level;
+        self.permission_preset = Some(config.permission_preset);
+        self.cwd = current_request_cwd()?;
+        self.recent_events.clear();
+        self.last_event_cursor = None;
+        self.restart_event_poller = true;
+        self.refresh_active_model_metadata().await?;
+        self.open_static_overlay(
+            "Onboarding",
+            format!(
+                "Reset complete. Fresh setup finished with main alias {}.",
+                config.main_agent_alias.as_deref().unwrap_or("(not configured)")
+            ),
         );
-        match webbrowser::open(&url) {
-            Ok(_) => self.open_static_overlay("Dashboard", format!("opened {url}")),
+        Ok(())
+    }
+
+    async fn open_dashboard(&mut self) -> Result<()> {
+        let ui_url = dashboard_ui_url(self.storage)?;
+        let launch_url = dashboard_launch_url(self.storage).await?;
+        match webbrowser::open(&launch_url) {
+            Ok(_) => self.open_static_overlay(
+                "Dashboard",
+                format!(
+                    "opened an immediate one-time connect link.\nreusable dashboard URL:\n{ui_url}"
+                ),
+            ),
             Err(error) => self.open_static_overlay(
                 "Dashboard",
-                format!("failed to open browser automatically.\nopen this URL manually:\n{url}\n\nerror: {error}"),
+                format!(
+                    "failed to open browser automatically.\nreusable dashboard URL:\n{ui_url}\n\nimmediate one-time connect URL (expires soon):\n{launch_url}\n\nerror: {error}"
+                ),
             ),
         }
         Ok(())
@@ -6488,13 +6877,105 @@ mod tests {
         browser_action_label, build_thinking_picker_entries, cursor_line_and_column,
         hosted_kind_for_provider, line_column_to_offset, next_char_boundary,
         previous_char_boundary, GenericPickerEntry, ModelPickerEntry, PickerAction, PickerMode,
-        PickerState,
+        PickerState, TuiApp,
     };
     use crate::HostedKindArg;
     use agent_core::{
-        AuthMode, ProviderConfig, ProviderKind, ThinkingLevel, DEFAULT_OPENROUTER_URL,
+        AppConfig, AuthMode, MainTargetSummary, ModelAlias, PermissionPreset, ProviderConfig,
+        ProviderKind, ThinkingLevel, DEFAULT_OPENROUTER_URL,
     };
+    use agent_storage::Storage;
     use agent_providers::{ModelDescriptor, ReasoningLevelDescriptor};
+    use uuid::Uuid;
+
+    fn temp_storage() -> Storage {
+        Storage::open_at(std::env::temp_dir().join(format!(
+            "autism-tui-test-{}",
+            Uuid::new_v4()
+        )))
+        .unwrap()
+    }
+
+    fn sample_provider(id: &str, display_name: &str, model: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:11434".to_string(),
+            auth_mode: AuthMode::None,
+            default_model: Some(model.to_string()),
+            keychain_account: None,
+            oauth: None,
+            local: true,
+        }
+    }
+
+    fn sample_alias(alias: &str, provider_id: &str, model: &str) -> ModelAlias {
+        ModelAlias {
+            alias: alias.to_string(),
+            provider_id: provider_id.to_string(),
+            model: model.to_string(),
+            description: None,
+        }
+    }
+
+    fn build_test_app<'a>(storage: &'a Storage) -> TuiApp<'a> {
+        let config = AppConfig {
+            onboarding_complete: true,
+            providers: vec![
+                sample_provider("codex", "Codex", "gpt-5-codex"),
+                sample_provider("anthropic", "Anthropic", "claude-sonnet"),
+            ],
+            aliases: vec![
+                sample_alias("main", "codex", "gpt-5-codex"),
+                sample_alias("claude", "anthropic", "claude-sonnet"),
+            ],
+            main_agent_alias: Some("main".to_string()),
+            ..AppConfig::default()
+        };
+        storage.save_config(&config).unwrap();
+
+        TuiApp {
+            storage,
+            client: crate::DaemonClient {
+                base_url: "http://127.0.0.1:9".to_string(),
+                token: "test-token".to_string(),
+                http: reqwest::Client::new(),
+            },
+            alias: Some("main".to_string()),
+            session_id: None,
+            thinking_level: None,
+            permission_preset: Some(PermissionPreset::AutoEdit),
+            attachments: Vec::new(),
+            cwd: std::env::current_dir().unwrap(),
+            transcript: Vec::new(),
+            input: String::new(),
+            input_cursor: 0,
+            overlay: None,
+            picker: None,
+            pending_external_action: None,
+            exit_requested: false,
+            busy: false,
+            busy_since: None,
+            transcript_scroll_back: 0,
+            requested_model: None,
+            active_model: Some("gpt-5-codex".to_string()),
+            active_provider_name: Some("Codex".to_string()),
+            context_window_tokens: None,
+            context_window_percent: None,
+            recent_events: Vec::new(),
+            last_event_cursor: None,
+            pending_tool_calls: Vec::new(),
+            main_target: Some(MainTargetSummary {
+                alias: "main".to_string(),
+                provider_id: "codex".to_string(),
+                provider_display_name: "Codex".to_string(),
+                model: "gpt-5-codex".to_string(),
+            }),
+            restart_event_poller: false,
+            pending_prompt_snapshot: None,
+        }
+    }
 
     #[test]
     fn cursor_boundaries_follow_utf8_chars() {
@@ -6638,5 +7119,61 @@ mod tests {
             Some(HostedKindArg::Openrouter)
         ));
         assert_eq!(browser_action_label(&provider), "Browser sign-in");
+    }
+
+    #[tokio::test]
+    async fn dashboard_slash_command_sets_external_action() {
+        let storage = temp_storage();
+        let mut app = build_test_app(&storage);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        app.handle_slash_command(crate::InteractiveCommand::DashboardOpen, &tx)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            app.pending_external_action,
+            Some(super::ExternalAction::OpenDashboard)
+        ));
+    }
+
+    #[tokio::test]
+    async fn onboard_slash_command_sets_external_action() {
+        let storage = temp_storage();
+        let mut app = build_test_app(&storage);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        app.handle_slash_command(crate::InteractiveCommand::Onboard, &tx)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            app.pending_external_action,
+            Some(super::ExternalAction::OnboardReset)
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_show_opens_switch_picker_with_logged_in_providers() {
+        let storage = temp_storage();
+        let mut app = build_test_app(&storage);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        app.handle_slash_command(crate::InteractiveCommand::ProviderShow, &tx)
+            .await
+            .unwrap();
+
+        let picker = app.picker.expect("provider picker should open");
+        assert!(matches!(picker.mode, PickerMode::Provider));
+        let labels = picker
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["Anthropic", "Codex"]);
+        assert!(picker
+            .items
+            .iter()
+            .any(|item| item.detail.as_deref().is_some_and(|detail| detail.contains("alias main"))));
     }
 }

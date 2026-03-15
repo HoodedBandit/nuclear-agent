@@ -327,7 +327,7 @@
               </div>
               <label class="field">
                 <span>API key / secret</span>
-                <input id="provider-api-key" type="password" autocomplete="off" placeholder="Optional for api_key mode">
+                <input id="provider-api-key" type="password" autocomplete="new-password" placeholder="Optional for api_key mode">
               </label>
               <div class="provider-auth-toolbar">
                 <button id="provider-browser-auth" type="button" class="button-muted">Sign in with browser</button>
@@ -337,11 +337,11 @@
               </div>
               <label class="field">
                 <span>OAuth config JSON (advanced)</span>
-                <textarea id="provider-oauth-config" rows="4" placeholder='{"client_id":"...","authorization_url":"...","token_url":"...","scopes":[]}'></textarea>
+                <textarea id="provider-oauth-config" rows="4" autocomplete="off" spellcheck="false" placeholder='{"client_id":"...","authorization_url":"...","token_url":"...","scopes":[]}'></textarea>
               </label>
               <label class="field">
                 <span>OAuth token JSON (advanced)</span>
-                <textarea id="provider-oauth-token" rows="4" placeholder='{"access_token":"...","refresh_token":"..."}'></textarea>
+                <textarea id="provider-oauth-token" rows="4" autocomplete="off" spellcheck="false" placeholder='{"access_token":"...","refresh_token":"..."}'></textarea>
               </label>
               <div class="field-grid">
                 <label class="field">
@@ -367,15 +367,15 @@
                 <button id="provider-reset" type="button" class="button-ghost">Reset</button>
               </div>
             </form>
-            <div id="provider-model-results" class="stacked-list" style="margin-top:14px"></div>
-            <div id="providers-list" class="stacked-list" style="margin-top:14px"></div>
+            <div id="provider-model-results" class="stacked-list u-mt-14"></div>
+            <div id="providers-list" class="stacked-list u-mt-14"></div>
           </article>
           <article class="subpanel">
             <div class="subpanel__header">
               <h3>Aliases</h3>
             </div>
             <div id="aliases-list" class="stacked-list"></div>
-            <form id="alias-form" class="inline-form" style="margin-top:14px">
+            <form id="alias-form" class="inline-form u-mt-14">
               <div class="field-grid">
                 <label class="field">
                   <span>Alias name</span>
@@ -429,7 +429,7 @@
                 <button type="submit">Search</button>
               </div>
             </form>
-            <div id="memory-search-results" class="stacked-list" style="margin-top:14px"></div>
+            <div id="memory-search-results" class="stacked-list u-mt-14"></div>
           </article>
           <article class="subpanel">
             <div class="subpanel__header">
@@ -485,14 +485,14 @@
               <h3>Permission preset</h3>
             </div>
             <div id="permission-preset-actions" class="card-actions"></div>
-            <dl id="permissions-details" class="detail-list" style="margin-top:14px"></dl>
+            <dl id="permissions-details" class="detail-list u-mt-14"></dl>
           </article>
           <article class="subpanel">
             <div class="subpanel__header">
               <h3>Trust policy</h3>
             </div>
             <div id="trust-toggles" class="inline-form"></div>
-            <form id="trust-path-form" class="inline-form" style="margin-top:14px">
+            <form id="trust-path-form" class="inline-form u-mt-14">
               <label class="field">
                 <span>Add trusted path</span>
                 <input id="trust-path-input" type="text" autocomplete="off" placeholder="J:\Workspace\Project">
@@ -501,8 +501,8 @@
                 <button type="submit">Add path</button>
               </div>
             </form>
-            <div id="trust-paths" class="stacked-list" style="margin-top:14px"></div>
-            <div class="subpanel__header" style="margin-top:22px">
+            <div id="trust-paths" class="stacked-list u-mt-14"></div>
+            <div class="subpanel__header u-mt-22">
               <h3>Delegation</h3>
             </div>
             <form id="delegation-form" class="inline-form">
@@ -600,8 +600,10 @@
         <div class="chat-toolbar">
           <div>
             <p id="chat-session-meta" class="panel__meta">Start a new session or continue an existing one.</p>
+            <p id="chat-main-target" class="panel__meta">Default main alias: not configured.</p>
           </div>
           <div class="auth-panel__actions">
+            <button id="chat-make-main-button" type="button" class="button-ghost">Make selected alias main</button>
             <button id="chat-new-session" type="button" class="button-muted">New chat</button>
           </div>
         </div>
@@ -613,8 +615,10 @@
           </label>
           <div class="field-grid">
             <label class="field">
-              <span>Alias</span>
-              <input id="run-task-alias" type="text" autocomplete="off" placeholder="main">
+              <span>Current chat alias</span>
+              <select id="run-task-alias">
+                <option value="">Select an alias</option>
+              </select>
             </label>
             <label class="field">
               <span>Model override</span>
@@ -647,7 +651,7 @@
             <button id="chat-rename-button" type="button" class="button-ghost">Rename current chat</button>
           </div>
         </form>
-        <div id="run-task-result" class="stacked-list" style="margin-top:14px"></div>
+        <div id="run-task-result" class="stacked-list u-mt-14"></div>
       </section>
 
       <section id="sessions" class="panel panel--sessions">
@@ -674,7 +678,7 @@
             <tbody id="sessions-body"></tbody>
           </table>
         </div>
-        <div id="session-detail" class="stacked-list" style="margin-top:14px"></div>
+        <div id="session-detail" class="stacked-list u-mt-14"></div>
       </section>
 
       <section id="logs" class="panel panel--logs">
@@ -697,7 +701,7 @@
           <p id="mcp-summary" class="panel__meta">No MCP data yet</p>
         </div>
         <div id="mcp-list" class="stacked-list"></div>
-        <form id="mcp-add-form" class="inline-form" style="margin-top:14px">
+        <form id="mcp-add-form" class="inline-form u-mt-14">
           <div class="field-grid">
             <label class="field">
               <span>Server ID</span>

@@ -1,14 +1,20 @@
 use std::path::PathBuf;
 
-use agent_core::{InputAttachment, LogEntry, PermissionPreset, RunTaskResponse, ThinkingLevel};
+use anyhow::anyhow;
+use agent_core::{
+    InputAttachment, LogEntry, PermissionPreset, RunTaskRequest, RunTaskResponse,
+    RunTaskStreamEvent, ThinkingLevel,
+};
 use chrono::{DateTime, Utc};
+use tokio::task::JoinHandle;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{sleep, Duration};
 use url::form_urlencoded;
 
-use crate::{execute_prompt, DaemonClient};
+use crate::DaemonClient;
 
 pub(super) enum AppEvent {
+    PromptProgress(RunTaskStreamEvent),
     PromptFinished(Result<RunTaskResponse, String>),
     DaemonEvents(Vec<LogEntry>),
 }
@@ -31,21 +37,43 @@ pub(super) struct PromptTask {
 
 pub(super) fn spawn_prompt_task(client: DaemonClient, task: PromptTask, sender: AppEventSender) {
     tokio::spawn(async move {
-        let result = execute_prompt(
-            &client,
-            task.prompt,
-            task.alias,
-            task.requested_model,
-            task.session_id,
-            task.cwd,
-            task.thinking_level,
-            task.attachments,
-            task.permission_preset,
-            task.output_schema_json,
-            task.ephemeral,
-        )
-        .await
-        .map_err(|error| format!("{error:#}"));
+        let mut final_response = None;
+        let mut stream_error = None;
+        let result = client
+            .post_stream::<_, RunTaskStreamEvent, _>(
+                "/v1/run/stream",
+                &RunTaskRequest {
+                    prompt: task.prompt,
+                    alias: task.alias,
+                    requested_model: task.requested_model,
+                    session_id: task.session_id,
+                    cwd: Some(task.cwd),
+                    thinking_level: task.thinking_level,
+                    attachments: task.attachments,
+                    permission_preset: task.permission_preset,
+                    output_schema_json: task.output_schema_json,
+                    ephemeral: task.ephemeral,
+                },
+                |event| {
+                    if let RunTaskStreamEvent::Completed { response } = &event {
+                        final_response = Some(response.clone());
+                    }
+                    if let RunTaskStreamEvent::Error { message } = &event {
+                        stream_error = Some(message.clone());
+                    }
+                    sender
+                        .send(AppEvent::PromptProgress(event))
+                        .map_err(|error| anyhow!("failed to deliver tui prompt event: {error}"))?;
+                    Ok(())
+                },
+            )
+            .await;
+        let result = match result {
+            Ok(()) if stream_error.is_some() => Err(stream_error.unwrap_or_default()),
+            Ok(()) => final_response
+                .ok_or_else(|| "stream ended without a completed response".to_string()),
+            Err(error) => Err(format!("{error:#}")),
+        };
         let _ = sender.send(AppEvent::PromptFinished(result));
     });
 }
@@ -54,7 +82,7 @@ pub(super) fn spawn_daemon_event_poller(
     client: DaemonClient,
     after: Option<DateTime<Utc>>,
     sender: AppEventSender,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut cursor = after;
         loop {
@@ -71,7 +99,7 @@ pub(super) fn spawn_daemon_event_poller(
                 Err(_) => sleep(Duration::from_secs(2)).await,
             }
         }
-    });
+    })
 }
 
 fn daemon_event_path(cursor: Option<&DateTime<Utc>>, limit: usize, wait_seconds: u64) -> String {

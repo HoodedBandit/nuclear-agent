@@ -309,6 +309,21 @@ pub struct ProviderConfig {
     pub local: bool,
 }
 
+impl ProviderConfig {
+    pub fn has_saved_access_reference(&self) -> bool {
+        matches!(self.auth_mode, AuthMode::None)
+            || self
+                .keychain_account
+                .as_deref()
+                .is_some_and(|account| !account.trim().is_empty())
+    }
+
+    #[deprecated(note = "metadata-only helper; use runtime credential validation for actual usability checks")]
+    pub fn has_usable_saved_access(&self) -> bool {
+        self.has_saved_access_reference()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelAlias {
     pub alias: String,
@@ -1165,10 +1180,37 @@ impl AppConfig {
             .ok_or_else(|| anyhow!("configured main alias '{alias}' is missing"))
     }
 
-    pub fn has_usable_main_alias(&self) -> bool {
+    pub fn has_configured_main_alias_provider(&self) -> bool {
         self.main_alias()
             .ok()
-            .is_some_and(|alias| self.get_provider(&alias.provider_id).is_some())
+            .and_then(|alias| self.get_provider(&alias.provider_id))
+            .is_some_and(ProviderConfig::has_saved_access_reference)
+    }
+
+    #[deprecated(note = "metadata-only helper; use daemon or CLI runtime readiness checks for actual usability")]
+    pub fn has_usable_main_alias(&self) -> bool {
+        self.has_configured_main_alias_provider()
+    }
+
+    pub fn alias_target_summary(&self, alias_name: &str) -> Option<MainTargetSummary> {
+        let alias = self.get_alias(alias_name)?;
+        let provider = self.get_provider(&alias.provider_id)?;
+        Some(MainTargetSummary {
+            alias: alias.alias.clone(),
+            provider_id: provider.id.clone(),
+            provider_display_name: if provider.display_name.trim().is_empty() {
+                provider.id.clone()
+            } else {
+                provider.display_name.clone()
+            },
+            model: alias.model.clone(),
+        })
+    }
+
+    pub fn main_target_summary(&self) -> Option<MainTargetSummary> {
+        self.main_agent_alias
+            .as_deref()
+            .and_then(|alias_name| self.alias_target_summary(alias_name))
     }
 
     pub fn next_available_provider_id(&self, preferred: &str) -> String {
@@ -1959,6 +2001,26 @@ pub struct RunTaskResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RunTaskStreamEvent {
+    SessionStarted {
+        session_id: String,
+        alias: String,
+        provider_id: String,
+        model: String,
+    },
+    Message {
+        message: SessionMessage,
+    },
+    Completed {
+        response: RunTaskResponse,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BatchTaskRequest {
     pub tasks: Vec<SubAgentTask>,
     pub cwd: Option<PathBuf>,
@@ -2475,6 +2537,8 @@ pub struct DaemonStatus {
     #[serde(default)]
     pub main_agent_alias: Option<String>,
     #[serde(default)]
+    pub main_target: Option<MainTargetSummary>,
+    #[serde(default)]
     pub onboarding_complete: bool,
     pub autonomy: AutonomyProfile,
     #[serde(default)]
@@ -2516,6 +2580,19 @@ pub struct DaemonStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MainTargetSummary {
+    pub alias: String,
+    pub provider_id: String,
+    pub provider_display_name: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MainAliasUpdateRequest {
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DashboardBootstrapResponse {
     pub status: DaemonStatus,
     #[serde(default)]
@@ -2549,6 +2626,11 @@ pub struct DashboardBootstrapResponse {
     pub permissions: PermissionPreset,
     pub trust: TrustPolicy,
     pub delegation_config: DelegationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DashboardLaunchResponse {
+    pub launch_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

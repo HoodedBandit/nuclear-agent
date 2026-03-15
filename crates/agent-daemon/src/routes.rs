@@ -1,14 +1,20 @@
 use axum::{
+    body::{Body, Bytes},
     extract::{Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
-    response::IntoResponse,
+    response::{IntoResponse, Redirect},
     routing::{delete, get, post, put},
     Json, Router,
 };
 use chrono::{Duration, Utc};
+use futures::stream;
+use std::convert::Infallible;
 
-use agent_core::{BatchTaskRequest, BatchTaskResponse, RunTaskRequest, RunTaskResponse};
+use agent_core::{
+    BatchTaskRequest, BatchTaskResponse, DashboardLaunchResponse, RunTaskRequest,
+    RunTaskResponse, RunTaskStreamEvent,
+};
 
 use crate::{
     add_mission, approve_connector_approval, approve_memory, autonomy_status, autopilot_status,
@@ -41,18 +47,20 @@ use crate::{
     start_evolve_mode, start_provider_browser_auth, status, stop_evolve_mode,
     suggest_provider_defaults,
     update_autopilot, update_daemon_config, update_delegation_config, update_enabled_skills,
-    update_permission_preset, update_trust, upsert_alias,
+    update_main_alias, update_permission_preset, update_trust, upsert_alias,
     upsert_app_connector, upsert_brave_connector, upsert_discord_connector, upsert_gmail_connector,
     upsert_home_assistant_connector, upsert_inbox_connector, upsert_mcp_server, upsert_memory,
     upsert_provider, upsert_signal_connector, upsert_slack_connector, upsert_telegram_connector,
     upsert_webhook_connector, ApiError, AppState,
 };
 use crate::{
-    execute_batch_request, execute_task_request, DelegationExecutionOptions, TaskRequestInput,
+    execute_batch_request, execute_task_request, execute_task_request_with_events,
+    DelegationExecutionOptions, TaskRequestInput,
 };
 
 const DASHBOARD_SESSION_COOKIE_NAME: &str = "agent_dashboard_session";
 const DASHBOARD_SESSION_TTL_SECS: i64 = 12 * 60 * 60;
+const DASHBOARD_LAUNCH_TTL_SECS: i64 = 5 * 60;
 
 #[derive(serde::Deserialize)]
 struct DashboardSessionRequest {
@@ -81,6 +89,7 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
             get(list_provider_models),
         )
         .route("/v1/aliases", get(list_aliases).post(upsert_alias))
+        .route("/v1/main-alias", put(update_main_alias))
         .route("/v1/aliases/{alias_name}", delete(delete_alias))
         .route("/v1/trust", get(get_trust).put(update_trust))
         .route(
@@ -283,7 +292,9 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/logs", get(list_logs))
         .route("/v1/events", get(list_events))
         .route("/v1/doctor", get(doctor))
+        .route("/v1/dashboard/launch", post(create_dashboard_launch))
         .route("/v1/run", post(run_task))
+        .route("/v1/run/stream", post(run_task_stream))
         .route("/v1/batch", post(run_batch))
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/{session_id}", get(get_session))
@@ -306,6 +317,7 @@ pub(crate) fn build_public_routes(state: AppState) -> Router {
             "/auth/dashboard/session",
             post(create_dashboard_session).delete(clear_dashboard_session),
         )
+        .route("/auth/dashboard/launch/{launch_id}", get(consume_dashboard_launch))
         .route("/auth/provider/callback", get(provider_browser_auth_callback))
         .route("/auth/provider/complete", get(provider_browser_auth_complete))
         .route("/v1/hooks/{connector_id}", post(receive_webhook_event))
@@ -337,6 +349,46 @@ async fn create_dashboard_session(
             (header::REFERRER_POLICY, "no-referrer".to_string()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
+    ))
+}
+
+async fn create_dashboard_launch(
+    State(state): State<AppState>,
+) -> Result<Json<DashboardLaunchResponse>, ApiError> {
+    let launch_id = uuid::Uuid::new_v4().to_string();
+    let mut launches = state.dashboard_launches.write().await;
+    prune_dashboard_launches(&mut launches);
+    launches.insert(launch_id.clone(), Utc::now());
+    Ok(Json(DashboardLaunchResponse {
+        launch_path: format!("/auth/dashboard/launch/{launch_id}"),
+    }))
+}
+
+async fn consume_dashboard_launch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(launch_id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut launches = state.dashboard_launches.write().await;
+    prune_dashboard_launches(&mut launches);
+    if launches.remove(&launch_id).is_none() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let mut sessions = state.dashboard_sessions.write().await;
+    prune_dashboard_sessions(&mut sessions);
+    sessions.insert(session_id.clone(), Utc::now());
+    let cookie = dashboard_session_cookie(&session_id, request_is_https(&headers));
+
+    Ok((
+        [
+            (header::SET_COOKIE, cookie),
+            (header::CACHE_CONTROL, "no-store, max-age=0".to_string()),
+            (header::REFERRER_POLICY, "no-referrer".to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        Redirect::to("/ui"),
     ))
 }
 
@@ -405,6 +457,13 @@ fn prune_dashboard_sessions(
     sessions.retain(|_, last_seen| now - *last_seen <= Duration::seconds(DASHBOARD_SESSION_TTL_SECS));
 }
 
+fn prune_dashboard_launches(
+    launches: &mut std::collections::HashMap<String, chrono::DateTime<Utc>>,
+) {
+    let now = Utc::now();
+    launches.retain(|_, created_at| now - *created_at <= Duration::seconds(DASHBOARD_LAUNCH_TTL_SECS));
+}
+
 fn dashboard_session_cookie(session_id: &str, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
     format!(
@@ -467,10 +526,77 @@ async fn run_task(
             persist: !payload.ephemeral,
             background: false,
             delegation_depth: 0,
+            cancellation: None,
         },
     )
     .await?;
     Ok(Json(response))
+}
+
+async fn run_task_stream(
+    State(state): State<AppState>,
+    Json(payload): Json<RunTaskRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (alias, provider) = resolve_alias_and_provider(&state, payload.alias.as_deref()).await?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(32);
+    let state = state.clone();
+    let alias = alias.clone();
+    let provider = provider.clone();
+
+    tokio::spawn(async move {
+        let mut emit = |event: RunTaskStreamEvent| {
+            let tx = tx.clone();
+            async move {
+                if let Ok(json) = serde_json::to_string(&event) {
+                    tx.send(Bytes::from(format!("{json}\n"))).await.is_ok()
+                } else {
+                    true
+                }
+            }
+        };
+        if let Err(error) = execute_task_request_with_events(
+            &state,
+            &alias,
+            &provider,
+            TaskRequestInput {
+                prompt: payload.prompt,
+                requested_model: payload.requested_model,
+                session_id: payload.session_id,
+                cwd: payload.cwd,
+                thinking_level: payload.thinking_level,
+                attachments: payload.attachments,
+                permission_preset: payload.permission_preset,
+                output_schema_json: payload.output_schema_json,
+                persist: !payload.ephemeral,
+                background: false,
+                delegation_depth: 0,
+                cancellation: None,
+            },
+            &mut emit,
+        )
+        .await
+        {
+            let _ = emit(RunTaskStreamEvent::Error {
+                message: error.message,
+            })
+            .await;
+        }
+    });
+
+    let response_stream = stream::unfold(rx, |mut rx| async {
+        rx.recv()
+            .await
+            .map(|chunk| (Ok::<Bytes, Infallible>(chunk), rx))
+    });
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson".to_string()),
+            (header::CACHE_CONTROL, "no-store, max-age=0".to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        Body::from_stream(response_stream),
+    ))
 }
 
 async fn run_batch(
@@ -494,4 +620,116 @@ async fn run_batch(
         format!("executed {} subagent tasks", response.results.len()),
     )?;
     Ok(Json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        new_browser_auth_store, new_dashboard_launch_store, new_dashboard_session_store,
+        new_mission_cancellation_store, AppState, ProviderRateLimiter,
+    };
+    use agent_core::AppConfig;
+    use agent_storage::Storage;
+    use axum::response::IntoResponse;
+    use std::sync::{
+        atomic::AtomicBool,
+        Arc,
+    };
+    use tokio::sync::{mpsc, Notify, RwLock};
+    use uuid::Uuid;
+
+    fn test_state() -> AppState {
+        AppState {
+            storage: Storage::open_at(
+                std::env::temp_dir().join(format!("agent-daemon-routes-test-{}", Uuid::new_v4())),
+            )
+            .unwrap(),
+            config: Arc::new(RwLock::new(AppConfig::default())),
+            http_client: reqwest::Client::new(),
+            browser_auth_sessions: new_browser_auth_store(),
+            dashboard_sessions: new_dashboard_session_store(),
+            dashboard_launches: new_dashboard_launch_store(),
+            mission_cancellations: new_mission_cancellation_store(),
+            started_at: Utc::now(),
+            shutdown: mpsc::unbounded_channel().0,
+            autopilot_wake: Arc::new(Notify::new()),
+            log_wake: Arc::new(Notify::new()),
+            restart_requested: Arc::new(AtomicBool::new(false)),
+            rate_limiter: ProviderRateLimiter::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_dashboard_session_accepts_token_and_sets_cookie() {
+        let state = test_state();
+        {
+            let mut config = state.config.write().await;
+            config.daemon.token = "dashboard-secret".to_string();
+        }
+
+        let response = create_dashboard_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(DashboardSessionRequest {
+                token: "dashboard-secret".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(cookie.contains("agent_dashboard_session="));
+        assert!(cookie.contains("HttpOnly"));
+        assert_eq!(state.dashboard_sessions.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_dashboard_launch_and_consume_are_single_use() {
+        let state = test_state();
+
+        let Json(launch) = create_dashboard_launch(State(state.clone())).await.unwrap();
+        assert!(launch.launch_path.starts_with("/auth/dashboard/launch/"));
+        assert_eq!(state.dashboard_launches.read().await.len(), 1);
+
+        let launch_id = launch
+            .launch_path
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_string();
+        let first = consume_dashboard_launch(
+            State(state.clone()),
+            HeaderMap::new(),
+            axum::extract::Path(launch_id.clone()),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(first.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            first.headers().get(header::LOCATION).unwrap(),
+            "/ui"
+        );
+        assert!(first.headers().contains_key(header::SET_COOKIE));
+
+        let second = consume_dashboard_launch(
+            State(state),
+            HeaderMap::new(),
+            axum::extract::Path(launch_id),
+        )
+        .await;
+        match second {
+            Err(status) => assert_eq!(status, StatusCode::UNAUTHORIZED),
+            Ok(_) => panic!("expected second launch consumption to fail"),
+        }
+    }
 }

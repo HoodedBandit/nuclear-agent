@@ -72,7 +72,7 @@ pub(crate) use control::{
     enable_autonomy, get_permission_preset, get_trust, list_aliases,
     list_delegation_targets, list_enabled_skills, list_events, list_logs, list_mcp_servers,
     list_provider_models, list_providers, pause_autonomy, resume_autonomy, shutdown, status,
-    suggest_provider_defaults, update_autopilot, update_daemon_config,
+    suggest_provider_defaults, update_autopilot, update_daemon_config, update_main_alias,
     update_delegation_config, update_enabled_skills, update_permission_preset, update_trust,
     upsert_alias, upsert_mcp_server, upsert_provider,
 };
@@ -96,8 +96,9 @@ pub(crate) use missions::{
 pub(crate) use missions::{build_mission_prompt, file_change_ready, parse_mission_directive};
 use reqwest::Client;
 pub(crate) use runtime::{
-    execute_batch_request, execute_task_request, resolve_request_cwd, summarize_tool_output,
-    DelegationExecutionOptions, ResolvedSubAgentTask, TaskRequestInput,
+    execute_batch_request, execute_task_request, execute_task_request_with_events,
+    resolve_request_cwd, summarize_tool_output, DelegationExecutionOptions,
+    ResolvedSubAgentTask, TaskRequestInput,
 };
 #[cfg(test)]
 pub(crate) use runtime::{
@@ -122,6 +123,8 @@ const MAX_TOOL_LOOP_ITERATIONS: usize = 8;
 const REPEATED_TOOL_BATCH_LIMIT: usize = 2;
 const DEFAULT_DAEMON_HTTP_TIMEOUT_SECS: u64 = 20;
 pub(crate) type DashboardSessionStore = Arc<RwLock<HashMap<String, DateTime<Utc>>>>;
+pub(crate) type DashboardLaunchStore = Arc<RwLock<HashMap<String, DateTime<Utc>>>>;
+pub(crate) type MissionCancellationStore = Arc<Mutex<HashMap<String, ExecutionCancellation>>>;
 pub(crate) const AUTOPILOT_DIRECTIVE_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {
@@ -234,6 +237,8 @@ pub(crate) struct AppState {
     http_client: Client,
     browser_auth_sessions: auth::BrowserAuthStore,
     dashboard_sessions: DashboardSessionStore,
+    dashboard_launches: DashboardLaunchStore,
+    mission_cancellations: MissionCancellationStore,
     started_at: DateTime<Utc>,
     shutdown: mpsc::UnboundedSender<()>,
     autopilot_wake: Arc<Notify>,
@@ -242,8 +247,50 @@ pub(crate) struct AppState {
     rate_limiter: ProviderRateLimiter,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct ExecutionCancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl ExecutionCancellation {
+    pub(crate) fn cancel(&self) {
+        if !self.cancelled.swap(true, Ordering::SeqCst) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        loop {
+            let notified = self.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+            if self.is_cancelled() {
+                return;
+            }
+        }
+    }
+}
+
 pub(crate) fn new_dashboard_session_store() -> DashboardSessionStore {
     Arc::new(RwLock::new(HashMap::new()))
+}
+
+pub(crate) fn new_dashboard_launch_store() -> DashboardLaunchStore {
+    Arc::new(RwLock::new(HashMap::new()))
+}
+
+pub(crate) fn new_mission_cancellation_store() -> MissionCancellationStore {
+    Arc::new(Mutex::new(HashMap::new()))
 }
 
 #[derive(Deserialize)]
@@ -289,6 +336,8 @@ pub async fn run_daemon() -> Result<()> {
             .build()?,
         browser_auth_sessions: new_browser_auth_store(),
         dashboard_sessions: new_dashboard_session_store(),
+        dashboard_launches: new_dashboard_launch_store(),
+        mission_cancellations: new_mission_cancellation_store(),
         started_at: Utc::now(),
         shutdown: shutdown_tx,
         autopilot_wake: autopilot_wake.clone(),
@@ -426,7 +475,11 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_core::{Mission, MissionStatus, ProviderKind, TrustPolicy, WakeTrigger};
+    use agent_core::{
+        AutonomyMode, AutonomyState, EvolveStartRequest, EvolveState, MainAliasUpdateRequest,
+        Mission, MissionControlRequest, MissionStatus, ProviderKind, ProviderUpsertRequest,
+        TrustPolicy, WakeTrigger,
+    };
     use std::sync::Arc;
 
     fn provider(id: &str, auth_mode: AuthMode, keychain_account: Option<&str>) -> ProviderConfig {
@@ -463,8 +516,8 @@ mod tests {
             ..AppConfig::default()
         };
         config.providers = vec![
-            provider("openai", AuthMode::OAuth, Some("provider:openai")),
-            provider("anthropic", AuthMode::ApiKey, Some("provider:anthropic")),
+            provider("openai", AuthMode::None, None),
+            provider("anthropic", AuthMode::None, None),
             provider("ollama", AuthMode::None, None),
         ];
         config.aliases = vec![
@@ -487,6 +540,8 @@ mod tests {
             http_client: reqwest::Client::new(),
             browser_auth_sessions: new_browser_auth_store(),
             dashboard_sessions: new_dashboard_session_store(),
+            dashboard_launches: new_dashboard_launch_store(),
+            mission_cancellations: new_mission_cancellation_store(),
             started_at: Utc::now(),
             shutdown: tokio::sync::mpsc::unbounded_channel().0,
             autopilot_wake: Arc::new(tokio::sync::Notify::new()),
@@ -564,6 +619,340 @@ mod tests {
         assert_eq!(response.status.aliases, config.aliases.len());
     }
 
+    #[tokio::test]
+    async fn status_includes_resolved_main_target_summary() {
+        let state = test_state_with_config(config_with_aliases());
+
+        let Json(response) = status(State(state)).await.unwrap();
+        let main_target = response.main_target.expect("main target summary");
+        assert_eq!(main_target.alias, "main");
+        assert_eq!(main_target.provider_id, "openai");
+        assert_eq!(main_target.provider_display_name, "openai");
+        assert_eq!(main_target.model, "gpt-5.4");
+    }
+
+    #[tokio::test]
+    async fn status_omits_unreadable_main_target_summary() {
+        let config = AppConfig {
+            trust_policy: TrustPolicy::default(),
+            main_agent_alias: Some("main".to_string()),
+            aliases: vec![alias("main", "openai", "gpt-5.4")],
+            providers: vec![provider(
+                "openai",
+                AuthMode::ApiKey,
+                Some("missing-provider-account"),
+            )],
+            ..AppConfig::default()
+        };
+        let state = test_state_with_config(config);
+
+        let Json(response) = status(State(state)).await.unwrap();
+        assert!(response.main_target.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_main_alias_changes_default_without_removing_other_aliases() {
+        let state = test_state_with_config(config_with_aliases());
+
+        let Json(summary) = update_main_alias(
+            State(state.clone()),
+            Json(MainAliasUpdateRequest {
+                alias: "claude".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.alias, "claude");
+        assert_eq!(summary.provider_id, "anthropic");
+
+        let saved = state.storage.load_config().unwrap();
+        assert_eq!(saved.main_agent_alias.as_deref(), Some("claude"));
+        assert!(saved.get_alias("main").is_some());
+        assert!(saved.get_alias("claude").is_some());
+        assert_eq!(saved.aliases.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn cancel_mission_clears_active_evolve_state() {
+        let mut config = config_with_aliases();
+        let mut mission = Mission::new("Evolve mission".to_string(), "Keep improving".to_string());
+        mission.evolve = true;
+        mission.status = MissionStatus::Running;
+        config.evolve.state = EvolveState::Running;
+        config.evolve.current_mission_id = Some(mission.id.clone());
+        config.autonomy.state = AutonomyState::Enabled;
+        config.autonomy.mode = AutonomyMode::Evolve;
+
+        let state = test_state_with_config(config);
+        state.storage.upsert_mission(&mission).unwrap();
+
+        let Json(cancelled) =
+            cancel_mission(State(state.clone()), axum::extract::Path(mission.id.clone()))
+                .await
+                .unwrap();
+
+        assert_eq!(cancelled.status, MissionStatus::Cancelled);
+        assert_eq!(cancelled.last_error.as_deref(), Some("Mission cancelled by operator"));
+
+        let saved = state.config.read().await.clone();
+        assert_eq!(saved.evolve.state, EvolveState::Completed);
+        assert_eq!(saved.evolve.current_mission_id, None);
+        assert_eq!(saved.autonomy.state, AutonomyState::Disabled);
+        assert_eq!(saved.autonomy.mode, AutonomyMode::Assisted);
+    }
+
+    #[tokio::test]
+    async fn start_evolve_mode_rejects_existing_active_mission() {
+        let mut config = config_with_aliases();
+        let mut mission = Mission::new("Existing evolve".to_string(), "Keep improving".to_string());
+        mission.evolve = true;
+        mission.status = MissionStatus::Queued;
+        config.evolve.state = EvolveState::Running;
+        config.evolve.current_mission_id = Some(mission.id.clone());
+        config.autonomy.state = AutonomyState::Enabled;
+        config.autonomy.mode = AutonomyMode::Evolve;
+
+        let state = test_state_with_config(config);
+        state.storage.upsert_mission(&mission).unwrap();
+
+        let error = start_evolve_mode(
+            State(state),
+            Json(EvolveStartRequest {
+                alias: Some("main".to_string()),
+                requested_model: None,
+                budget_friendly: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert!(error.message.contains("active mission"));
+    }
+
+    #[tokio::test]
+    async fn pause_mission_updates_active_evolve_state() {
+        let mut config = config_with_aliases();
+        let mut mission = Mission::new("Evolve mission".to_string(), "Keep improving".to_string());
+        mission.evolve = true;
+        mission.status = MissionStatus::Running;
+        mission.alias = Some("main".to_string());
+        config.evolve.state = EvolveState::Running;
+        config.evolve.current_mission_id = Some(mission.id.clone());
+        config.autonomy.state = AutonomyState::Enabled;
+        config.autonomy.mode = AutonomyMode::Evolve;
+
+        let state = test_state_with_config(config);
+        state.storage.upsert_mission(&mission).unwrap();
+
+        let Json(paused) = pause_mission(
+            State(state.clone()),
+            axum::extract::Path(mission.id.clone()),
+            Json(MissionControlRequest {
+                wake_at: None,
+                clear_wake_at: false,
+                repeat_interval_seconds: None,
+                clear_repeat_interval_seconds: false,
+                watch_path: None,
+                clear_watch_path: false,
+                watch_recursive: None,
+                clear_session_id: false,
+                clear_handoff_summary: false,
+                note: Some("Pause it".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(paused.status, MissionStatus::Blocked);
+        let saved = state.config.read().await.clone();
+        assert_eq!(saved.evolve.state, EvolveState::Paused);
+        assert_eq!(saved.evolve.current_mission_id.as_deref(), Some(mission.id.as_str()));
+        assert_eq!(saved.autonomy.state, AutonomyState::Paused);
+        assert_eq!(saved.autonomy.mode, AutonomyMode::Evolve);
+    }
+
+    #[tokio::test]
+    async fn pause_mission_signals_in_flight_cancellation() {
+        let mut config = config_with_aliases();
+        let mut mission = Mission::new("Pauseable mission".to_string(), "Pause me".to_string());
+        mission.status = MissionStatus::Running;
+        config.main_agent_alias = Some("main".to_string());
+
+        let state = test_state_with_config(config);
+        state.storage.upsert_mission(&mission).unwrap();
+        let cancellation = ExecutionCancellation::default();
+        state
+            .mission_cancellations
+            .lock()
+            .unwrap()
+            .insert(mission.id.clone(), cancellation.clone());
+
+        let Json(paused) = pause_mission(
+            State(state.clone()),
+            axum::extract::Path(mission.id.clone()),
+            Json(MissionControlRequest {
+                wake_at: None,
+                clear_wake_at: false,
+                repeat_interval_seconds: None,
+                clear_repeat_interval_seconds: false,
+                watch_path: None,
+                clear_watch_path: false,
+                watch_recursive: None,
+                clear_session_id: false,
+                clear_handoff_summary: false,
+                note: Some("Pause it".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(paused.status, MissionStatus::Blocked);
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn dashboard_bootstrap_redacts_provider_keychain_metadata() {
+        let state = test_state_with_config(config_with_aliases());
+
+        let Json(bootstrap) = dashboard_bootstrap(State(state)).await.unwrap();
+
+        assert!(bootstrap
+            .providers
+            .iter()
+            .all(|provider| provider.keychain_account.is_none()));
+    }
+
+    #[tokio::test]
+    async fn upsert_provider_preserves_existing_saved_credentials_without_new_secret() {
+        let mut config = config_with_aliases();
+        config.providers.push(provider(
+            "custom",
+            AuthMode::ApiKey,
+            Some("custom-keychain-account"),
+        ));
+
+        let state = test_state_with_config(config);
+
+        let Json(saved) = upsert_provider(
+            State(state.clone()),
+            Json(ProviderUpsertRequest {
+                provider: ProviderConfig {
+                    id: "custom".to_string(),
+                    display_name: "Custom".to_string(),
+                    kind: ProviderKind::OpenAiCompatible,
+                    base_url: "https://example.test".to_string(),
+                    auth_mode: AuthMode::ApiKey,
+                    default_model: Some("custom-model".to_string()),
+                    keychain_account: None,
+                    oauth: None,
+                    local: false,
+                },
+                api_key: None,
+                oauth_token: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(saved.keychain_account.is_none());
+        let config = state.config.read().await;
+        assert_eq!(
+            config
+                .get_provider("custom")
+                .and_then(|provider| provider.keychain_account.as_deref()),
+            Some("custom-keychain-account")
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_mission_updates_active_evolve_state() {
+        let mut config = config_with_aliases();
+        let mut mission = Mission::new("Evolve mission".to_string(), "Keep improving".to_string());
+        mission.evolve = true;
+        mission.status = MissionStatus::Blocked;
+        mission.alias = Some("main".to_string());
+        config.evolve.state = EvolveState::Paused;
+        config.evolve.current_mission_id = Some(mission.id.clone());
+        config.autonomy.state = AutonomyState::Paused;
+        config.autonomy.mode = AutonomyMode::Evolve;
+
+        let state = test_state_with_config(config);
+        state.storage.upsert_mission(&mission).unwrap();
+
+        let Json(resumed) = resume_mission(
+            State(state.clone()),
+            axum::extract::Path(mission.id.clone()),
+            Json(MissionControlRequest {
+                wake_at: None,
+                clear_wake_at: false,
+                repeat_interval_seconds: None,
+                clear_repeat_interval_seconds: false,
+                watch_path: None,
+                clear_watch_path: false,
+                watch_recursive: None,
+                clear_session_id: false,
+                clear_handoff_summary: false,
+                note: Some("Resume it".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(resumed.status, MissionStatus::Queued));
+        let saved = state.config.read().await.clone();
+        assert_eq!(saved.evolve.state, EvolveState::Running);
+        assert_eq!(saved.evolve.current_mission_id.as_deref(), Some(mission.id.as_str()));
+        assert_eq!(saved.autonomy.state, AutonomyState::Enabled);
+        assert_eq!(saved.autonomy.mode, AutonomyMode::Evolve);
+    }
+
+    #[tokio::test]
+    async fn resume_mission_rejects_when_another_evolve_mission_is_active() {
+        let mut config = config_with_aliases();
+        let mut active = Mission::new("Active evolve".to_string(), "Keep improving".to_string());
+        active.evolve = true;
+        active.status = MissionStatus::Running;
+        active.alias = Some("main".to_string());
+
+        let mut paused = Mission::new("Paused evolve".to_string(), "Old run".to_string());
+        paused.evolve = true;
+        paused.status = MissionStatus::Blocked;
+        paused.alias = Some("main".to_string());
+
+        config.evolve.state = EvolveState::Running;
+        config.evolve.current_mission_id = Some(active.id.clone());
+        config.autonomy.state = AutonomyState::Enabled;
+        config.autonomy.mode = AutonomyMode::Evolve;
+
+        let state = test_state_with_config(config);
+        state.storage.upsert_mission(&active).unwrap();
+        state.storage.upsert_mission(&paused).unwrap();
+
+        let error = resume_mission(
+            State(state),
+            axum::extract::Path(paused.id.clone()),
+            Json(MissionControlRequest {
+                wake_at: None,
+                clear_wake_at: false,
+                repeat_interval_seconds: None,
+                clear_repeat_interval_seconds: false,
+                watch_path: None,
+                clear_watch_path: false,
+                watch_recursive: None,
+                clear_session_id: false,
+                clear_handoff_summary: false,
+                note: Some("Resume it".to_string()),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert!(error.message.contains("already active"));
+    }
+
     #[test]
     fn resolve_alias_and_provider_uses_main_alias_and_requires_credentials() {
         let config = config_with_aliases();
@@ -572,6 +961,7 @@ mod tests {
         assert_eq!(provider.id, "openai");
 
         let mut missing = config;
+        missing.providers[0].auth_mode = AuthMode::ApiKey;
         missing.providers[0].keychain_account = None;
         let error = resolve_alias_and_provider_from_config(&missing, None).unwrap_err();
         assert!(error.message.contains("usable saved credentials"));
@@ -680,9 +1070,9 @@ mod tests {
             display_name: "Moonshot Hosted".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url: "https://api.moonshot.ai/v1".to_string(),
-            auth_mode: AuthMode::ApiKey,
+            auth_mode: AuthMode::None,
             default_model: Some("kimi-k2".to_string()),
-            keychain_account: Some("provider:moonshot".to_string()),
+            keychain_account: None,
             oauth: None,
             local: false,
         });
@@ -794,9 +1184,9 @@ mod tests {
             display_name: "Anthropic Backup".to_string(),
             kind: ProviderKind::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
-            auth_mode: AuthMode::OAuth,
+            auth_mode: AuthMode::None,
             default_model: Some("claude-opus-4-1".to_string()),
-            keychain_account: Some("provider:anthropic-2".to_string()),
+            keychain_account: None,
             oauth: None,
             local: false,
         });

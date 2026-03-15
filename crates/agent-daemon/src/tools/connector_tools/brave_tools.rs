@@ -481,6 +481,8 @@ mod tests {
             http_client: Client::new(),
             browser_auth_sessions: new_browser_auth_store(),
             dashboard_sessions: new_dashboard_session_store(),
+            dashboard_launches: crate::new_dashboard_launch_store(),
+            mission_cancellations: crate::new_mission_cancellation_store(),
             started_at: chrono::Utc::now(),
             shutdown: mpsc::unbounded_channel().0,
             autopilot_wake: Arc::new(Notify::new()),

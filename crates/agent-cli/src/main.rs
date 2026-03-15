@@ -10,11 +10,14 @@ use std::{
 
 mod tui;
 
+use futures::StreamExt;
+
 use agent_core::{
     AliasUpsertRequest, AppConfig, AppConnectorConfig, AppConnectorUpsertRequest, AuthMode,
     AutonomyEnableRequest, AutonomyMode, AutopilotConfig, AutopilotState, AutopilotUpdateRequest,
     BatchTaskRequest, BatchTaskResponse, ConnectorApprovalRecord, ConnectorApprovalStatus,
-    ConnectorApprovalUpdateRequest, ConnectorKind, DaemonConfigUpdateRequest, DaemonStatus,
+    ConnectorApprovalUpdateRequest, ConnectorKind, DaemonConfigUpdateRequest,
+    DashboardLaunchResponse, DaemonStatus,
     DiscordChannelCursor, DiscordConnectorConfig, DiscordConnectorUpsertRequest,
     DiscordPollResponse, DiscordSendRequest, DiscordSendResponse, EvolveConfig, EvolveStartRequest,
     HealthReport, HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest,
@@ -42,8 +45,8 @@ use agent_policy::{
 use agent_providers::{
     build_oauth_authorization_url, delete_secret, exchange_oauth_code, health_check,
     keyring_available, list_model_descriptors, list_models as provider_list_models,
-    list_models_with_overrides as provider_list_models_with_overrides, store_api_key,
-    store_oauth_token,
+    list_models_with_overrides as provider_list_models_with_overrides, load_api_key,
+    load_oauth_token, store_api_key, store_oauth_token,
 };
 use agent_storage::Storage;
 use anyhow::{anyhow, bail, Context, Result};
@@ -1663,7 +1666,11 @@ fn needs_onboarding(config: &AppConfig) -> bool {
 }
 
 fn has_usable_main_alias(config: &AppConfig) -> bool {
-    config.has_usable_main_alias()
+    config
+        .main_alias()
+        .ok()
+        .and_then(|alias| config.get_provider(&alias.provider_id))
+        .is_some_and(provider_has_saved_access)
 }
 
 async fn ensure_onboarded(storage: &Storage) -> Result<()> {
@@ -4867,8 +4874,11 @@ enum InteractiveCommand {
     Copy,
     Compact,
     Init,
+    Onboard,
     ModelShow,
     ModelSet(String),
+    ProviderShow,
+    ProviderSet(String),
     ThinkingShow,
     ThinkingSet(Option<ThinkingLevel>),
     Fast,
@@ -4900,7 +4910,7 @@ async fn interactive_session(
     mut attachments: Vec<InputAttachment>,
     mut permission_preset: Option<PermissionPreset>,
 ) -> Result<()> {
-    let client = ensure_daemon(storage).await?;
+    let mut client = ensure_daemon(storage).await?;
     let mut cwd =
         load_session_cwd(storage, session_id.as_deref())?.unwrap_or(current_request_cwd()?);
     let mut last_output = load_last_assistant_output(storage, session_id.as_deref())?;
@@ -4913,7 +4923,7 @@ async fn interactive_session(
         permission_preset = Some(storage.load_config()?.permission_preset);
     }
     println!(
-        "Interactive chat. Use /help for commands, /model to switch aliases or provider models, and /thinking to adjust reasoning."
+        "Interactive chat. Use /help for commands, /model or Ctrl+P for alias/main switching, /provider for provider switching, /onboard for a fresh setup reset, and /thinking to adjust reasoning."
     );
 
     if let Some(prompt) = normalize_prompt_input(initial_prompt)? {
@@ -4984,7 +4994,7 @@ async fn interactive_session(
                             }
                             InteractiveCommand::ConfigShow => {
                                 println!(
-                                    "Settings:\n  /config opens the categorized settings menu in the TUI.\n  /dashboard opens the localhost web control room.\n  /model, /thinking, and /permissions are the quick line-mode shortcuts."
+                                    "Settings:\n  /config opens the categorized settings menu in the TUI.\n  /dashboard opens the localhost web control room.\n  /model opens the alias/main switcher, /provider switches logged-in providers, and /thinking and /permissions remain quick shortcuts."
                                 );
                             }
                             InteractiveCommand::DashboardOpen => {
@@ -5695,6 +5705,23 @@ async fn interactive_session(
                                     );
                                 }
                             }
+                            InteractiveCommand::Onboard => {
+                                run_onboarding_reset(storage, true).await?;
+                                client = ensure_daemon(storage).await?;
+                                let config = storage.load_config()?;
+                                alias = config.main_agent_alias.clone();
+                                session_id = None;
+                                requested_model = None;
+                                thinking_level = config.thinking_level;
+                                permission_preset = Some(config.permission_preset);
+                                attachments.clear();
+                                last_output = None;
+                                cwd = current_request_cwd()?;
+                                println!(
+                                    "Onboarding reset complete. Started fresh setup with main alias {}.",
+                                    config.main_agent_alias.as_deref().unwrap_or("(not configured)")
+                                );
+                            }
                             InteractiveCommand::ModelShow => {
                                 println!(
                                     "{}",
@@ -5704,6 +5731,12 @@ async fn interactive_session(
                                         requested_model.as_deref(),
                                     )
                                     .await?
+                                );
+                            }
+                            InteractiveCommand::ProviderShow => {
+                                println!(
+                                    "{}",
+                                    interactive_provider_choices_text(storage, alias.as_deref())?
                                 );
                             }
                             InteractiveCommand::ModelSet(selection) => {
@@ -5724,6 +5757,23 @@ async fn interactive_session(
                                         println!("model override set to {model_id}");
                                     }
                                 }
+                            }
+                            InteractiveCommand::ProviderSet(selection) => {
+                                let new_alias = resolve_interactive_provider_selection(
+                                    storage,
+                                    alias.as_deref(),
+                                    &selection,
+                                )?;
+                                let config = storage.load_config()?;
+                                let summary = config
+                                    .alias_target_summary(&new_alias)
+                                    .ok_or_else(|| anyhow!("unknown alias '{new_alias}'"))?;
+                                alias = Some(new_alias.clone());
+                                requested_model = None;
+                                println!(
+                                    "provider set to {} via alias {} ({})",
+                                    summary.provider_display_name, summary.alias, summary.model
+                                );
                             }
                             InteractiveCommand::ThinkingShow => {
                                 println!("thinking={}", thinking_level_label(thinking_level));
@@ -5978,8 +6028,8 @@ async fn logout_command(storage: &Storage, args: LogoutArgs) -> Result<()> {
     Ok(())
 }
 
-async fn reset_command(storage: &Storage, args: ResetArgs) -> Result<()> {
-    if !args.yes {
+pub(crate) async fn run_onboarding_reset(storage: &Storage, require_confirmation: bool) -> Result<()> {
+    if require_confirmation {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             bail!(
                 "reset is destructive; rerun with `autism reset --yes` in an interactive terminal"
@@ -6029,6 +6079,10 @@ async fn reset_command(storage: &Storage, args: ResetArgs) -> Result<()> {
     println!();
     println!("Restarting onboarding.");
     setup(storage).await
+}
+
+async fn reset_command(storage: &Storage, args: ResetArgs) -> Result<()> {
+    run_onboarding_reset(storage, !args.yes).await
 }
 
 async fn session_command(storage: &Storage, command: SessionCommands) -> Result<()> {
@@ -6649,32 +6703,46 @@ async fn follow_events_command(storage: &Storage, limit: usize) -> Result<()> {
 }
 
 async fn dashboard_command(storage: &Storage, args: DashboardArgs) -> Result<()> {
-    let _ = ensure_daemon(storage).await?;
-    let config = storage.load_config()?;
-    let url = format!(
-        "http://{}:{}/ui?token={}",
-        config.daemon.host, config.daemon.port, config.daemon.token
-    );
+    let ui_url = dashboard_ui_url(storage)?;
+    let launch_url = dashboard_launch_url(storage).await?;
 
     if args.print_url || args.no_open {
-        println!("{url}");
+        println!("Reusable dashboard URL: {ui_url}");
+        println!("Immediate one-time connect URL (expires soon): {launch_url}");
     }
 
     if !args.no_open {
-        match webbrowser::open(&url) {
+        match webbrowser::open(&launch_url) {
             Ok(_) => {
                 if !args.print_url {
-                    println!("{url}");
+                    println!("Reusable dashboard URL: {ui_url}");
                 }
             }
             Err(error) => {
-                println!("{url}");
+                println!("Reusable dashboard URL: {ui_url}");
+                println!("Immediate one-time connect URL (expires soon): {launch_url}");
                 return Err(anyhow!("failed to open dashboard in browser: {error}"));
             }
         }
     }
 
     Ok(())
+}
+
+pub(crate) fn dashboard_ui_url(storage: &Storage) -> Result<String> {
+    let config = storage.load_config()?;
+    Ok(format!("http://{}:{}/ui", config.daemon.host, config.daemon.port))
+}
+
+pub(crate) async fn dashboard_launch_url(storage: &Storage) -> Result<String> {
+    let client = ensure_daemon(storage).await?;
+    let launch: DashboardLaunchResponse = client.post("/v1/dashboard/launch", &serde_json::json!({})).await?;
+    Ok(format!("{}{}", dashboard_origin(storage)?, launch.launch_path))
+}
+
+fn dashboard_origin(storage: &Storage) -> Result<String> {
+    let config = storage.load_config()?;
+    Ok(format!("http://{}:{}", config.daemon.host, config.daemon.port))
 }
 
 async fn doctor_command(storage: &Storage) -> Result<()> {
@@ -6952,9 +7020,14 @@ fn parse_interactive_command(line: &str) -> Result<Option<InteractiveCommand>> {
         "copy" => InteractiveCommand::Copy,
         "compact" => InteractiveCommand::Compact,
         "init" => InteractiveCommand::Init,
+        "onboard" => InteractiveCommand::Onboard,
         "alias" | "model" => match args {
             Some(value) => InteractiveCommand::ModelSet(value.to_string()),
             None => InteractiveCommand::ModelShow,
+        },
+        "provider" | "providers" => match args {
+            Some(value) => InteractiveCommand::ProviderSet(value.to_string()),
+            None => InteractiveCommand::ProviderShow,
         },
         "thinking" => match args {
             Some(value) => InteractiveCommand::ThinkingSet(parse_thinking_setting(value)?),
@@ -7425,7 +7498,8 @@ fn print_interactive_help() {
     println!("/skills [drafts|published|rejected] list learned skill drafts");
     println!("/skills publish <id>      approve a learned skill draft");
     println!("/skills reject <id>       discard a learned skill draft");
-    println!("/model [name]             show provider models or switch alias/model");
+    println!("/model [name]             open the provider switcher or switch the current alias/model");
+    println!("/provider [name]          list or switch between logged-in providers");
     println!("/fast                     set thinking to minimal");
     println!("/thinking [level]         open the thinking picker or set thinking: default, none, minimal, low, medium, high, xhigh");
     println!("/status                   show session, model, daemon, and thinking state");
@@ -7441,6 +7515,7 @@ fn print_interactive_help() {
     println!("/diff                     print the current uncommitted git diff");
     println!("/resume [last|session]    resume another recorded session");
     println!("/fork [last|session]      fork the current or selected session");
+    println!("/onboard                  wipe saved state and restart fresh setup");
     println!("/new                      start a new chat");
     println!("/clear                    clear the terminal and start a new chat");
     println!("!<command>                run a local shell command in the current directory");
@@ -7618,6 +7693,173 @@ async fn resolve_interactive_model_selection(
     Ok(InteractiveModelSelection::Explicit(resolved_model))
 }
 
+pub(crate) fn provider_has_saved_access(provider: &ProviderConfig) -> bool {
+    match provider.auth_mode {
+        AuthMode::None => true,
+        AuthMode::ApiKey => provider
+            .keychain_account
+            .as_deref()
+            .is_some_and(|account| load_api_key(account).is_ok()),
+        AuthMode::OAuth => provider
+            .keychain_account
+            .as_deref()
+            .is_some_and(|account| load_oauth_token(account).is_ok()),
+    }
+}
+
+fn provider_display_label(provider: &ProviderConfig) -> String {
+    if provider.display_name.trim().is_empty() {
+        provider.id.clone()
+    } else {
+        provider.display_name.clone()
+    }
+}
+
+fn preferred_provider_alias<'a>(
+    config: &'a AppConfig,
+    current_alias: Option<&str>,
+    provider_id: &str,
+) -> Option<&'a ModelAlias> {
+    if let Some(alias) = current_alias
+        .and_then(|name| config.get_alias(name))
+        .filter(|alias| alias.provider_id == provider_id)
+    {
+        return Some(alias);
+    }
+
+    if let Some(alias) = config
+        .main_agent_alias
+        .as_deref()
+        .and_then(|name| config.get_alias(name))
+        .filter(|alias| alias.provider_id == provider_id)
+    {
+        return Some(alias);
+    }
+
+    if let Some(alias) = config
+        .get_alias(provider_id)
+        .filter(|alias| alias.provider_id == provider_id)
+    {
+        return Some(alias);
+    }
+
+    config
+        .aliases
+        .iter()
+        .filter(|alias| alias.provider_id == provider_id)
+        .min_by(|left, right| left.alias.cmp(&right.alias))
+}
+
+fn interactive_provider_choices_text(storage: &Storage, current_alias: Option<&str>) -> Result<String> {
+    let config = storage.load_config()?;
+    let active_provider = resolve_active_alias(&config, current_alias)
+        .ok()
+        .map(|alias| alias.provider_id.clone());
+    let mut lines = Vec::new();
+
+    if let Some(provider_id) = &active_provider {
+        if let Some(provider) = config.get_provider(provider_id) {
+            lines.push(format!("current provider: {}", provider_display_label(provider)));
+        }
+    }
+
+    let mut entries = config
+        .providers
+        .iter()
+        .filter(|provider| provider_has_saved_access(provider))
+        .filter_map(|provider| {
+            let alias = preferred_provider_alias(&config, current_alias, &provider.id)?;
+            Some((provider, alias))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|(left_provider, left_alias), (right_provider, right_alias)| {
+        provider_display_label(left_provider)
+            .cmp(&provider_display_label(right_provider))
+            .then_with(|| left_alias.alias.cmp(&right_alias.alias))
+    });
+
+    if !entries.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("logged-in providers:".to_string());
+        for (provider, alias) in entries {
+            let marker = if active_provider.as_deref() == Some(provider.id.as_str()) {
+                "*"
+            } else {
+                " "
+            };
+            lines.push(format!(
+                "{marker} {} ({}) -> {} / {}",
+                provider_display_label(provider),
+                provider.id,
+                alias.alias,
+                alias.model
+            ));
+        }
+    } else {
+        lines.push("No logged-in providers with usable aliases.".to_string());
+    }
+
+    Ok(lines.join("\n"))
+}
+
+pub(crate) fn resolve_interactive_provider_selection(
+    storage: &Storage,
+    current_alias: Option<&str>,
+    value: &str,
+) -> Result<String> {
+    let config = storage.load_config()?;
+    if let Some(alias) = config
+        .get_alias(value)
+        .filter(|alias| {
+            config
+                .get_provider(&alias.provider_id)
+                .is_some_and(provider_has_saved_access)
+        })
+    {
+        return Ok(alias.alias.clone());
+    }
+
+    let mut exact_matches = Vec::new();
+    let mut normalized_matches = Vec::new();
+    let normalized = normalize_model_selection_value(value);
+    for provider in config
+        .providers
+        .iter()
+        .filter(|provider| provider_has_saved_access(provider))
+    {
+        let Some(alias) = preferred_provider_alias(&config, current_alias, &provider.id) else {
+            continue;
+        };
+        let display = provider_display_label(provider);
+        if provider.id.eq_ignore_ascii_case(value) || display.eq_ignore_ascii_case(value) {
+            exact_matches.push(alias.alias.clone());
+            continue;
+        }
+        if normalize_model_selection_value(&provider.id) == normalized
+            || normalize_model_selection_value(&display) == normalized
+        {
+            normalized_matches.push(alias.alias.clone());
+        }
+    }
+
+    let matches = if exact_matches.is_empty() {
+        normalized_matches
+    } else {
+        exact_matches
+    };
+    let mut matches = matches;
+    matches.sort();
+    matches.dedup();
+
+    match matches.as_slice() {
+        [alias] => Ok(alias.clone()),
+        [] => bail!("unknown logged-in provider '{value}'"),
+        _ => bail!("provider selection '{value}' is ambiguous"),
+    }
+}
+
 fn normalize_model_selection_value(value: &str) -> String {
     value
         .chars()
@@ -7763,6 +8005,12 @@ async fn print_interactive_status(
     println!("alias={}", active_alias.alias);
     println!("provider={}", provider.id);
     println!("model={}", selected_model);
+    if let Some(main_target) = daemon_status.main_target.as_ref() {
+        println!(
+            "main={} ({}/{})",
+            main_target.alias, main_target.provider_id, main_target.model
+        );
+    }
     println!("thinking={}", thinking_level_label(thinking_level));
     println!(
         "permission_preset={}",
@@ -10245,6 +10493,39 @@ impl DaemonClient {
             .await
     }
 
+    async fn post_stream<B, T, F>(&self, path: &str, body: &B, mut on_event: F) -> Result<()>
+    where
+        B: Serialize,
+        T: DeserializeOwned,
+        F: FnMut(T) -> Result<()>,
+    {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .http
+            .request(Method::POST, &url)
+            .bearer_auth(&self.token)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!("daemon returned {}: {}", status, body);
+        }
+        let mut stream = response.bytes_stream();
+        let mut buffer = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| format!("failed to read streamed response from {url}"))?;
+            buffer.extend_from_slice(&chunk);
+            drain_ndjson_buffer(&mut buffer, false, &mut on_event)
+                .with_context(|| format!("failed to parse streamed daemon response from {url}"))?;
+        }
+        drain_ndjson_buffer(&mut buffer, true, &mut on_event)
+            .with_context(|| format!("failed to parse streamed daemon response from {url}"))?;
+        Ok(())
+    }
+
     async fn request<T: DeserializeOwned, B: Serialize>(
         &self,
         method: Method,
@@ -10272,11 +10553,1041 @@ impl DaemonClient {
     }
 }
 
+fn drain_ndjson_buffer<T, F>(buffer: &mut Vec<u8>, flush_trailing: bool, on_event: &mut F) -> Result<()>
+where
+    T: DeserializeOwned,
+    F: FnMut(T) -> Result<()>,
+{
+    while let Some(newline_index) = buffer.iter().position(|byte| *byte == b'\n') {
+        let line_bytes = buffer[..newline_index].to_vec();
+        buffer.drain(..=newline_index);
+        let line = std::str::from_utf8(&line_bytes)?.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let value = serde_json::from_str::<T>(line)?;
+        on_event(value)?;
+    }
+
+    if flush_trailing {
+        if buffer.iter().all(|byte| byte.is_ascii_whitespace()) {
+            buffer.clear();
+            return Ok(());
+        }
+        let trailing = std::str::from_utf8(buffer)?.trim();
+        if trailing.is_empty() {
+            buffer.clear();
+            return Ok(());
+        }
+        let value = serde_json::from_str::<T>(trailing)?;
+        on_event(value)?;
+        buffer.clear();
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_core::AppConfig;
+    use agent_core::{
+        AppConfig, AutonomyProfile, DashboardLaunchResponse, DiscordSendResponse,
+        DelegationConfig, HomeAssistantServiceCallResponse, MainTargetSummary, MemorySearchResponse,
+        PermissionPreset, RunTaskResponse, SignalSendResponse, SlackSendResponse,
+    };
     use clap::Parser;
+    use serde::Deserialize;
+    use serde_json::json;
+    use std::{
+        collections::{HashMap, VecDeque},
+        sync::{Arc, Mutex},
+    };
+    use tokio::task::JoinHandle;
+    use uuid::Uuid;
+
+    fn temp_storage() -> Storage {
+        Storage::open_at(std::env::temp_dir().join(format!(
+            "autism-cli-test-{}",
+            Uuid::new_v4()
+        )))
+        .unwrap()
+    }
+
+    #[derive(Debug, Clone)]
+    struct CapturedHttpRequest {
+        method: String,
+        path: String,
+        headers: HashMap<String, String>,
+        body: String,
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockHttpExpectation {
+        method: &'static str,
+        path: String,
+        response_body: String,
+        status_line: &'static str,
+        content_type: &'static str,
+    }
+
+    impl MockHttpExpectation {
+        fn json<T: Serialize>(method: &'static str, path: impl Into<String>, response: &T) -> Self {
+            Self {
+                method,
+                path: path.into(),
+                response_body: serde_json::to_string(response).unwrap(),
+                status_line: "200 OK",
+                content_type: "application/json",
+            }
+        }
+    }
+
+    struct MockHttpServer {
+        origin: String,
+        requests: Arc<Mutex<Vec<CapturedHttpRequest>>>,
+        handle: JoinHandle<Result<()>>,
+    }
+
+    impl MockHttpServer {
+        async fn finish(self) -> Result<Vec<CapturedHttpRequest>> {
+            self.handle.await??;
+            Ok(self.requests.lock().unwrap().clone())
+        }
+    }
+
+    async fn spawn_mock_http_server(
+        expectations: Vec<MockHttpExpectation>,
+        expected_auth: Option<String>,
+    ) -> MockHttpServer {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_clone = Arc::clone(&requests);
+        let expected_auth_clone = expected_auth.clone();
+        let mut queue = VecDeque::from(expectations);
+        let handle = tokio::spawn(async move {
+            while let Some(expected) = queue.pop_front() {
+                let (mut stream, _) = listener.accept().await?;
+                let raw = read_local_http_request(&mut stream).await?;
+                let captured = parse_http_request(&raw);
+                assert_eq!(captured.method, expected.method);
+                assert_eq!(captured.path, expected.path);
+                if let Some(expected_auth) = expected_auth_clone.as_deref() {
+                    assert_eq!(
+                        captured
+                            .headers
+                            .get("authorization")
+                            .map(String::as_str),
+                        Some(expected_auth)
+                    );
+                }
+                requests_clone.lock().unwrap().push(captured);
+                let response = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    expected.status_line,
+                    expected.content_type,
+                    expected.response_body.len(),
+                    expected.response_body
+                );
+                stream.write_all(response.as_bytes()).await?;
+            }
+            Ok(())
+        });
+
+        MockHttpServer {
+            origin: format!("http://{addr}"),
+            requests,
+            handle,
+        }
+    }
+
+    async fn read_local_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
+        let mut buffer = Vec::new();
+        let mut header_end = None;
+        let mut content_length = 0usize;
+        loop {
+            let mut chunk = [0u8; 1024];
+            let bytes = stream.read(&mut chunk).await?;
+            if bytes == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..bytes]);
+            if header_end.is_none() {
+                if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                    header_end = Some(index + 4);
+                    let headers = String::from_utf8_lossy(&buffer[..index + 4]);
+                    for line in headers.lines() {
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                content_length = value.trim().parse::<usize>().unwrap_or(0);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(end) = header_end {
+                if buffer.len() >= end + content_length {
+                    break;
+                }
+            }
+        }
+        Ok(String::from_utf8(buffer)?)
+    }
+
+    fn parse_http_request(raw: &str) -> CapturedHttpRequest {
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
+        let mut lines = head.lines();
+        let request_line = lines.next().unwrap_or_default();
+        let mut request_parts = request_line.split_whitespace();
+        let method = request_parts.next().unwrap_or_default().to_string();
+        let path = request_parts.next().unwrap_or_default().to_string();
+        let headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            .collect();
+        CapturedHttpRequest {
+            method,
+            path,
+            headers,
+            body: body.to_string(),
+        }
+    }
+
+    fn daemon_status_fixture() -> DaemonStatus {
+        DaemonStatus {
+            pid: 4242,
+            started_at: chrono::Utc::now(),
+            persistence_mode: PersistenceMode::OnDemand,
+            auto_start: false,
+            main_agent_alias: Some("main".to_string()),
+            main_target: Some(MainTargetSummary {
+                alias: "main".to_string(),
+                provider_id: "local".to_string(),
+                provider_display_name: "Local".to_string(),
+                model: "qwen".to_string(),
+            }),
+            onboarding_complete: true,
+            autonomy: AutonomyProfile::default(),
+            evolve: EvolveConfig::default(),
+            autopilot: AutopilotConfig::default(),
+            delegation: DelegationConfig::default(),
+            providers: 1,
+            aliases: 1,
+            delegation_targets: 1,
+            webhook_connectors: 0,
+            inbox_connectors: 0,
+            telegram_connectors: 0,
+            discord_connectors: 0,
+            slack_connectors: 0,
+            home_assistant_connectors: 0,
+            signal_connectors: 0,
+            gmail_connectors: 0,
+            brave_connectors: 0,
+            pending_connector_approvals: 0,
+            missions: 0,
+            active_missions: 0,
+            memories: 0,
+            pending_memory_reviews: 0,
+            skill_drafts: 0,
+            published_skills: 0,
+        }
+    }
+
+    fn save_daemon_config(storage: &Storage, origin: &str, token: &str) {
+        let parsed = Url::parse(origin).unwrap();
+        let mut config = storage.load_config().unwrap();
+        config.daemon.host = parsed.host_str().unwrap().to_string();
+        config.daemon.port = parsed.port().unwrap();
+        config.daemon.token = token.to_string();
+        storage.save_config(&config).unwrap();
+    }
+
+    fn sample_remote_provider(id: &str, model: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: DEFAULT_OPENAI_URL.to_string(),
+            auth_mode: AuthMode::ApiKey,
+            default_model: Some(model.to_string()),
+            keychain_account: None,
+            oauth: None,
+            local: false,
+        }
+    }
+
+    fn sample_local_provider(origin: &str, id: &str, model: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: origin.to_string(),
+            auth_mode: AuthMode::None,
+            default_model: Some(model.to_string()),
+            keychain_account: None,
+            oauth: None,
+            local: true,
+        }
+    }
+
+    fn sample_alias(alias: &str, provider_id: &str, model: &str) -> ModelAlias {
+        ModelAlias {
+            alias: alias.to_string(),
+            provider_id: provider_id.to_string(),
+            model: model.to_string(),
+            description: None,
+        }
+    }
+
+    fn local_onboarded_config(provider: ProviderConfig, alias: ModelAlias) -> AppConfig {
+        AppConfig {
+            onboarding_complete: true,
+            providers: vec![provider],
+            aliases: vec![alias.clone()],
+            main_agent_alias: Some(alias.alias),
+            ..AppConfig::default()
+        }
+    }
+
+    fn temp_file(name: &str, content: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("{name}-{}", Uuid::new_v4()));
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct StreamFixture {
+        value: String,
+    }
+
+    #[tokio::test]
+    async fn dashboard_command_requests_launch_when_not_opening_browser() {
+        let storage = temp_storage();
+        let token = "test-dashboard-token";
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/dashboard/launch",
+                    &DashboardLaunchResponse {
+                        launch_path: "/auth/dashboard/launch/mock".to_string(),
+                    },
+                ),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        dashboard_command(
+            &storage,
+            DashboardArgs {
+                print_url: true,
+                no_open: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].path, "/v1/dashboard/launch");
+    }
+
+    #[tokio::test]
+    async fn provider_add_posts_provider_and_alias() {
+        let storage = temp_storage();
+        let token = "test-login-token";
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/providers",
+                    &sample_remote_provider("openai", "gpt-5"),
+                ),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/aliases",
+                    &sample_alias("main", "openai", "gpt-5"),
+                ),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        provider_command(
+            &storage,
+            ProviderCommands::Add(ProviderAddArgs {
+                id: "openai".to_string(),
+                name: "OpenAI".to_string(),
+                kind: HostedKindArg::OpenaiCompatible,
+                base_url: Some(server.origin.clone()),
+                model: "gpt-5".to_string(),
+                api_key: Some("secret-api-key".to_string()),
+                main_alias: Some("main".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        let provider_body: ProviderUpsertRequest = serde_json::from_str(&requests[1].body).unwrap();
+        assert_eq!(provider_body.provider.id, "openai");
+        assert_eq!(provider_body.provider.default_model.as_deref(), Some("gpt-5"));
+        assert_eq!(provider_body.api_key.as_deref(), Some("secret-api-key"));
+
+        let alias_body: AliasUpsertRequest = serde_json::from_str(&requests[2].body).unwrap();
+        assert_eq!(alias_body.alias.alias, "main");
+        assert_eq!(alias_body.alias.provider_id, "openai");
+        assert_eq!(alias_body.alias.model, "gpt-5");
+        assert!(alias_body.set_as_main);
+    }
+
+    #[tokio::test]
+    async fn model_command_lists_models_for_local_provider() {
+        let storage = temp_storage();
+        let server = spawn_mock_http_server(
+            vec![MockHttpExpectation::json(
+                "GET",
+                "/models",
+                &json!({"data":[{"id":"qwen-coder"},{"id":"qwen-reasoner"}]}),
+            )],
+            None,
+        )
+        .await;
+
+        let config = local_onboarded_config(
+            sample_local_provider(&server.origin, "local", "qwen-coder"),
+            sample_alias("main", "local", "qwen-coder"),
+        );
+        storage.save_config(&config).unwrap();
+
+        model_command(
+            &storage,
+            ModelCommands::List {
+                provider: "local".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/models");
+    }
+
+    #[tokio::test]
+    async fn mcp_command_add_persists_locally_without_daemon() {
+        let storage = temp_storage();
+        let schema = temp_file("mcp-schema.json", "{\"type\":\"object\"}");
+
+        mcp_command(
+            &storage,
+            McpCommands::Add(McpAddArgs {
+                id: "filesystem".to_string(),
+                name: "Filesystem".to_string(),
+                description: "fs tools".to_string(),
+                command: "node".to_string(),
+                args: vec!["server.js".to_string()],
+                tool_name: "fs_server".to_string(),
+                schema_file: schema,
+                cwd: None,
+                enabled: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let config = storage.load_config().unwrap();
+        assert_eq!(config.mcp_servers.len(), 1);
+        assert_eq!(config.mcp_servers[0].id, "filesystem");
+    }
+
+    #[tokio::test]
+    async fn app_command_add_persists_locally_without_daemon() {
+        let storage = temp_storage();
+        let schema = temp_file("app-schema.json", "{\"type\":\"object\"}");
+
+        app_command(
+            &storage,
+            AppCommands::Add(AppAddArgs {
+                id: "github".to_string(),
+                name: "GitHub".to_string(),
+                description: "github tools".to_string(),
+                command: "node".to_string(),
+                args: vec!["github.js".to_string()],
+                tool_name: "github_app".to_string(),
+                schema_file: schema,
+                cwd: None,
+                enabled: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let config = storage.load_config().unwrap();
+        assert_eq!(config.app_connectors.len(), 1);
+        assert_eq!(config.app_connectors[0].id, "github");
+    }
+
+    #[tokio::test]
+    async fn alias_command_add_persists_locally_without_daemon() {
+        let storage = temp_storage();
+        let config = AppConfig {
+            providers: vec![sample_local_provider("http://localhost:11434", "local", "qwen")],
+            ..AppConfig::default()
+        };
+        storage.save_config(&config).unwrap();
+
+        alias_command(
+            &storage,
+            AliasCommands::Add(AliasAddArgs {
+                alias: "main".to_string(),
+                provider: "local".to_string(),
+                model: "qwen".to_string(),
+                description: Some("Primary".to_string()),
+                main: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let config = storage.load_config().unwrap();
+        assert_eq!(config.main_agent_alias.as_deref(), Some("main"));
+        assert_eq!(config.aliases.len(), 1);
+        assert_eq!(config.aliases[0].description.as_deref(), Some("Primary"));
+    }
+
+    #[tokio::test]
+    async fn trust_command_updates_locally_without_daemon() {
+        let storage = temp_storage();
+
+        trust_command(
+            &storage,
+            TrustArgs {
+                path: Some(PathBuf::from("C:\\workspace")),
+                allow_shell: Some(true),
+                allow_network: Some(true),
+                allow_full_disk: None,
+                allow_self_edit: Some(false),
+            },
+        )
+        .await
+        .unwrap();
+
+        let config = storage.load_config().unwrap();
+        assert!(config.trust_policy.allow_shell);
+        assert!(config.trust_policy.allow_network);
+        assert!(!config.trust_policy.allow_self_edit);
+        assert!(config
+            .trust_policy
+            .trusted_paths
+            .contains(&PathBuf::from("C:\\workspace")));
+    }
+
+    #[tokio::test]
+    async fn permissions_command_updates_locally_without_daemon() {
+        let storage = temp_storage();
+
+        permissions_command(
+            &storage,
+            PermissionsArgs {
+                preset: Some(PermissionPresetArg::FullAuto),
+            },
+        )
+        .await
+        .unwrap();
+
+        let config = storage.load_config().unwrap();
+        assert_eq!(config.permission_preset, PermissionPreset::FullAuto);
+    }
+
+    #[tokio::test]
+    async fn daemon_config_command_updates_local_config_without_daemon() {
+        let storage = temp_storage();
+
+        daemon_command(
+            &storage,
+            DaemonCommands::Config(DaemonConfigArgs {
+                mode: Some(PersistenceModeArg::AlwaysOn),
+                auto_start: Some(false),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let config = storage.load_config().unwrap();
+        assert_eq!(config.daemon.persistence_mode, PersistenceMode::AlwaysOn);
+        assert!(!config.daemon.auto_start);
+    }
+
+    #[tokio::test]
+    async fn mission_command_add_posts_schedule_request() {
+        let storage = temp_storage();
+        let token = "test-mission-token";
+        let mission = Mission::new("Ship it".to_string(), "details".to_string());
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json("POST", "/v1/missions", &mission),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        mission_command(
+            &storage,
+            MissionCommands::Add {
+                title: "Ship it".to_string(),
+                details: "details".to_string(),
+                alias: Some("main".to_string()),
+                model: Some("gpt-5".to_string()),
+                after_seconds: Some(60),
+                every_seconds: None,
+                at: None,
+                watch: None,
+                watch_nonrecursive: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        let body: Mission = serde_json::from_str(&requests[1].body).unwrap();
+        assert_eq!(body.title, "Ship it");
+        assert_eq!(body.alias.as_deref(), Some("main"));
+        assert_eq!(body.requested_model.as_deref(), Some("gpt-5"));
+        assert_eq!(body.status, MissionStatus::Scheduled);
+        assert_eq!(body.wake_trigger, Some(WakeTrigger::Timer));
+    }
+
+    #[tokio::test]
+    async fn memory_command_search_posts_workspace_scoped_query() {
+        let storage = temp_storage();
+        let token = "test-memory-token";
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/memory/search",
+                    &MemorySearchResponse {
+                        memories: Vec::new(),
+                        transcript_hits: Vec::new(),
+                    },
+                ),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        memory_command(
+            &storage,
+            MemoryCommands::Search {
+                query: "build output".to_string(),
+                limit: 5,
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        let body: MemorySearchQuery = serde_json::from_str(&requests[1].body).unwrap();
+        assert_eq!(body.query, "build output");
+        assert_eq!(body.limit, Some(5));
+        assert!(body.workspace_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn autonomy_evolve_and_autopilot_status_commands_hit_daemon() {
+        let storage = temp_storage();
+        let token = "test-status-token";
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json("GET", "/v1/autonomy/status", &AutonomyProfile::default()),
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json("GET", "/v1/evolve/status", &EvolveConfig::default()),
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json("GET", "/v1/autopilot/status", &AutopilotConfig::default()),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        autonomy_command(&storage, AutonomyCommands::Status).await.unwrap();
+        evolve_command(&storage, EvolveCommands::Status).await.unwrap();
+        autopilot_command(&storage, AutopilotCommands::Status).await.unwrap();
+
+        let requests = server.finish().await.unwrap();
+        assert_eq!(requests.iter().filter(|req| req.path == "/v1/status").count(), 3);
+        assert!(requests.iter().any(|req| req.path == "/v1/autonomy/status"));
+        assert!(requests.iter().any(|req| req.path == "/v1/evolve/status"));
+        assert!(requests.iter().any(|req| req.path == "/v1/autopilot/status"));
+    }
+
+    #[tokio::test]
+    async fn connector_command_paths_hit_daemon_routes() {
+        let storage = temp_storage();
+        let token = "test-connector-token";
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/telegram/ops/poll",
+                    &TelegramPollResponse {
+                        connector_id: "ops".to_string(),
+                        processed_updates: 1,
+                        queued_missions: 0,
+                        pending_approvals: 0,
+                        last_update_id: Some(99),
+                    },
+                ),
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/discord/ops/send",
+                    &DiscordSendResponse {
+                        connector_id: "ops".to_string(),
+                        channel_id: "123".to_string(),
+                        message_id: Some("m-1".to_string()),
+                    },
+                ),
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/slack/ops/send",
+                    &SlackSendResponse {
+                        connector_id: "ops".to_string(),
+                        channel_id: "C123".to_string(),
+                        message_ts: Some("123.45".to_string()),
+                    },
+                ),
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/signal/ops/send",
+                    &SignalSendResponse {
+                        connector_id: "ops".to_string(),
+                        target: "group:team".to_string(),
+                    },
+                ),
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/home-assistant/ops/services",
+                    &HomeAssistantServiceCallResponse {
+                        connector_id: "ops".to_string(),
+                        domain: "light".to_string(),
+                        service: "turn_on".to_string(),
+                        changed_entities: 1,
+                    },
+                ),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        telegram_command(
+            &storage,
+            TelegramCommands::Poll {
+                id: "ops".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        discord_command(
+            &storage,
+            DiscordCommands::Send(DiscordSendArgs {
+                id: "ops".to_string(),
+                channel_id: "123".to_string(),
+                content: "deploy now".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        slack_command(
+            &storage,
+            SlackCommands::Send(SlackSendArgs {
+                id: "ops".to_string(),
+                channel_id: "C123".to_string(),
+                text: "ship it".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        signal_command(
+            &storage,
+            SignalCommands::Send(SignalSendArgs {
+                id: "ops".to_string(),
+                recipient: None,
+                group_id: Some("team".to_string()),
+                text: "hello".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        home_assistant_command(
+            &storage,
+            HomeAssistantCommands::CallService(HomeAssistantServiceArgs {
+                id: "ops".to_string(),
+                domain: "light".to_string(),
+                service: "turn_on".to_string(),
+                entity_id: Some("light.office".to_string()),
+                service_data_json: Some("{\"brightness\":200}".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        let discord_body: DiscordSendRequest = serde_json::from_str(&requests[3].body).unwrap();
+        assert_eq!(discord_body.channel_id, "123");
+        let slack_body: SlackSendRequest = serde_json::from_str(&requests[5].body).unwrap();
+        assert_eq!(slack_body.text, "ship it");
+        let signal_body: SignalSendRequest = serde_json::from_str(&requests[7].body).unwrap();
+        assert_eq!(signal_body.group_id.as_deref(), Some("team"));
+        let ha_body: HomeAssistantServiceCallRequest =
+            serde_json::from_str(&requests[9].body).unwrap();
+        assert_eq!(ha_body.domain, "light");
+        assert_eq!(
+            ha_body
+                .service_data
+                .as_ref()
+                .and_then(|value| value.get("brightness"))
+                .and_then(serde_json::Value::as_i64),
+            Some(200)
+        );
+    }
+
+    #[tokio::test]
+    async fn webhook_and_inbox_add_commands_persist_locally_without_daemon() {
+        let storage = temp_storage();
+        let inbox_path = std::env::temp_dir().join(format!("autism-inbox-{}", Uuid::new_v4()));
+        fs::create_dir_all(&inbox_path).unwrap();
+
+        webhook_command(
+            &storage,
+            WebhookCommands::Add(WebhookAddArgs {
+                id: "webhook".to_string(),
+                name: "Webhook".to_string(),
+                description: "Inbound webhook".to_string(),
+                prompt_template: Some("Handle {{summary}}".to_string()),
+                prompt_file: None,
+                alias: Some("main".to_string()),
+                model: Some("gpt-5".to_string()),
+                cwd: None,
+                token: Some("hook-token".to_string()),
+                enabled: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        inbox_command(
+            &storage,
+            InboxCommands::Add(InboxAddArgs {
+                id: "inbox".to_string(),
+                name: "Inbox".to_string(),
+                description: "Watch a folder".to_string(),
+                path: inbox_path.clone(),
+                alias: Some("main".to_string()),
+                model: Some("gpt-5".to_string()),
+                cwd: None,
+                delete_after_read: true,
+                enabled: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let config = storage.load_config().unwrap();
+        assert_eq!(config.webhook_connectors.len(), 1);
+        assert_eq!(config.inbox_connectors.len(), 1);
+        assert_eq!(config.inbox_connectors[0].path, inbox_path);
+        assert!(config.webhook_connectors[0].token_sha256.is_some());
+    }
+
+    #[tokio::test]
+    async fn skills_enable_and_disable_update_local_config() {
+        let storage = temp_storage();
+        let home_dir = std::env::temp_dir().join(format!("autism-home-{}", Uuid::new_v4()));
+        let skill_dir = home_dir.join(".codex").join("skills").join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Test Skill\nA skill used for tests.\n",
+        )
+        .unwrap();
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home_dir);
+
+        skills_command(
+            &storage,
+            SkillCommands::Enable {
+                name: "test-skill".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let enabled = storage.load_config().unwrap().enabled_skills;
+        assert_eq!(enabled, vec!["test-skill".to_string()]);
+
+        skills_command(
+            &storage,
+            SkillCommands::Disable {
+                name: "test-skill".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let enabled = storage.load_config().unwrap().enabled_skills;
+        assert!(enabled.is_empty());
+
+        if let Some(previous) = previous_home {
+            std::env::set_var("HOME", previous);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[tokio::test]
+    async fn session_command_rename_updates_stored_session() {
+        let storage = temp_storage();
+        let alias = sample_alias("main", "local", "qwen");
+        storage
+            .ensure_session("session-1", &alias, "local", "qwen")
+            .unwrap();
+
+        session_command(
+            &storage,
+            SessionCommands::Rename {
+                id: "session-1".to_string(),
+                title: "Renamed".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let session = storage.get_session("session-1").unwrap().unwrap();
+        assert_eq!(session.title.as_deref(), Some("Renamed"));
+    }
+
+    #[tokio::test]
+    async fn run_command_posts_request_when_onboarded() {
+        let storage = temp_storage();
+        let token = "test-run-token";
+        let provider = sample_local_provider("http://127.0.0.1:11434", "local", "qwen");
+        let alias = sample_alias("main", "local", "qwen");
+        storage
+            .save_config(&local_onboarded_config(provider, alias))
+            .unwrap();
+
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/run",
+                    &RunTaskResponse {
+                        session_id: "session-1".to_string(),
+                        alias: "main".to_string(),
+                        provider_id: "local".to_string(),
+                        model: "qwen".to_string(),
+                        response: "done".to_string(),
+                        tool_events: Vec::new(),
+                        structured_output_json: None,
+                    },
+                ),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        run_command(
+            &storage,
+            RunArgs {
+                prompt: Some("hello".to_string()),
+                alias: Some("main".to_string()),
+                tasks: Vec::new(),
+                thinking: None,
+                images: Vec::new(),
+                output_schema: None,
+                output_last_message: None,
+                json: false,
+                ephemeral: false,
+                permissions: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        let body: RunTaskRequest = serde_json::from_str(&requests[1].body).unwrap();
+        assert_eq!(body.prompt, "hello");
+        assert_eq!(body.alias.as_deref(), Some("main"));
+        assert_eq!(body.requested_model, None);
+    }
+
+    #[test]
+    fn drain_ndjson_buffer_handles_split_utf8_boundaries() {
+        let mut buffer = Vec::new();
+        let mut values = Vec::new();
+        let first = br#"{"value":"snowman "#.to_vec();
+        let second = vec![0xE2, 0x98];
+        let mut third = vec![0x83];
+        third.extend_from_slice(b"\"}\n");
+
+        buffer.extend_from_slice(&first);
+        drain_ndjson_buffer::<StreamFixture, _>(&mut buffer, false, &mut |event| {
+            values.push(event);
+            Ok(())
+        })
+        .unwrap();
+        assert!(values.is_empty());
+
+        buffer.extend_from_slice(&second);
+        drain_ndjson_buffer::<StreamFixture, _>(&mut buffer, false, &mut |event| {
+            values.push(event);
+            Ok(())
+        })
+        .unwrap();
+        assert!(values.is_empty());
+
+        buffer.extend_from_slice(&third);
+        drain_ndjson_buffer::<StreamFixture, _>(&mut buffer, true, &mut |event| {
+            values.push(event);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            values,
+            vec![StreamFixture {
+                value: "snowman ☃".to_string()
+            }]
+        );
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn drain_ndjson_buffer_rejects_invalid_trailing_utf8() {
+        let mut buffer = vec![0xE2, 0x98];
+        let error = drain_ndjson_buffer::<StreamFixture, _>(&mut buffer, true, &mut |_| Ok(()))
+            .unwrap_err();
+        assert!(error.to_string().contains("utf-8"));
+    }
 
     #[test]
     fn parse_task_requires_alias_separator() {
@@ -10804,12 +12115,85 @@ mod tests {
             Some(InteractiveCommand::ModelSet("claude".to_string()))
         );
         assert_eq!(
+            parse_interactive_command("/provider anthropic").unwrap(),
+            Some(InteractiveCommand::ProviderSet("anthropic".to_string()))
+        );
+        assert_eq!(
+            parse_interactive_command("/provider").unwrap(),
+            Some(InteractiveCommand::ProviderShow)
+        );
+        assert_eq!(
+            parse_interactive_command("/onboard").unwrap(),
+            Some(InteractiveCommand::Onboard)
+        );
+        assert_eq!(
             parse_interactive_command("/thinking high").unwrap(),
             Some(InteractiveCommand::ThinkingSet(Some(ThinkingLevel::High)))
         );
         assert_eq!(
             parse_interactive_command("/thinking default").unwrap(),
             Some(InteractiveCommand::ThinkingSet(None))
+        );
+    }
+
+    #[test]
+    fn resolve_interactive_provider_selection_prefers_logged_in_provider_aliases() {
+        let storage = temp_storage();
+        let config = AppConfig {
+            providers: vec![
+                ProviderConfig {
+                    id: "openai".to_string(),
+                    display_name: "OpenAI".to_string(),
+                    kind: ProviderKind::OpenAiCompatible,
+                    base_url: DEFAULT_OPENAI_URL.to_string(),
+                    auth_mode: AuthMode::None,
+                    default_model: Some("gpt-5".to_string()),
+                    keychain_account: None,
+                    oauth: None,
+                    local: true,
+                },
+                ProviderConfig {
+                    id: "anthropic".to_string(),
+                    display_name: "Claude".to_string(),
+                    kind: ProviderKind::Anthropic,
+                    base_url: DEFAULT_ANTHROPIC_URL.to_string(),
+                    auth_mode: AuthMode::None,
+                    default_model: Some("claude-sonnet".to_string()),
+                    keychain_account: None,
+                    oauth: None,
+                    local: true,
+                },
+            ],
+            aliases: vec![
+                ModelAlias {
+                    alias: "main".to_string(),
+                    provider_id: "openai".to_string(),
+                    model: "gpt-5".to_string(),
+                    description: None,
+                },
+                ModelAlias {
+                    alias: "claude".to_string(),
+                    provider_id: "anthropic".to_string(),
+                    model: "claude-sonnet".to_string(),
+                    description: None,
+                },
+            ],
+            main_agent_alias: Some("main".to_string()),
+            ..AppConfig::default()
+        };
+        storage.save_config(&config).unwrap();
+
+        assert_eq!(
+            resolve_interactive_provider_selection(&storage, Some("main"), "anthropic").unwrap(),
+            "claude"
+        );
+        assert_eq!(
+            resolve_interactive_provider_selection(&storage, Some("main"), "Claude").unwrap(),
+            "claude"
+        );
+        assert_eq!(
+            resolve_interactive_provider_selection(&storage, Some("main"), "claude").unwrap(),
+            "claude"
         );
     }
 
@@ -11512,13 +12896,13 @@ mod tests {
             providers: vec![ProviderConfig {
                 id: "openai".to_string(),
                 display_name: "OpenAI".to_string(),
-                kind: ProviderKind::OpenAiCompatible,
+                kind: ProviderKind::Ollama,
                 base_url: DEFAULT_OPENAI_URL.to_string(),
-                auth_mode: AuthMode::ApiKey,
+                auth_mode: AuthMode::None,
                 default_model: Some("gpt-4.1".to_string()),
                 keychain_account: None,
                 oauth: None,
-                local: false,
+                local: true,
             }],
             ..AppConfig::default()
         };
@@ -11540,13 +12924,13 @@ mod tests {
             providers: vec![ProviderConfig {
                 id: "openai".to_string(),
                 display_name: "OpenAI".to_string(),
-                kind: ProviderKind::ChatGptCodex,
+                kind: ProviderKind::Ollama,
                 base_url: DEFAULT_CHATGPT_CODEX_URL.to_string(),
-                auth_mode: AuthMode::OAuth,
+                auth_mode: AuthMode::None,
                 default_model: Some("gpt-4.1".to_string()),
-                keychain_account: Some("provider:openai".to_string()),
-                oauth: Some(openai_browser_oauth_config()),
-                local: false,
+                keychain_account: None,
+                oauth: None,
+                local: true,
             }],
             ..AppConfig::default()
         };
@@ -11565,6 +12949,64 @@ mod tests {
                 provider_id: "missing".to_string(),
                 model: "gpt-4.1".to_string(),
                 description: None,
+            }],
+            ..AppConfig::default()
+        };
+
+        assert!(!has_usable_main_alias(&config));
+        assert!(needs_onboarding(&config));
+    }
+
+    #[test]
+    fn main_alias_is_not_usable_when_provider_credentials_are_missing() {
+        let config = AppConfig {
+            onboarding_complete: true,
+            main_agent_alias: Some("main".to_string()),
+            aliases: vec![ModelAlias {
+                alias: "main".to_string(),
+                provider_id: "openai".to_string(),
+                model: "gpt-4.1".to_string(),
+                description: None,
+            }],
+            providers: vec![ProviderConfig {
+                id: "openai".to_string(),
+                display_name: "OpenAI".to_string(),
+                kind: ProviderKind::ChatGptCodex,
+                base_url: DEFAULT_CHATGPT_CODEX_URL.to_string(),
+                auth_mode: AuthMode::OAuth,
+                default_model: Some("gpt-4.1".to_string()),
+                keychain_account: None,
+                oauth: Some(openai_browser_oauth_config()),
+                local: false,
+            }],
+            ..AppConfig::default()
+        };
+
+        assert!(!has_usable_main_alias(&config));
+        assert!(needs_onboarding(&config));
+    }
+
+    #[test]
+    fn main_alias_is_not_usable_when_saved_credentials_are_unreadable() {
+        let config = AppConfig {
+            onboarding_complete: true,
+            main_agent_alias: Some("main".to_string()),
+            aliases: vec![ModelAlias {
+                alias: "main".to_string(),
+                provider_id: "openai".to_string(),
+                model: "gpt-4.1".to_string(),
+                description: None,
+            }],
+            providers: vec![ProviderConfig {
+                id: "openai".to_string(),
+                display_name: "OpenAI".to_string(),
+                kind: ProviderKind::OpenAiCompatible,
+                base_url: DEFAULT_OPENAI_URL.to_string(),
+                auth_mode: AuthMode::ApiKey,
+                default_model: Some("gpt-4.1".to_string()),
+                keychain_account: Some("missing-provider-account".to_string()),
+                oauth: None,
+                local: false,
             }],
             ..AppConfig::default()
         };

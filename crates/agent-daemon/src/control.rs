@@ -4,9 +4,10 @@ use agent_core::{
     AliasUpsertRequest, AutonomyEnableRequest, AutonomyMode, AutonomyState, AutopilotConfig,
     AutopilotState, AutopilotUpdateRequest, DaemonConfigUpdateRequest, DaemonStatus,
     DashboardBootstrapResponse, DelegationConfig, DelegationConfigUpdateRequest,
-    DelegationTarget, HealthReport, LogEntry, McpServerConfig, McpServerUpsertRequest,
-    MemoryReviewStatus, ModelAlias, PermissionPreset, PermissionUpdateRequest, ProviderConfig,
-    ProviderSuggestionRequest, ProviderSuggestionResponse, ProviderUpsertRequest,
+    DelegationTarget, HealthReport, LogEntry, MainAliasUpdateRequest, MainTargetSummary,
+    McpServerConfig, McpServerUpsertRequest, MemoryReviewStatus, ModelAlias, PermissionPreset,
+    PermissionUpdateRequest, ProviderConfig, ProviderSuggestionRequest,
+    ProviderSuggestionResponse, ProviderUpsertRequest,
     SkillDraftStatus, SkillUpdateRequest, TrustUpdateRequest, INTERNAL_DAEMON_ARG,
 };
 use agent_policy::{autonomy_warning, permission_summary};
@@ -23,9 +24,14 @@ use tokio::time::timeout;
 use tracing::warn;
 
 use crate::{
-    append_log, delegation_targets_from_config, normalize_delegation_limit, ApiError, AppState,
-    LimitQuery,
+    append_log, delegation_targets_from_config, normalize_delegation_limit,
+    runtime::provider_has_runnable_access, ApiError, AppState, LimitQuery,
 };
+
+fn redact_provider_secret_metadata(mut provider: ProviderConfig) -> ProviderConfig {
+    provider.keychain_account = None;
+    provider
+}
 
 #[derive(Deserialize)]
 pub(crate) struct EventQuery {
@@ -49,7 +55,12 @@ pub(crate) async fn dashboard_bootstrap(
     let delegation_targets = delegation_targets_from_config(&config, None);
     Ok(Json(DashboardBootstrapResponse {
         status,
-        providers: config.providers.clone(),
+        providers: config
+            .providers
+            .iter()
+            .cloned()
+            .map(redact_provider_secret_metadata)
+            .collect(),
         aliases: config.aliases.clone(),
         delegation_targets,
         telegram_connectors: config.telegram_connectors.clone(),
@@ -79,6 +90,7 @@ fn build_daemon_status(state: &AppState, config: &agent_core::AppConfig) -> Resu
         persistence_mode: config.daemon.persistence_mode.clone(),
         auto_start: config.daemon.auto_start,
         main_agent_alias: config.main_agent_alias.clone(),
+        main_target: runnable_main_target_summary(config),
         onboarding_complete: config.onboarding_complete,
         autonomy: config.autonomy.clone(),
         evolve: config.evolve.clone(),
@@ -110,6 +122,22 @@ fn build_daemon_status(state: &AppState, config: &agent_core::AppConfig) -> Resu
     })
 }
 
+fn config_has_runnable_main_alias(config: &agent_core::AppConfig) -> bool {
+    config
+        .main_alias()
+        .ok()
+        .and_then(|alias| config.get_provider(&alias.provider_id))
+        .is_some_and(provider_has_runnable_access)
+}
+
+fn runnable_main_target_summary(
+    config: &agent_core::AppConfig,
+) -> Option<MainTargetSummary> {
+    let summary = config.main_target_summary()?;
+    let provider = config.get_provider(&summary.provider_id)?;
+    provider_has_runnable_access(provider).then_some(summary)
+}
+
 pub(crate) async fn shutdown(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -122,7 +150,14 @@ pub(crate) async fn list_providers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ProviderConfig>>, ApiError> {
     let config = state.config.read().await;
-    Ok(Json(config.providers.clone()))
+    Ok(Json(
+        config
+            .providers
+            .iter()
+            .cloned()
+            .map(redact_provider_secret_metadata)
+            .collect(),
+    ))
 }
 
 pub(crate) async fn suggest_provider_defaults(
@@ -172,7 +207,7 @@ pub(crate) async fn suggest_provider_defaults(
         provider_id,
         alias_name,
         alias_model: default_model,
-        would_be_first_main: !config.has_usable_main_alias(),
+        would_be_first_main: !config_has_runnable_main_alias(&config),
     }))
 }
 
@@ -180,6 +215,11 @@ pub(crate) async fn upsert_provider(
     State(state): State<AppState>,
     Json(mut payload): Json<ProviderUpsertRequest>,
 ) -> Result<Json<ProviderConfig>, ApiError> {
+    let existing_provider = {
+        let config = state.config.read().await;
+        config.get_provider(&payload.provider.id).cloned()
+    };
+
     if let Some(api_key) = payload.api_key.take() {
         let account = store_api_key(&payload.provider.id, &api_key)?;
         payload.provider.keychain_account = Some(account);
@@ -188,6 +228,16 @@ pub(crate) async fn upsert_provider(
     if let Some(token) = payload.oauth_token.take() {
         let account = store_oauth_token(&payload.provider.id, &token)?;
         payload.provider.keychain_account = Some(account);
+    }
+
+    if payload.provider.keychain_account.is_none()
+        && !matches!(payload.provider.auth_mode, agent_core::AuthMode::None)
+    {
+        if let Some(existing) = existing_provider.filter(|existing| {
+            existing.auth_mode == payload.provider.auth_mode
+        }) {
+            payload.provider.keychain_account = existing.keychain_account.clone();
+        }
     }
 
     {
@@ -202,7 +252,7 @@ pub(crate) async fn upsert_provider(
         "providers",
         format!("provider '{}' updated", payload.provider.id),
     )?;
-    Ok(Json(payload.provider))
+    Ok(Json(redact_provider_secret_metadata(payload.provider)))
 }
 
 pub(crate) async fn delete_provider(
@@ -353,6 +403,40 @@ pub(crate) async fn delete_alias(
         format!("alias '{}' removed", alias_name),
     )?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub(crate) async fn update_main_alias(
+    State(state): State<AppState>,
+    Json(payload): Json<MainAliasUpdateRequest>,
+) -> Result<Json<MainTargetSummary>, ApiError> {
+    let alias_name = payload.alias.trim();
+    if alias_name.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "alias must not be empty",
+        ));
+    }
+
+    let summary = {
+        let mut config = state.config.write().await;
+        let summary = config
+            .alias_target_summary(alias_name)
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "alias must reference a known provider"))?;
+        config.main_agent_alias = Some(summary.alias.clone());
+        state.storage.save_config(&config)?;
+        summary
+    };
+
+    append_log(
+        &state,
+        "info",
+        "aliases",
+        format!(
+            "main alias set to '{}' ({}/{})",
+            summary.alias, summary.provider_id, summary.model
+        ),
+    )?;
+    Ok(Json(summary))
 }
 
 pub(crate) async fn get_trust(

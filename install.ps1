@@ -1,7 +1,8 @@
 param(
     [string]$InstallDir = $env:AUTISM_INSTALL_DIR,
     [switch]$NoPathPersist,
-    [switch]$PreferSourceBuild
+    [switch]$PreferSourceBuild,
+    [switch]$SkipPlaywrightSetup
 )
 
 Set-StrictMode -Version Latest
@@ -59,6 +60,14 @@ function Choose-DefaultInstallDir {
     }
 
     return Join-Path $env:LOCALAPPDATA "Programs\NuclearAI\Autism\bin"
+}
+
+function Get-ManagedDependencyRoot {
+    if (-not [string]::IsNullOrWhiteSpace($env:AUTISM_DEPENDENCY_ROOT)) {
+        return $env:AUTISM_DEPENDENCY_ROOT
+    }
+
+    return Join-Path $env:LOCALAPPDATA "Programs\NuclearAI\Autism\deps"
 }
 
 function Resolve-SourceRoot {
@@ -177,6 +186,306 @@ function Ensure-Cargo {
     }
 
     return $cargo.Source
+}
+
+function Get-NodeCommand {
+    param([string]$Name)
+
+    $command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    $managedNodeHome = Get-ManagedNodeHome
+    if ($managedNodeHome) {
+        Add-ToProcessPath -Entry $managedNodeHome
+        $command = Get-Command $Name -ErrorAction SilentlyContinue
+        if ($command) {
+            return $command.Source
+        }
+    }
+
+    return $null
+}
+
+function Get-NodeArchTag {
+    $arch = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
+
+    switch ($arch.ToUpperInvariant()) {
+        "ARM64" { return "arm64" }
+        default { return "x64" }
+    }
+}
+
+function Get-ManagedNodeHome {
+    $dependencyRoot = Get-ManagedDependencyRoot
+    if (-not (Test-Path $dependencyRoot)) {
+        return $null
+    }
+
+    $candidates = Get-ChildItem -Path $dependencyRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "node-v*-win-*" } |
+        Sort-Object Name -Descending
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path (Join-Path $candidate.FullName "node.exe")) {
+            return $candidate.FullName
+        }
+    }
+
+    return $null
+}
+
+function Get-NodeDownloadInfo {
+    $archTag = Get-NodeArchTag
+    $zipTag = "win-$archTag-zip"
+    Write-Step "Resolving portable Node.js runtime for Playwright setup"
+    $releases = Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json"
+    $release = $releases |
+        Where-Object { $_.lts -and $_.files -contains $zipTag } |
+        Select-Object -First 1
+    if (-not $release) {
+        $release = $releases |
+            Where-Object { $_.files -contains $zipTag } |
+            Select-Object -First 1
+    }
+    if (-not $release) {
+        throw "Could not find a portable Node.js release for $zipTag."
+    }
+
+    $version = [string]$release.version
+    return @{
+        Version = $version
+        FolderName = "node-$version-win-$archTag"
+        DownloadUri = "https://nodejs.org/dist/$version/node-$version-win-$archTag.zip"
+    }
+}
+
+function Install-PortableNode {
+    $existing = Get-ManagedNodeHome
+    if ($existing) {
+        Add-ToProcessPath -Entry $existing
+        return $existing
+    }
+
+    $dependencyRoot = Get-ManagedDependencyRoot
+    Ensure-InstallDir -TargetDir $dependencyRoot
+
+    $download = Get-NodeDownloadInfo
+    $targetHome = Join-Path $dependencyRoot $download.FolderName
+    if (Test-Path (Join-Path $targetHome "node.exe")) {
+        Add-ToProcessPath -Entry $targetHome
+        return $targetHome
+    }
+
+    Write-Step "Node.js not found; installing a managed portable Node.js runtime"
+    $tempZip = Join-Path ([System.IO.Path]::GetTempPath()) ("node-runtime-" + [System.Guid]::NewGuid().ToString("N") + ".zip")
+    $tempExtract = Join-Path ([System.IO.Path]::GetTempPath()) ("node-runtime-" + [System.Guid]::NewGuid().ToString("N"))
+    try {
+        Invoke-WebRequest -Uri $download.DownloadUri -OutFile $tempZip
+        Expand-Archive -LiteralPath $tempZip -DestinationPath $tempExtract -Force
+        $expandedRoot = Get-ChildItem -Path $tempExtract -Directory | Select-Object -First 1
+        if (-not $expandedRoot) {
+            throw "Portable Node.js archive did not contain an extracted root directory."
+        }
+        if (Test-Path $targetHome) {
+            Remove-Item -Recurse -Force $targetHome
+        }
+        Move-Item -Path $expandedRoot.FullName -Destination $targetHome
+    } finally {
+        Remove-Item -Force $tempZip -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force $tempExtract -ErrorAction SilentlyContinue
+    }
+
+    Add-ToProcessPath -Entry $targetHome
+    return $targetHome
+}
+
+function Ensure-NodeRuntime {
+    $nodePath = Get-NodeCommand -Name "node"
+    $npmPath = Get-NodeCommand -Name "npm"
+    if ($nodePath -and $npmPath) {
+        return @{
+            Node = $nodePath
+            Npm = $npmPath
+            Managed = $false
+        }
+    }
+
+    $managedNodeHome = Install-PortableNode
+    $nodePath = Get-NodeCommand -Name "node"
+    $npmPath = Get-NodeCommand -Name "npm"
+    if (-not $nodePath -or -not $npmPath) {
+        throw "Portable Node.js installation completed but node/npm are still unavailable."
+    }
+
+    return @{
+        Node = $nodePath
+        Npm = $npmPath
+        Managed = $true
+        Home = $managedNodeHome
+    }
+}
+
+function Test-PlaywrightPackagePresent {
+    param([string]$SourceRoot)
+
+    $packageJsonPath = Join-Path $SourceRoot "package.json"
+    if (-not (Test-Path $packageJsonPath)) {
+        return $false
+    }
+
+    try {
+        $package = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+
+    $dependencies = @{}
+    $dependencyBlock = $package.PSObject.Properties["dependencies"]
+    if ($dependencyBlock -and $dependencyBlock.Value) {
+        foreach ($entry in $dependencyBlock.Value.PSObject.Properties) {
+            $dependencies[$entry.Name] = [string]$entry.Value
+        }
+    }
+    $devDependencyBlock = $package.PSObject.Properties["devDependencies"]
+    if ($devDependencyBlock -and $devDependencyBlock.Value) {
+        foreach ($entry in $devDependencyBlock.Value.PSObject.Properties) {
+            $dependencies[$entry.Name] = [string]$entry.Value
+        }
+    }
+
+    return $dependencies.ContainsKey("@playwright/test") -or
+        $dependencies.ContainsKey("playwright")
+}
+
+function Get-LocalPlaywrightCommand {
+    param([string]$SourceRoot)
+
+    $binDir = Join-Path $SourceRoot "node_modules\.bin"
+    $candidates = @(
+        (Join-Path $binDir "playwright.cmd"),
+        (Join-Path $binDir "playwright.ps1"),
+        (Join-Path $binDir "playwright")
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Ensure-PlaywrightDependencies {
+    param(
+        [string]$SourceRoot,
+        [string]$NpmPath
+    )
+
+    $playwrightPackage = Join-Path $SourceRoot "node_modules\playwright-core\package.json"
+    $playwrightTestPackage = Join-Path $SourceRoot "node_modules\@playwright\test\package.json"
+    if ((Test-Path $playwrightPackage) -and (Test-Path $playwrightTestPackage)) {
+        return
+    }
+
+    $packageLockPath = Join-Path $SourceRoot "package-lock.json"
+    $installArgs = if (Test-Path $packageLockPath) {
+        @("ci", "--include=dev", "--no-fund", "--no-audit")
+    } else {
+        @("install", "--include=dev", "--no-fund", "--no-audit")
+    }
+
+    Write-Step "Installing local Playwright npm dependencies"
+    Push-Location $SourceRoot
+    try {
+        & $npmPath @installArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm $($installArgs[0]) failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
+function Get-PlaywrightInstallLocations {
+    param([string]$PlaywrightCommand)
+
+    $output = & $PlaywrightCommand install chromium --dry-run 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        throw "Playwright dry-run failed with exit code $LASTEXITCODE.`n$output"
+    }
+
+    $matches = [regex]::Matches($output, "(?m)^\s*Install location:\s+(.+?)\s*$")
+    if ($matches.Count -eq 0) {
+        throw "Playwright dry-run did not report any install locations.`n$output"
+    }
+
+    $locations = @()
+    foreach ($match in $matches) {
+        $locations += $match.Groups[1].Value.Trim()
+    }
+
+    return $locations
+}
+
+function Test-PlaywrightChromiumInstalled {
+    param([string]$PlaywrightCommand)
+
+    $locations = Get-PlaywrightInstallLocations -PlaywrightCommand $PlaywrightCommand
+    foreach ($location in $locations) {
+        if (-not (Test-Path $location)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Ensure-PlaywrightChromium {
+    param([string]$SourceRoot)
+
+    if ($SkipPlaywrightSetup) {
+        Write-Step "Skipping Playwright browser setup for this install run"
+        return
+    }
+
+    if (-not (Test-PlaywrightPackagePresent -SourceRoot $SourceRoot)) {
+        return
+    }
+
+    $nodeRuntime = Ensure-NodeRuntime
+    if ($nodeRuntime.Managed) {
+        Write-Step "Using managed Node.js runtime for package dependency setup"
+    }
+
+    Ensure-PlaywrightDependencies -SourceRoot $SourceRoot -NpmPath $nodeRuntime.Npm
+
+    $playwrightCommand = Get-LocalPlaywrightCommand -SourceRoot $SourceRoot
+    if (-not $playwrightCommand) {
+        throw "Playwright CLI was not found after npm dependency installation."
+    }
+
+    if (Test-PlaywrightChromiumInstalled -PlaywrightCommand $playwrightCommand) {
+        Write-Step "Playwright Chromium is already installed; leaving the existing browser bundle in place"
+        return
+    }
+
+    Write-Step "Installing Playwright Chromium browser bundle"
+    Push-Location $SourceRoot
+    try {
+        & $playwrightCommand install chromium
+        if ($LASTEXITCODE -ne 0) {
+            throw "Playwright Chromium install failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
 }
 
 function Unblock-PathTree {
@@ -433,6 +742,7 @@ try {
     }
 
     Write-Step "Installed version: $version"
+    Ensure-PlaywrightChromium -SourceRoot $sourceRoot
     Write-Step "Run: autism"
     Write-Step "If an already-open terminal does not recognize the command, close it and open a new terminal window."
 } catch {
