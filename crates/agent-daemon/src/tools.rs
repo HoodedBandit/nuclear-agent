@@ -14,7 +14,10 @@ use agent_core::{
     TelegramSendRequest, ThinkingLevel, ToolCall, ToolDefinition, ToolExecutionOutcome,
     ToolExecutionRecord, TrustPolicy,
 };
-use agent_policy::{allow_network, allow_self_edit, allow_shell, path_is_trusted};
+use agent_policy::{
+    allow_network, allow_self_edit, allow_shell, is_network_tool, path_is_trusted,
+    tool_allowed_by_preset,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
@@ -448,15 +451,49 @@ pub(crate) fn tool_definitions(context: &ToolContext) -> Vec<ToolDefinition> {
     tools
 }
 
+pub(crate) fn effective_tool_definitions(context: &ToolContext) -> Vec<ToolDefinition> {
+    let mut tools = tool_definitions(context);
+    tools.retain(|tool| tool_allowed_by_preset(&tool.name, context.permission_preset));
+    if !context.background_shell_allowed || !allow_shell(&context.trust_policy, &context.autonomy)
+    {
+        tools.retain(|tool| {
+            !matches!(
+                tool.name.as_str(),
+                "run_shell" | "git_status" | "git_diff" | "git_log" | "git_show"
+            )
+        });
+    }
+    if !context.background_network_allowed
+        || !allow_network(&context.trust_policy, &context.autonomy)
+    {
+        tools.retain(|tool| !is_network_tool(&tool.name));
+    }
+    tools
+}
+
 pub(crate) struct ToolCallExecution {
     pub message: ConversationMessage,
     pub record: ToolExecutionRecord,
 }
 
-pub(crate) async fn execute_tool_call(context: &ToolContext, call: &ToolCall) -> ToolCallExecution {
-    let (content, outcome) = match execute_tool_call_inner(context, call).await {
+pub(crate) async fn execute_tool_call(
+    context: &ToolContext,
+    call: &ToolCall,
+    allowed_tool_names: &HashSet<String>,
+) -> ToolCallExecution {
+    let (content, outcome) = if !allowed_tool_names.contains(&call.name) {
+        (
+            format!(
+                "ERROR: tool '{}' is not allowed in the current execution mode",
+                call.name
+            ),
+            ToolExecutionOutcome::Error,
+        )
+    } else {
+        match execute_tool_call_inner(context, call).await {
         Ok(output) => (output, ToolExecutionOutcome::Success),
         Err(error) => (format!("ERROR: {error:#}"), ToolExecutionOutcome::Error),
+        }
     };
     let sanitized_arguments = sanitize_tool_arguments(&call.name, &call.arguments);
 
@@ -664,6 +701,8 @@ mod tests {
             http_client: Client::new(),
             browser_auth_sessions: crate::new_browser_auth_store(),
             dashboard_sessions: crate::new_dashboard_session_store(),
+            dashboard_launches: crate::new_dashboard_launch_store(),
+            mission_cancellations: crate::new_mission_cancellation_store(),
             started_at: Utc::now(),
             shutdown: tokio::sync::mpsc::unbounded_channel().0,
             autopilot_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -971,5 +1010,29 @@ mod tests {
         .unwrap();
 
         assert!(output.contains("smoke-shell"));
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_rejects_disallowed_tools() {
+        let root = temp_root();
+        let context = test_context(&root);
+        let allowed_tool_names = HashSet::from(["pwd".to_string()]);
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "run_shell".to_string(),
+            arguments: json!({
+                "command": if cfg!(target_os = "windows") {
+                    "Write-Output blocked"
+                } else {
+                    "printf blocked"
+                }
+            })
+            .to_string(),
+        };
+
+        let execution = execute_tool_call(&context, &call, &allowed_tool_names).await;
+
+        assert_eq!(execution.record.outcome, ToolExecutionOutcome::Error);
+        assert!(execution.record.output.contains("not allowed"));
     }
 }

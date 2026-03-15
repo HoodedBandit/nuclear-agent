@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashSet},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
     fs,
     hash::{Hash, Hasher},
     path::{Path as FsPath, PathBuf},
@@ -18,13 +18,14 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use tokio::task::JoinSet;
+use tokio::task::{Id as TaskId, JoinSet};
 use tokio::time::sleep;
 
 use crate::{
     append_log, execute_task_request, normalize_memory_sentence, poll_inbox_connectors,
     request_daemon_restart, resolve_alias_and_provider, resolve_request_cwd, summarize_tool_output,
-    ApiError, AppState, LimitQuery, TaskRequestInput, AUTOPILOT_DIRECTIVE_SCHEMA,
+    ApiError, AppState, ExecutionCancellation, LimitQuery, TaskRequestInput,
+    AUTOPILOT_DIRECTIVE_SCHEMA,
 };
 
 const EVOLVE_DIRECTIVE_SCHEMA: &str = r#"{
@@ -112,6 +113,15 @@ pub(crate) async fn start_evolve_mode(
 ) -> Result<Json<EvolveConfig>, ApiError> {
     let (evolve, mission) = {
         let mut config = state.config.write().await;
+        if let Some(existing) = sync_active_evolve_mission_reference(&state, &mut config)? {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                format!(
+                    "evolve already has an active mission '{}' ({})",
+                    existing.title, existing.id
+                ),
+            ));
+        }
         let alias = payload
             .alias
             .clone()
@@ -188,7 +198,7 @@ pub(crate) async fn start_evolve_mode(
 pub(crate) async fn pause_evolve_mode(
     State(state): State<AppState>,
 ) -> Result<Json<EvolveConfig>, ApiError> {
-    let updated = {
+    let (updated, mission_id) = {
         let mut config = state.config.write().await;
         config.evolve.state = EvolveState::Paused;
         if matches!(config.autonomy.mode, AutonomyMode::Evolve) {
@@ -203,8 +213,11 @@ pub(crate) async fn pause_evolve_mode(
             }
         }
         state.storage.save_config(&config)?;
-        config.evolve.clone()
+        (config.evolve.clone(), config.evolve.current_mission_id.clone())
     };
+    if let Some(mission_id) = mission_id.as_deref() {
+        signal_mission_cancellation(&state, mission_id);
+    }
     append_log(&state, "warn", "evolve", "evolve mode paused")?;
     Ok(Json(updated))
 }
@@ -244,9 +257,10 @@ pub(crate) async fn resume_evolve_mode(
 pub(crate) async fn stop_evolve_mode(
     State(state): State<AppState>,
 ) -> Result<Json<EvolveConfig>, ApiError> {
-    let updated = {
+    let (updated, mission_id) = {
         let mut config = state.config.write().await;
-        if let Some(mission_id) = config.evolve.current_mission_id.clone() {
+        let active_mission_id = config.evolve.current_mission_id.clone();
+        if let Some(mission_id) = active_mission_id.clone() {
             if let Some(mut mission) = state.storage.get_mission(&mission_id)? {
                 mission.status = MissionStatus::Cancelled;
                 mission.updated_at = Utc::now();
@@ -260,8 +274,11 @@ pub(crate) async fn stop_evolve_mode(
         config.autonomy.state = AutonomyState::Disabled;
         config.autonomy.mode = AutonomyMode::Assisted;
         state.storage.save_config(&config)?;
-        config.evolve.clone()
+        (config.evolve.clone(), active_mission_id)
     };
+    if let Some(mission_id) = mission_id.as_deref() {
+        signal_mission_cancellation(&state, mission_id);
+    }
     append_log(&state, "warn", "evolve", "evolve mode stopped")?;
     Ok(Json(updated))
 }
@@ -350,6 +367,8 @@ pub(crate) async fn pause_mission(
     mission.updated_at = Utc::now();
     mission.last_error = payload.note.clone();
     state.storage.upsert_mission(&mission)?;
+    signal_mission_cancellation(&state, &mission.id);
+    reconcile_blocked_evolve_state(&state, &mission).await?;
     state
         .storage
         .save_mission_checkpoint(&MissionCheckpoint::new(
@@ -369,6 +388,7 @@ pub(crate) async fn resume_mission(
         .storage
         .get_mission(&mission_id)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown mission"))?;
+    ensure_no_other_active_evolve_mission(&state, &mission)?;
     if payload.clear_watch_path {
         mission.watch_path = None;
     }
@@ -440,6 +460,7 @@ pub(crate) async fn resume_mission(
     }
     prime_watch_fingerprint_if_needed(&mut mission)?;
     state.storage.upsert_mission(&mission)?;
+    reconcile_resumed_evolve_state(&state, &mission).await?;
     state
         .storage
         .save_mission_checkpoint(&MissionCheckpoint::new(
@@ -463,7 +484,12 @@ pub(crate) async fn cancel_mission(
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown mission"))?;
     mission.status = MissionStatus::Cancelled;
     mission.updated_at = Utc::now();
+    mission.wake_at = None;
+    mission.scheduled_for_at = None;
+    mission.last_error = Some("Mission cancelled by operator".to_string());
     state.storage.upsert_mission(&mission)?;
+    signal_mission_cancellation(&state, &mission.id);
+    reconcile_cancelled_evolve_state(&state, &mission).await?;
     state
         .storage
         .save_mission_checkpoint(&MissionCheckpoint::new(
@@ -472,6 +498,154 @@ pub(crate) async fn cancel_mission(
             "mission cancelled".to_string(),
         ))?;
     Ok(Json(mission))
+}
+
+async fn reconcile_cancelled_evolve_state(state: &AppState, mission: &Mission) -> Result<()> {
+    if !mission.evolve {
+        return Ok(());
+    }
+
+    let mut config = state.config.write().await;
+    if config.evolve.current_mission_id.as_deref() != Some(mission.id.as_str()) {
+        return Ok(());
+    }
+
+    config.evolve.state = EvolveState::Completed;
+    config.evolve.current_mission_id = None;
+    config.evolve.pending_restart = false;
+    config.evolve.last_summary = mission.last_error.clone();
+    config.autonomy.state = AutonomyState::Disabled;
+    config.autonomy.mode = AutonomyMode::Assisted;
+    state.storage.save_config(&config)?;
+    Ok(())
+}
+
+async fn reconcile_blocked_evolve_state(state: &AppState, mission: &Mission) -> Result<()> {
+    if !mission.evolve {
+        return Ok(());
+    }
+
+    let mut config = state.config.write().await;
+    if config.evolve.current_mission_id.as_deref() != Some(mission.id.as_str()) {
+        return Ok(());
+    }
+
+    config.evolve.state = EvolveState::Paused;
+    config.evolve.alias = mission.alias.clone();
+    config.evolve.requested_model = mission.requested_model.clone();
+    config.autonomy.mode = AutonomyMode::Evolve;
+    config.autonomy.state = AutonomyState::Paused;
+    state.storage.save_config(&config)?;
+    Ok(())
+}
+
+async fn reconcile_resumed_evolve_state(state: &AppState, mission: &Mission) -> Result<()> {
+    if !mission.evolve {
+        return Ok(());
+    }
+
+    let mut config = state.config.write().await;
+    config.evolve.state = EvolveState::Running;
+    config.evolve.current_mission_id = Some(mission.id.clone());
+    config.evolve.alias = mission.alias.clone();
+    config.evolve.requested_model = mission.requested_model.clone();
+    config.autonomy.mode = AutonomyMode::Evolve;
+    config.autonomy.state = AutonomyState::Enabled;
+    config.autonomy.unlimited_usage = true;
+    config.autonomy.full_network = true;
+    config.autonomy.allow_self_edit = true;
+    state.storage.save_config(&config)?;
+    Ok(())
+}
+
+async fn sync_controlled_mission_state(state: &AppState, mission: &mut Mission) -> Result<bool> {
+    let Some(latest) = state.storage.get_mission(&mission.id)? else {
+        return Ok(false);
+    };
+    if !matches!(latest.status, MissionStatus::Cancelled | MissionStatus::Blocked) {
+        return Ok(false);
+    };
+
+    *mission = latest;
+    if matches!(mission.status, MissionStatus::Cancelled) {
+        reconcile_cancelled_evolve_state(state, mission).await?;
+    } else {
+        reconcile_blocked_evolve_state(state, mission).await?;
+    }
+    Ok(true)
+}
+
+fn mission_is_terminal(status: &MissionStatus) -> bool {
+    matches!(
+        status,
+        MissionStatus::Completed | MissionStatus::Failed | MissionStatus::Cancelled
+    )
+}
+
+fn evolve_state_for_mission_status(status: &MissionStatus) -> EvolveState {
+    if matches!(status, MissionStatus::Blocked) {
+        EvolveState::Paused
+    } else {
+        EvolveState::Running
+    }
+}
+
+fn ensure_no_other_active_evolve_mission(state: &AppState, mission: &Mission) -> Result<(), ApiError> {
+    if !mission.evolve {
+        return Ok(());
+    }
+
+    let other_active = state
+        .storage
+        .list_missions()?
+        .into_iter()
+        .find(|candidate| {
+            candidate.id != mission.id && candidate.evolve && !mission_is_terminal(&candidate.status)
+        });
+    if let Some(other) = other_active {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!(
+                "another evolve mission '{}' ({}) is already active",
+                other.title, other.id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn sync_active_evolve_mission_reference(
+    state: &AppState,
+    config: &mut agent_core::AppConfig,
+) -> Result<Option<Mission>, ApiError> {
+    if let Some(mission_id) = config.evolve.current_mission_id.clone() {
+        if let Some(mission) = state.storage.get_mission(&mission_id)? {
+            if mission.evolve && !mission_is_terminal(&mission.status) {
+                config.evolve.state = evolve_state_for_mission_status(&mission.status);
+                config.evolve.alias = mission.alias.clone();
+                config.evolve.requested_model = mission.requested_model.clone();
+                return Ok(Some(mission));
+            }
+        }
+    }
+
+    let latest_active = state
+        .storage
+        .list_missions()?
+        .into_iter()
+        .filter(|mission| mission.evolve && !mission_is_terminal(&mission.status))
+        .max_by_key(|mission| mission.updated_at);
+
+    if let Some(mission) = latest_active.clone() {
+        config.evolve.current_mission_id = Some(mission.id.clone());
+        config.evolve.state = evolve_state_for_mission_status(&mission.status);
+        config.evolve.alias = mission.alias.clone();
+        config.evolve.requested_model = mission.requested_model.clone();
+        return Ok(Some(mission));
+    }
+
+    config.evolve.current_mission_id = None;
+    Ok(None)
 }
 
 pub(crate) async fn list_mission_checkpoints(
@@ -767,12 +941,48 @@ fn collect_runnable_missions(
     Ok(runnable)
 }
 
+type MissionTaskResult = (String, String, std::result::Result<(), String>);
+type InFlightJoinResult = std::result::Result<(TaskId, MissionTaskResult), tokio::task::JoinError>;
+
+fn mission_cancellation(state: &AppState, mission_id: &str) -> ExecutionCancellation {
+    let mut cancellations = state
+        .mission_cancellations
+        .lock()
+        .expect("mission cancellation lock poisoned");
+    cancellations
+        .entry(mission_id.to_string())
+        .or_default()
+        .clone()
+}
+
+fn signal_mission_cancellation(state: &AppState, mission_id: &str) {
+    let cancellation = {
+        let cancellations = state
+            .mission_cancellations
+            .lock()
+            .expect("mission cancellation lock poisoned");
+        cancellations.get(mission_id).cloned()
+    };
+    if let Some(cancellation) = cancellation {
+        cancellation.cancel();
+    }
+}
+
+fn clear_mission_cancellation(state: &AppState, mission_id: &str) {
+    let mut cancellations = state
+        .mission_cancellations
+        .lock()
+        .expect("mission cancellation lock poisoned");
+    cancellations.remove(mission_id);
+}
+
 pub(crate) async fn autopilot_loop(state: AppState) {
     let mut in_flight = JoinSet::new();
     let mut in_flight_ids = HashSet::new();
+    let mut task_ids = HashMap::new();
     loop {
-        while let Some(result) = in_flight.try_join_next() {
-            handle_in_flight_result(&state, &mut in_flight_ids, result);
+        while let Some(result) = in_flight.try_join_next_with_id() {
+            handle_in_flight_result(&state, &mut in_flight_ids, &mut task_ids, result);
         }
 
         if let Err(error) = poll_inbox_connectors(&state).await {
@@ -786,8 +996,8 @@ pub(crate) async fn autopilot_loop(state: AppState) {
         let config = state.config.read().await.clone();
         if !matches!(config.autopilot.state, agent_core::AutopilotState::Enabled) {
             tokio::select! {
-                Some(result) = in_flight.join_next(), if !in_flight_ids.is_empty() => {
-                    handle_in_flight_result(&state, &mut in_flight_ids, result);
+                Some(result) = in_flight.join_next_with_id(), if !in_flight_ids.is_empty() => {
+                    handle_in_flight_result(&state, &mut in_flight_ids, &mut task_ids, result);
                 }
                 _ = state.autopilot_wake.notified() => {}
                 _ = sleep(Duration::from_secs(30)) => {}
@@ -801,8 +1011,8 @@ pub(crate) async fn autopilot_loop(state: AppState) {
         match collect_runnable_missions(&state, Utc::now(), available_slots.max(1)) {
             Ok(missions) if missions.is_empty() || available_slots == 0 => {
                 tokio::select! {
-                    Some(result) = in_flight.join_next(), if !in_flight_ids.is_empty() => {
-                        handle_in_flight_result(&state, &mut in_flight_ids, result);
+                    Some(result) = in_flight.join_next_with_id(), if !in_flight_ids.is_empty() => {
+                        handle_in_flight_result(&state, &mut in_flight_ids, &mut task_ids, result);
                     }
                     _ = state.autopilot_wake.notified() => {}
                     _ = sleep(Duration::from_secs(config.autopilot.wake_interval_seconds.max(5))) => {}
@@ -816,16 +1026,18 @@ pub(crate) async fn autopilot_loop(state: AppState) {
                     .collect::<Vec<_>>();
                 for mission in missions {
                     let mission_id = mission.id.clone();
+                    let cancellation = mission_cancellation(&state, &mission_id);
                     let state = state.clone();
-                    in_flight_ids.insert(mission_id);
-                    in_flight.spawn(async move {
+                    in_flight_ids.insert(mission_id.clone());
+                    let handle = in_flight.spawn(async move {
                         let mission_id = mission.id.clone();
                         let title = mission.title.clone();
-                        let result = run_mission_cycle(&state, mission)
+                        let result = run_mission_cycle(&state, mission, cancellation)
                             .await
                             .map_err(|error| error.to_string());
                         (mission_id, title, result)
                     });
+                    task_ids.insert(handle.id(), mission_id);
                 }
             }
             Err(error) => {
@@ -844,14 +1056,14 @@ pub(crate) async fn autopilot_loop(state: AppState) {
 fn handle_in_flight_result(
     state: &AppState,
     in_flight_ids: &mut HashSet<String>,
-    result: std::result::Result<
-        (String, String, std::result::Result<(), String>),
-        tokio::task::JoinError,
-    >,
+    task_ids: &mut HashMap<TaskId, String>,
+    result: InFlightJoinResult,
 ) {
     match result {
-        Ok((mission_id, title, Err(error))) => {
+        Ok((task_id, (mission_id, title, Err(error)))) => {
+            task_ids.remove(&task_id);
             in_flight_ids.remove(&mission_id);
+            clear_mission_cancellation(state, &mission_id);
             let _ = append_log(
                 state,
                 "warn",
@@ -859,10 +1071,16 @@ fn handle_in_flight_result(
                 format!("mission cycle failed for '{title}': {error}"),
             );
         }
-        Ok((mission_id, _, Ok(()))) => {
+        Ok((task_id, (mission_id, _, Ok(())))) => {
+            task_ids.remove(&task_id);
             in_flight_ids.remove(&mission_id);
+            clear_mission_cancellation(state, &mission_id);
         }
         Err(error) => {
+            if let Some(mission_id) = task_ids.remove(&error.id()) {
+                in_flight_ids.remove(&mission_id);
+                clear_mission_cancellation(state, &mission_id);
+            }
             let _ = append_log(
                 state,
                 "warn",
@@ -873,10 +1091,20 @@ fn handle_in_flight_result(
     }
 }
 
-async fn run_mission_cycle(state: &AppState, mut mission: Mission) -> Result<()> {
+async fn run_mission_cycle(
+    state: &AppState,
+    mut mission: Mission,
+    cancellation: ExecutionCancellation,
+) -> Result<()> {
+    if sync_controlled_mission_state(state, &mut mission).await? {
+        return Ok(());
+    }
     let (alias, provider) = resolve_alias_and_provider(state, mission.alias.as_deref())
         .await
         .map_err(|error| anyhow!(error.message))?;
+    if sync_controlled_mission_state(state, &mut mission).await? {
+        return Ok(());
+    }
     let autopilot = {
         let config = state.config.read().await;
         config.autopilot.clone()
@@ -919,16 +1147,23 @@ async fn run_mission_cycle(state: &AppState, mut mission: Mission) -> Result<()>
             persist: true,
             background: true,
             delegation_depth: 0,
+            cancellation: Some(cancellation),
         },
     )
     .await;
     let response = match response {
         Ok(response) => response,
         Err(error) => {
+            if sync_controlled_mission_state(state, &mut mission).await? {
+                return Ok(());
+            }
             persist_execution_failure(state, &mut mission, &autopilot, &error.message).await?;
             return Err(anyhow!(error.message));
         }
     };
+    if sync_controlled_mission_state(state, &mut mission).await? {
+        return Ok(());
+    }
 
     let directive = parse_mission_directive(
         response
@@ -1034,6 +1269,10 @@ async fn run_mission_cycle(state: &AppState, mut mission: Mission) -> Result<()>
                 ),
             )?;
         }
+    }
+
+    if sync_controlled_mission_state(state, &mut mission).await? {
+        return Ok(());
     }
 
     state.storage.upsert_mission(&mission)?;
@@ -1251,6 +1490,10 @@ async fn persist_execution_failure(
     autopilot: &AutopilotConfig,
     error_message: &str,
 ) -> Result<()> {
+    if sync_controlled_mission_state(state, mission).await? {
+        return Ok(());
+    }
+
     mission.updated_at = Utc::now();
     mission.last_error = Some(normalize_memory_sentence(error_message));
 
@@ -1680,7 +1923,7 @@ mod tests {
     use super::*;
     use agent_core::AppConfig;
     use reqwest::Client;
-    use std::sync::Arc;
+    use std::{collections::{HashMap, HashSet}, sync::Arc};
     use tokio::sync::{mpsc, Notify, RwLock};
     use uuid::Uuid;
 
@@ -1694,6 +1937,8 @@ mod tests {
             http_client: Client::new(),
             browser_auth_sessions: crate::new_browser_auth_store(),
             dashboard_sessions: crate::new_dashboard_session_store(),
+            dashboard_launches: crate::new_dashboard_launch_store(),
+            mission_cancellations: crate::new_mission_cancellation_store(),
             started_at: Utc::now(),
             shutdown: mpsc::unbounded_channel().0,
             autopilot_wake: Arc::new(Notify::new()),
@@ -1742,6 +1987,28 @@ mod tests {
         assert_eq!(mission.retries, 0);
         assert_eq!(mission.wake_trigger, Some(WakeTrigger::FileChange));
         assert!(mission.wake_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_in_flight_result_removes_join_error_slot() {
+        let state = test_state();
+        let mut in_flight = JoinSet::new();
+        let mut in_flight_ids = HashSet::from(["mission-1".to_string()]);
+        let mut task_ids = HashMap::new();
+
+        let handle = in_flight.spawn(async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            ("mission-1".to_string(), "Mission".to_string(), Ok(()))
+        });
+        task_ids.insert(handle.id(), "mission-1".to_string());
+        handle.abort();
+
+        let result = in_flight.join_next_with_id().await.unwrap();
+        assert!(result.is_err());
+        handle_in_flight_result(&state, &mut in_flight_ids, &mut task_ids, result);
+
+        assert!(!in_flight_ids.contains("mission-1"));
+        assert!(task_ids.is_empty());
     }
 
     #[test]

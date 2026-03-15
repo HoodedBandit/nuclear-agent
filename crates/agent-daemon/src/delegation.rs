@@ -1,13 +1,14 @@
 use std::collections::{BTreeSet, HashSet};
 
 use agent_core::{
-    AppConfig, AuthMode, BatchTaskRequest, DelegationLimit, DelegationTarget, ModelAlias,
-    ProviderConfig, SubAgentResult, SubAgentStrategy, SubAgentTask,
+    AppConfig, BatchTaskRequest, DelegationLimit, DelegationTarget, ModelAlias, ProviderConfig,
+    SubAgentResult, SubAgentStrategy, SubAgentTask,
 };
 use axum::http::StatusCode;
 
 use crate::{
-    ApiError, ResolvedSubAgentTask, MAX_RESOLVED_SUBAGENT_RUNS, MAX_SUBAGENT_TASKS_PER_REQUEST,
+    runtime::provider_has_runnable_access, ApiError, ResolvedSubAgentTask,
+    MAX_RESOLVED_SUBAGENT_RUNS, MAX_SUBAGENT_TASKS_PER_REQUEST,
 };
 
 pub(crate) fn resolve_delegation_tasks(
@@ -410,14 +411,7 @@ pub(crate) fn resolve_alias_and_provider_from_config(
 }
 
 fn ensure_provider_usable(provider: &ProviderConfig) -> Result<(), ApiError> {
-    if matches!(provider.auth_mode, AuthMode::None) {
-        return Ok(());
-    }
-    if provider
-        .keychain_account
-        .as_deref()
-        .is_some_and(|account| !account.trim().is_empty())
-    {
+    if provider_has_runnable_access(provider) {
         return Ok(());
     }
     Err(ApiError::new(

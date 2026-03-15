@@ -1164,14 +1164,15 @@ impl Storage {
             .list_missions()?
             .into_iter()
             .filter(|mission| match mission.status {
-                MissionStatus::Queued | MissionStatus::Running | MissionStatus::Blocked => true,
+                MissionStatus::Queued | MissionStatus::Running => true,
                 MissionStatus::Waiting | MissionStatus::Scheduled => mission
                     .wake_at
                     .map(|wake_at| wake_at <= now)
                     .unwrap_or(false),
-                MissionStatus::Completed | MissionStatus::Failed | MissionStatus::Cancelled => {
-                    false
-                }
+                MissionStatus::Blocked
+                | MissionStatus::Completed
+                | MissionStatus::Failed
+                | MissionStatus::Cancelled => false,
             })
             .collect::<Vec<_>>();
         missions.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
@@ -2933,6 +2934,27 @@ mod tests {
         assert!(ids.contains(&completed.id));
         assert!(ids.contains(&waiting.id));
         assert!(!ids.contains(&queued.id));
+    }
+
+    #[test]
+    fn blocked_missions_are_not_runnable() {
+        let storage = temp_storage();
+        let now = Utc::now();
+
+        let mut blocked = Mission::new("Blocked".to_string(), "Paused".to_string());
+        blocked.status = MissionStatus::Blocked;
+        blocked.updated_at = now;
+        storage.upsert_mission(&blocked).unwrap();
+
+        let mut queued = Mission::new("Queued".to_string(), "Ready".to_string());
+        queued.status = MissionStatus::Queued;
+        queued.updated_at = now + chrono::Duration::seconds(1);
+        storage.upsert_mission(&queued).unwrap();
+
+        let runnable = storage.list_runnable_missions(now, 10).unwrap();
+        let ids = runnable.into_iter().map(|mission| mission.id).collect::<Vec<_>>();
+        assert!(ids.contains(&queued.id));
+        assert!(!ids.contains(&blocked.id));
     }
 
     #[test]

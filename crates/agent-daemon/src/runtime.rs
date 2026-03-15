@@ -1,17 +1,16 @@
 use std::{
     fs,
+    future::Future,
     path::{Path as FsPath, PathBuf},
 };
 
 use agent_core::{
     AuthMode, AutonomyMode, AutonomyState, BatchTaskRequest, BatchTaskResponse,
     ConversationMessage, InputAttachment, MessageRole, ModelAlias, PermissionPreset,
-    ProviderConfig, ProviderReply, RunTaskResponse, SessionMessage, SubAgentResult, ThinkingLevel,
-    ToolCall, ToolExecutionOutcome, ToolExecutionRecord,
+    ProviderConfig, ProviderReply, RunTaskResponse, RunTaskStreamEvent, SessionMessage,
+    SubAgentResult, ThinkingLevel, ToolCall, ToolExecutionOutcome, ToolExecutionRecord,
 };
-use agent_policy::{
-    allow_network, allow_shell, is_network_tool, permission_summary, tool_allowed_by_preset,
-};
+use agent_policy::permission_summary;
 use agent_providers::{load_api_key, load_oauth_token, run_prompt};
 use agent_storage::PersistSessionTurnInput;
 use anyhow::Result;
@@ -28,10 +27,11 @@ use crate::{
     learn_from_interaction, load_enabled_skill_guidance, load_pattern_guidance,
     sync_system_profile_memories,
     tools::{
-        execute_tool_call, sanitize_tool_arguments, sanitize_tool_call,
-        tool_call_has_sensitive_arguments, tool_definitions, ToolContext,
+        effective_tool_definitions, execute_tool_call, sanitize_tool_arguments,
+        sanitize_tool_call, tool_call_has_sensitive_arguments, ToolContext,
     },
-    ApiError, AppState, MAX_TOOL_LOOP_ITERATIONS, REPEATED_TOOL_BATCH_LIMIT,
+    ApiError, AppState, ExecutionCancellation, MAX_TOOL_LOOP_ITERATIONS,
+    REPEATED_TOOL_BATCH_LIMIT,
 };
 
 pub(crate) struct TaskRequestInput {
@@ -46,6 +46,7 @@ pub(crate) struct TaskRequestInput {
     pub(crate) persist: bool,
     pub(crate) background: bool,
     pub(crate) delegation_depth: u8,
+    pub(crate) cancellation: Option<ExecutionCancellation>,
 }
 
 #[derive(Clone, Copy)]
@@ -105,6 +106,21 @@ pub(crate) async fn execute_task_request(
     provider: &ProviderConfig,
     input: TaskRequestInput,
 ) -> Result<RunTaskResponse, ApiError> {
+    let mut emit = |_| std::future::ready(true);
+    execute_task_request_with_events(state, alias, provider, input, &mut emit).await
+}
+
+pub(crate) async fn execute_task_request_with_events<F, Fut>(
+    state: &AppState,
+    alias: &ModelAlias,
+    provider: &ProviderConfig,
+    input: TaskRequestInput,
+    emit: &mut F,
+) -> Result<RunTaskResponse, ApiError>
+where
+    F: FnMut(RunTaskStreamEvent) -> Fut,
+    Fut: Future<Output = bool>,
+{
     verify_runtime_provider_credentials(provider)?;
     let TaskRequestInput {
         prompt,
@@ -118,7 +134,9 @@ pub(crate) async fn execute_task_request(
         persist,
         background,
         delegation_depth,
+        cancellation,
     } = input;
+    ensure_execution_active(cancellation.as_ref())?;
     let is_new_session = session_id.is_none();
     let session_id = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let cwd = resolve_request_cwd(cwd)?;
@@ -202,6 +220,18 @@ pub(crate) async fn execute_task_request(
         provider_payload_json: None,
         attachments: attachments.clone(),
     });
+    emit_stream_event(
+        emit,
+        RunTaskStreamEvent::SessionStarted {
+        session_id: session_id.clone(),
+        alias: alias.alias.clone(),
+        provider_id: provider.id.clone(),
+        model: requested_model
+            .clone()
+            .unwrap_or_else(|| alias.model.clone()),
+        },
+    )
+    .await?;
     let execution = drive_tool_loop(
         state,
         provider,
@@ -211,6 +241,8 @@ pub(crate) async fn execute_task_request(
         thinking_level,
         output_schema_json.as_deref(),
         &context,
+        cancellation.as_ref(),
+        emit,
     )
     .await?;
 
@@ -249,7 +281,7 @@ pub(crate) async fn execute_task_request(
         )?;
     }
 
-    Ok(RunTaskResponse {
+    let response = RunTaskResponse {
         session_id,
         alias: alias.alias.clone(),
         provider_id: provider.id.clone(),
@@ -257,7 +289,15 @@ pub(crate) async fn execute_task_request(
         response: execution.reply.content,
         tool_events: execution.tool_events,
         structured_output_json: execution.structured_output_json,
-    })
+    };
+    emit_stream_event(
+        emit,
+        RunTaskStreamEvent::Completed {
+            response: response.clone(),
+        },
+    )
+    .await?;
+    Ok(response)
 }
 
 pub(crate) async fn execute_batch_request(
@@ -316,6 +356,7 @@ pub(crate) async fn execute_batch_request(
                     persist: false,
                     background: options.background,
                     delegation_depth: child_depth,
+                    cancellation: None,
                 },
             )
             .await;
@@ -350,6 +391,10 @@ pub(crate) async fn execute_batch_request(
         results,
         all_succeeded,
     })
+}
+
+pub(crate) fn provider_has_runnable_access(provider: &ProviderConfig) -> bool {
+    verify_runtime_provider_credentials(provider).is_ok()
 }
 
 fn verify_runtime_provider_credentials(provider: &ProviderConfig) -> Result<(), ApiError> {
@@ -395,7 +440,7 @@ fn verify_runtime_provider_credentials(provider: &ProviderConfig) -> Result<(), 
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn drive_tool_loop(
+async fn drive_tool_loop<F, Fut>(
     state: &AppState,
     provider: &ProviderConfig,
     model: &str,
@@ -404,30 +449,27 @@ async fn drive_tool_loop(
     thinking_level: Option<ThinkingLevel>,
     output_schema_json: Option<&str>,
     context: &ToolContext,
-) -> Result<TaskExecution, ApiError> {
-    let mut tools = tool_definitions(context);
-    tools.retain(|tool| tool_allowed_by_preset(&tool.name, context.permission_preset));
-    if !context.background_shell_allowed || !allow_shell(&context.trust_policy, &context.autonomy) {
-        tools.retain(|tool| {
-            !matches!(
-                tool.name.as_str(),
-                "run_shell" | "git_status" | "git_diff" | "git_log" | "git_show"
-            )
-        });
-    }
-    if !context.background_network_allowed
-        || !allow_network(&context.trust_policy, &context.autonomy)
-    {
-        tools.retain(|tool| !is_network_tool(&tool.name));
-    }
+    cancellation: Option<&ExecutionCancellation>,
+    emit: &mut F,
+) -> Result<TaskExecution, ApiError>
+where
+    F: FnMut(RunTaskStreamEvent) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let tools = effective_tool_definitions(context);
+    let allowed_tool_names = tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<std::collections::HashSet<_>>();
     let mut transcript_messages = Vec::new();
     let mut tool_events = Vec::new();
     let mut last_tool_batch: Option<Vec<ToolBatchExecution>> = None;
     let mut repeated_tool_batch_count = 0usize;
 
     for _ in 0..MAX_TOOL_LOOP_ITERATIONS {
-        state.rate_limiter.acquire(&provider.id).await;
-        let reply = run_prompt(
+        wait_for_rate_limit(state, &provider.id, cancellation).await?;
+        ensure_execution_active(cancellation)?;
+        let reply = run_prompt_with_cancellation(
             &state.http_client,
             provider,
             &messages,
@@ -435,10 +477,23 @@ async fn drive_tool_loop(
             Some(session_id),
             thinking_level,
             &tools,
+            cancellation,
         )
         .await?;
 
         if reply.tool_calls.is_empty() {
+            emit_stream_event(
+                emit,
+                RunTaskStreamEvent::Message {
+                    message: stream_session_message_from_reply(
+                        session_id,
+                        provider,
+                        &reply,
+                        MessageRole::Assistant,
+                    ),
+                },
+            )
+            .await?;
             return Ok(TaskExecution {
                 structured_output_json: maybe_validate_structured_output(
                     &reply.content,
@@ -459,12 +514,43 @@ async fn drive_tool_loop(
             provider_payload_json: reply.provider_payload_json.clone(),
             attachments: Vec::new(),
         };
+        emit_stream_event(
+            emit,
+            RunTaskStreamEvent::Message {
+                message: stream_session_message_from_conversation(
+                    session_id,
+                    &provider.id,
+                    &reply.model,
+                    &assistant_message,
+                ),
+            },
+        )
+        .await?;
         transcript_messages.push(assistant_message.clone());
         messages.push(assistant_message);
 
         let mut current_tool_batch = Vec::new();
         for tool_call in &reply.tool_calls {
-            let tool_execution = execute_tool_call(context, tool_call).await;
+            ensure_execution_active(cancellation)?;
+            let tool_execution = execute_tool_call_with_cancellation(
+                context,
+                tool_call,
+                &allowed_tool_names,
+                cancellation,
+            )
+            .await?;
+            emit_stream_event(
+                emit,
+                RunTaskStreamEvent::Message {
+                    message: stream_session_message_from_conversation(
+                        session_id,
+                        &provider.id,
+                        &reply.model,
+                        &tool_execution.message,
+                    ),
+                },
+            )
+            .await?;
             append_log(
                 state,
                 if tool_execution.message.content.starts_with("ERROR:") {
@@ -532,6 +618,124 @@ async fn drive_tool_loop(
         None => "tool loop exceeded maximum iterations; the model kept requesting tool calls without finishing".to_string(),
     };
     Err(ApiError::new(StatusCode::BAD_GATEWAY, message))
+}
+
+fn execution_cancelled_error() -> ApiError {
+    ApiError::new(StatusCode::CONFLICT, "execution cancelled by operator")
+}
+
+fn ensure_execution_active(cancellation: Option<&ExecutionCancellation>) -> Result<(), ApiError> {
+    if cancellation.is_some_and(ExecutionCancellation::is_cancelled) {
+        return Err(execution_cancelled_error());
+    }
+    Ok(())
+}
+
+async fn wait_for_rate_limit(
+    state: &AppState,
+    provider_id: &str,
+    cancellation: Option<&ExecutionCancellation>,
+) -> Result<(), ApiError> {
+    if let Some(cancellation) = cancellation.cloned() {
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(execution_cancelled_error()),
+            _ = state.rate_limiter.acquire(provider_id) => Ok(()),
+        }
+    } else {
+        state.rate_limiter.acquire(provider_id).await;
+        Ok(())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_prompt_with_cancellation(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    messages: &[ConversationMessage],
+    requested_model: Option<&str>,
+    session_id: Option<&str>,
+    thinking_level: Option<ThinkingLevel>,
+    tools: &[agent_core::ToolDefinition],
+    cancellation: Option<&ExecutionCancellation>,
+) -> Result<ProviderReply, ApiError> {
+    if let Some(cancellation) = cancellation.cloned() {
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(execution_cancelled_error()),
+            reply = run_prompt(client, provider, messages, requested_model, session_id, thinking_level, tools) => reply.map_err(ApiError::from),
+        }
+    } else {
+        run_prompt(client, provider, messages, requested_model, session_id, thinking_level, tools)
+            .await
+            .map_err(ApiError::from)
+    }
+}
+
+async fn execute_tool_call_with_cancellation(
+    context: &ToolContext,
+    tool_call: &ToolCall,
+    allowed_tool_names: &std::collections::HashSet<String>,
+    cancellation: Option<&ExecutionCancellation>,
+) -> Result<crate::tools::ToolCallExecution, ApiError> {
+    if let Some(cancellation) = cancellation.cloned() {
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(execution_cancelled_error()),
+            execution = execute_tool_call(context, tool_call, allowed_tool_names) => Ok(execution),
+        }
+    } else {
+        Ok(execute_tool_call(context, tool_call, allowed_tool_names).await)
+    }
+}
+
+async fn emit_stream_event<F, Fut>(
+    emit: &mut F,
+    event: RunTaskStreamEvent,
+) -> Result<(), ApiError>
+where
+    F: FnMut(RunTaskStreamEvent) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    if emit(event).await {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::REQUEST_TIMEOUT,
+            "stream client disconnected",
+        ))
+    }
+}
+
+fn stream_session_message_from_reply(
+    session_id: &str,
+    provider: &ProviderConfig,
+    reply: &ProviderReply,
+    role: MessageRole,
+) -> SessionMessage {
+    SessionMessage::new(
+        session_id.to_string(),
+        role,
+        reply.content.clone(),
+        Some(provider.id.clone()),
+        Some(reply.model.clone()),
+    )
+    .with_tool_calls(sanitized_tool_calls(&reply.tool_calls))
+}
+
+fn stream_session_message_from_conversation(
+    session_id: &str,
+    provider_id: &str,
+    model: &str,
+    message: &ConversationMessage,
+) -> SessionMessage {
+    SessionMessage::new(
+        session_id.to_string(),
+        message.role.clone(),
+        message.content.clone(),
+        Some(provider_id.to_string()),
+        Some(model.to_string()),
+    )
+    .with_tool_metadata(message.tool_call_id.clone(), message.tool_name.clone())
+    .with_tool_calls(sanitized_tool_calls(&message.tool_calls))
+    .with_attachments(message.attachments.clone())
 }
 
 pub(crate) fn repeated_tool_loop_resolution(

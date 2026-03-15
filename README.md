@@ -46,7 +46,7 @@ Packaged installs also include:
 - `install.cmd` as a Windows wrapper around `install.ps1`
 
 Those installers place `autism` on the user PATH and install a local binary so you can launch the CLI directly from the terminal.
-On Windows, if the bundled `autism.exe` is blocked by application control, `install.ps1` automatically falls back to building from the packaged source tree and will install `rustup` if needed.
+On Windows, if the bundled `autism.exe` is blocked by application control, `install.ps1` automatically falls back to building from the packaged source tree and will install `rustup` if needed. When the packaged source tree includes the dashboard E2E harness, `install.ps1` also installs the required npm dependencies and Playwright Chromium browser bundle automatically. Existing managed or system installs are reused instead of being overwritten.
 
 ## Quick Start
 

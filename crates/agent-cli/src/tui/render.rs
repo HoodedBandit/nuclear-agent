@@ -3,10 +3,11 @@ use ratatui::{
     prelude::*,
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
+use serde_json::Value;
 
-use agent_core::{PermissionPreset, SessionMessage};
+use agent_core::{PermissionPreset, SessionMessage, ToolCall};
 
-use crate::{format_session_message_for_display, permission_summary, thinking_level_label};
+use crate::{permission_summary, thinking_level_label};
 
 use super::app::{OverlayState, PickerMode, TuiApp};
 
@@ -73,7 +74,7 @@ pub(super) fn draw_app(frame: &mut Frame<'_>, app: &TuiApp<'_>) {
     let transcript_inner = transcript_block.inner(transcript_area);
     frame.render_widget(transcript_block, transcript_area);
     let transcript_viewport = transcript_viewport(
-        render_transcript_lines(&app.transcript),
+        render_transcript_lines(&app.transcript, &app.pending_tool_calls),
         transcript_inner.width,
         transcript_inner.height,
         app.transcript_scroll_back,
@@ -314,63 +315,329 @@ pub(super) fn draw_app(frame: &mut Frame<'_>, app: &TuiApp<'_>) {
     }
 }
 
-fn render_transcript_lines(messages: &[SessionMessage]) -> Vec<Line<'static>> {
+fn render_transcript_lines(messages: &[SessionMessage], pending_tool_calls: &[ToolCall]) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for message in messages {
-        let rendered = format_session_message_for_display(message);
-        let timestamp = message
-            .created_at
-            .with_timezone(&Local)
-            .format("%H:%M")
-            .to_string();
-        match message.role {
-            agent_core::MessageRole::User => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(String::new()));
-                }
-                lines.push(Line::from(format!("[you] {timestamp}")));
-                for line in rendered.lines() {
-                    lines.push(Line::from(format!("  {line}")));
-                }
-                for attachment in &message.attachments {
-                    lines.push(Line::from(format!(
-                        "  [image] {}",
-                        attachment.path.display()
-                    )));
-                }
-            }
-            agent_core::MessageRole::Assistant => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(String::new()));
-                }
-                let model = message.model.as_deref().unwrap_or("assistant");
-                lines.push(Line::from(format!("[assistant: {model}] {timestamp}")));
-                for line in rendered.lines() {
-                    lines.push(Line::from(format!("  {line}")));
-                }
-            }
-            agent_core::MessageRole::Tool => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(String::new()));
-                }
-                let tool_name = message.tool_name.as_deref().unwrap_or("tool");
-                lines.push(Line::from(format!("[tool: {tool_name}] {timestamp}")));
-                for line in rendered.lines() {
-                    lines.push(Line::from(format!("  {line}")));
-                }
-            }
-            agent_core::MessageRole::System => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(String::new()));
-                }
-                lines.push(Line::from(format!("[system] {timestamp}")));
-                for line in rendered.lines() {
-                    lines.push(Line::from(format!("  {line}")));
+        if !lines.is_empty() {
+            lines.push(Line::from(String::new()));
+        }
+        render_message_card(message, &mut lines);
+    }
+    if !pending_tool_calls.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::from(String::new()));
+        }
+        lines.push(section_label_line("LIVE ACTIONS", Color::LightBlue));
+        for tool_call in pending_tool_calls {
+            lines.push(indented_line(tool_call_summary_line(tool_call), 2));
+        }
+    }
+    lines
+}
+
+fn render_message_card(message: &SessionMessage, lines: &mut Vec<Line<'static>>) {
+    let timestamp = message
+        .created_at
+        .with_timezone(&Local)
+        .format("%H:%M")
+        .to_string();
+    let (label, accent, detail) = message_card_label(message);
+    lines.push(Line::from(vec![
+        badge_span(label, accent),
+        Span::raw(" "),
+        Span::styled(timestamp, Style::default().fg(Color::DarkGray)),
+        Span::raw(" "),
+        Span::styled(detail, Style::default().fg(Color::Gray)),
+    ]));
+
+    if !message.content.trim().is_empty() {
+        render_rich_block(&message.content, body_style_for_message(message), lines, 2);
+    } else if message.role == agent_core::MessageRole::Assistant && !message.tool_calls.is_empty() {
+        lines.push(indented_line(
+            Line::from(Span::styled(
+                "Planning next actions...",
+                Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC),
+            )),
+            2,
+        ));
+    }
+
+    if !message.attachments.is_empty() {
+        for attachment in &message.attachments {
+            lines.push(indented_line(
+                Line::from(vec![
+                    badge_span("IMAGE", Color::Cyan),
+                    Span::raw(" "),
+                    Span::styled(
+                        attachment.path.display().to_string(),
+                        Style::default().fg(Color::Gray),
+                    ),
+                ]),
+                2,
+            ));
+        }
+    }
+
+    if !message.tool_calls.is_empty() {
+        lines.push(indented_line(
+            Line::from(Span::styled(
+                "Planned actions",
+                Style::default()
+                    .fg(Color::LightBlue)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            2,
+        ));
+        for tool_call in &message.tool_calls {
+            lines.push(indented_line(tool_call_summary_line(tool_call), 4));
+            if let Some(preview) = preview_tool_call_lines(tool_call) {
+                for preview_line in preview {
+                    lines.push(indented_line(preview_line, 6));
                 }
             }
         }
     }
+}
+
+fn message_card_label(message: &SessionMessage) -> (&'static str, Color, String) {
+    match message.role {
+        agent_core::MessageRole::User => (
+            "YOU",
+            Color::Cyan,
+            message.provider_id.clone().unwrap_or_else(|| "user prompt".to_string()),
+        ),
+        agent_core::MessageRole::Assistant if !message.tool_calls.is_empty() => (
+            "THINKING",
+            Color::LightBlue,
+            message.model.clone().unwrap_or_else(|| "planning".to_string()),
+        ),
+        agent_core::MessageRole::Assistant => (
+            "ASSISTANT",
+            Color::Blue,
+            message.model.clone().unwrap_or_else(|| "assistant".to_string()),
+        ),
+        agent_core::MessageRole::Tool => {
+            let failed = message.content.starts_with("ERROR:");
+            (
+                if failed { "TOOL ERROR" } else { "TOOL" },
+                if failed { Color::Red } else { Color::Yellow },
+                message
+                    .tool_name
+                    .clone()
+                    .unwrap_or_else(|| "tool execution".to_string()),
+            )
+        }
+        agent_core::MessageRole::System => ("SYSTEM", Color::Gray, "system".to_string()),
+    }
+}
+
+fn body_style_for_message(message: &SessionMessage) -> Style {
+    match message.role {
+        agent_core::MessageRole::User => Style::default().fg(Color::White),
+        agent_core::MessageRole::Assistant if !message.tool_calls.is_empty() => {
+            Style::default().fg(Color::Rgb(164, 199, 255))
+        }
+        agent_core::MessageRole::Assistant => Style::default().fg(Color::White),
+        agent_core::MessageRole::Tool if message.content.starts_with("ERROR:") => {
+            Style::default().fg(Color::LightRed)
+        }
+        agent_core::MessageRole::Tool => Style::default().fg(Color::LightYellow),
+        agent_core::MessageRole::System => Style::default().fg(Color::Gray),
+    }
+}
+
+fn render_rich_block(content: &str, base_style: Style, lines: &mut Vec<Line<'static>>, indent: usize) {
+    let mut in_code_block = false;
+    for raw_line in content.lines() {
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            let lang = trimmed.trim_start_matches("```").trim();
+            let label = if in_code_block {
+                if lang.is_empty() {
+                    "CODE".to_string()
+                } else {
+                    format!("CODE {lang}")
+                }
+            } else {
+                "END CODE".to_string()
+            };
+            lines.push(indented_line(Line::from(badge_span(&label, Color::Magenta)), indent));
+            continue;
+        }
+
+        let style = if in_code_block {
+            code_line_style(raw_line)
+        } else if raw_line.starts_with("@@") || raw_line.starts_with("diff --git") {
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD)
+        } else if raw_line.starts_with('+') && !raw_line.starts_with("+++") {
+            Style::default().fg(Color::LightGreen)
+        } else if raw_line.starts_with('-') && !raw_line.starts_with("---") {
+            Style::default().fg(Color::LightRed)
+        } else if trimmed.starts_with("$ ") || trimmed.starts_with("> ") {
+            Style::default().fg(Color::Yellow)
+        } else {
+            base_style
+        };
+        let text = if raw_line.is_empty() { " ".to_string() } else { raw_line.to_string() };
+        lines.push(indented_line(
+            Line::from(Span::styled(text, style)),
+            indent,
+        ));
+    }
+}
+
+fn code_line_style(line: &str) -> Style {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("@@") || trimmed.starts_with("diff --git") {
+        Style::default()
+            .fg(Color::LightBlue)
+            .add_modifier(Modifier::BOLD)
+    } else if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+        Style::default().fg(Color::LightGreen)
+    } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
+        Style::default().fg(Color::LightRed)
+    } else if trimmed.starts_with("fn ")
+        || trimmed.starts_with("pub ")
+        || trimmed.starts_with("async ")
+        || trimmed.starts_with("class ")
+        || trimmed.starts_with("function ")
+    {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else if trimmed.starts_with('{')
+        || trimmed.starts_with('}')
+        || trimmed.starts_with('[')
+        || trimmed.starts_with(']')
+    {
+        Style::default().fg(Color::Gray)
+    } else {
+        Style::default().fg(Color::Rgb(198, 220, 255))
+    }
+}
+
+fn tool_call_summary_line(tool_call: &ToolCall) -> Line<'static> {
+    let summary = summarize_tool_call(tool_call);
+    Line::from(vec![
+        badge_span("ACT", Color::LightBlue),
+        Span::raw(" "),
+        Span::styled(summary, Style::default().fg(Color::White)),
+    ])
+}
+
+fn summarize_tool_call(tool_call: &ToolCall) -> String {
+    match tool_call.name.as_str() {
+        "run_shell" => json_field(&tool_call.arguments, &["command"])
+            .map(|value| format!("run shell: {value}"))
+            .unwrap_or_else(|| format!("run shell ({})", tool_call.id)),
+        "apply_patch" => json_field(&tool_call.arguments, &["patch"])
+            .map(|patch| {
+                let hunks = patch.matches("@@").count();
+                format!("apply patch{}",
+                    if hunks == 0 {
+                        String::new()
+                    } else {
+                        format!(" ({hunks} hunk{})", if hunks == 1 { "" } else { "s" })
+                    })
+            })
+            .unwrap_or_else(|| "apply patch".to_string()),
+        "write_file" | "append_file" => json_field(&tool_call.arguments, &["path"])
+            .map(|path| format!("{} {}", tool_call.name.replace('_', " "), path))
+            .unwrap_or_else(|| tool_call.name.replace('_', " ")),
+        "replace_in_file" => json_field(&tool_call.arguments, &["path"])
+            .map(|path| format!("replace text in {path}"))
+            .unwrap_or_else(|| "replace text in file".to_string()),
+        other => other.replace('_', " "),
+    }
+}
+
+fn preview_tool_call_lines(tool_call: &ToolCall) -> Option<Vec<Line<'static>>> {
+    match tool_call.name.as_str() {
+        "apply_patch" => json_field(&tool_call.arguments, &["patch"])
+            .map(|patch| preview_code_lines(&patch, Some("diff"))),
+        "write_file" | "append_file" => json_field(&tool_call.arguments, &["content"])
+            .map(|content| preview_code_lines(&content, None)),
+        "replace_in_file" => {
+            let old = json_field(&tool_call.arguments, &["old"]).unwrap_or_default();
+            let new = json_field(&tool_call.arguments, &["new"]).unwrap_or_default();
+            let combined = format!("--- old\n{old}\n+++ new\n{new}");
+            Some(preview_code_lines(&combined, Some("diff")))
+        }
+        "run_shell" => json_field(&tool_call.arguments, &["command"]).map(|command| {
+            vec![Line::from(Span::styled(
+                command,
+                Style::default().fg(Color::Yellow),
+            ))]
+        }),
+        _ => None,
+    }
+}
+
+fn preview_code_lines(content: &str, language_hint: Option<&str>) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let badge = if let Some(language_hint) = language_hint {
+        format!("PREVIEW {language_hint}")
+    } else {
+        "PREVIEW".to_string()
+    };
+    lines.push(Line::from(badge_span(&badge, Color::Magenta)));
+    for raw_line in content.lines().take(14) {
+        lines.push(Line::from(Span::styled(
+            if raw_line.is_empty() { " ".to_string() } else { raw_line.to_string() },
+            code_line_style(raw_line),
+        )));
+    }
+    if content.lines().count() > 14 {
+        lines.push(Line::from(Span::styled(
+            "…",
+            Style::default().fg(Color::Gray),
+        )));
+    }
     lines
+}
+
+fn json_field(json: &str, path: &[&str]) -> Option<String> {
+    let mut value = serde_json::from_str::<Value>(json).ok()?;
+    for key in path {
+        value = value.get(*key)?.clone();
+    }
+    match value {
+        Value::String(text) => Some(text),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        other => serde_json::to_string_pretty(&other).ok(),
+    }
+}
+
+fn section_label_line(label: &str, color: Color) -> Line<'static> {
+    Line::from(vec![
+        badge_span(label, color),
+        Span::raw(" "),
+        Span::styled(
+            "live operator feed",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+}
+
+fn badge_span(label: &str, color: Color) -> Span<'static> {
+    Span::styled(
+        format!(" {label} "),
+        Style::default()
+            .fg(Color::Black)
+            .bg(color)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn indented_line(line: Line<'static>, indent: usize) -> Line<'static> {
+    let mut spans = Vec::with_capacity(line.spans.len() + 1);
+    spans.push(Span::raw(" ".repeat(indent)));
+    spans.extend(line.spans);
+    Line::from(spans)
 }
 
 fn render_overlay(frame: &mut Frame<'_>, app: &TuiApp<'_>, overlay: &OverlayState) {
@@ -399,7 +666,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &TuiApp<'_>, overlay: &OverlayStat
     match overlay {
         OverlayState::Transcript { scroll_back } => {
             let transcript_viewport = transcript_viewport(
-                render_transcript_lines(&app.transcript),
+                render_transcript_lines(&app.transcript, &app.pending_tool_calls),
                 sections[0].width,
                 sections[0].height,
                 *scroll_back,
@@ -540,7 +807,7 @@ fn render_empty_header(app: &TuiApp<'_>) -> Vec<Line<'static>> {
         Line::from(format!(" >_ Autism CLI (v{})", env!("CARGO_PKG_VERSION"))),
         Line::from(String::new()),
         Line::from(format!(
-            " model:     {} {}   /model to change",
+            " model:     {} {}   /model or ctrl+p to switch",
             model_label,
             thinking_level_label(app.thinking_level)
         )),
@@ -569,10 +836,10 @@ fn render_composer_lines(app: &TuiApp<'_>) -> Vec<Line<'static>> {
 
 fn render_footer_left(app: &TuiApp<'_>) -> String {
     if app.input.is_empty() {
-        "  ? shortcuts | /config settings | /dashboard web ui | ctrl+t transcript | enter send"
+        "  ? shortcuts | ctrl+p switch | /config settings | /dashboard web ui | ctrl+t transcript | enter send"
             .to_string()
     } else {
-        "  enter send | ctrl+j newline | /config settings | /dashboard web ui | ctrl+t transcript"
+        "  enter send | ctrl+j newline | ctrl+p switch | /dashboard web ui | ctrl+t transcript"
             .to_string()
     }
 }
@@ -637,6 +904,13 @@ fn render_status_right(app: &TuiApp<'_>) -> String {
 
     if let Some(provider) = &app.active_provider_name {
         parts.push(provider.clone());
+    }
+
+    if let Some(main_target) = &app.main_target {
+        parts.push(format!(
+            "main {} -> {} / {}",
+            main_target.alias, main_target.provider_display_name, main_target.model
+        ));
     }
 
     parts.join(" | ")
@@ -886,7 +1160,7 @@ fn format_tokens_compact(value: i64) -> String {
 }
 
 pub(super) fn help_text() -> &'static str {
-    "/help\n/status\n/config\n/dashboard\n/telegrams\n/discords\n/slacks\n/signals\n/home-assistant\n/telegram approvals\n/discord approvals\n/slack approvals\n/webhooks\n/inboxes\n/autopilot [on|pause|resume|status]\n/missions\n/events [limit]\n/schedule <seconds> <title>\n/repeat <seconds> <title>\n/watch <path> <title>\n/profile\n/memory [query]\n/remember <text>\n/forget <memory-id>\n/skills [drafts|published|rejected]\n/skills publish <draft-id>\n/skills reject <draft-id>\n/model [name]\n/permissions [preset]\n/attach <path>\n/attachments\n/detach\n/thinking [level]\n/fast\n/review [instructions]\n/compact\n/resume\n/fork\n/rename <title>\n/new\n/clear\n!<command>\n/exit\n\nMain view:\n  Enter send\n  Ctrl+J or Shift+Enter newline\n  Ctrl+T transcript overlay\n  Up/Down scroll transcript when composer is empty\n  PageUp/PageDown jump transcript\n  Ctrl+A / Ctrl+E line start/end\n\nSettings:\n  /config opens a simple settings home with categories\n  /dashboard opens the localhost web control room\n\nOverlays:\n  Esc or q close\n  Up/Down or j/k scroll\n  PageUp/PageDown jump\n  Home/End top or bottom\n\nPickers:\n  Type to filter\n  Up/Down move selection\n  Enter select\n  Esc cancel\n  PageUp/PageDown jump\n  Mouse wheel scroll"
+    "/help\n/status\n/config\n/dashboard\n/telegrams\n/discords\n/slacks\n/signals\n/home-assistant\n/telegram approvals\n/discord approvals\n/slack approvals\n/webhooks\n/inboxes\n/autopilot [on|pause|resume|status]\n/missions\n/events [limit]\n/schedule <seconds> <title>\n/repeat <seconds> <title>\n/watch <path> <title>\n/profile\n/memory [query]\n/remember <text>\n/forget <memory-id>\n/skills [drafts|published|rejected]\n/skills publish <draft-id>\n/skills reject <draft-id>\n/model [name]\n/provider [name]\n/onboard\n/permissions [preset]\n/attach <path>\n/attachments\n/detach\n/thinking [level]\n/fast\n/review [instructions]\n/compact\n/resume\n/fork\n/rename <title>\n/new\n/clear\n!<command>\n/exit\n\nMain view:\n  Enter send\n  Ctrl+J or Shift+Enter newline\n  Ctrl+P provider and main switcher\n  Ctrl+T transcript overlay\n  Up/Down scroll transcript when composer is empty\n  PageUp/PageDown jump transcript\n  Ctrl+A / Ctrl+E line start/end\n\nSettings:\n  /config opens a simple settings home with categories\n  /dashboard opens the localhost web control room\n  /model opens the provider/alias switcher or accepts a direct alias/model\n  /provider lists logged-in providers or switches the current provider\n  /onboard wipes saved state and restarts setup\n\nOverlays:\n  Esc or q close\n  Up/Down or j/k scroll\n  PageUp/PageDown jump\n  Home/End top or bottom\n\nPickers:\n  Type to filter\n  Up/Down move selection\n  Enter select\n  Esc cancel\n  PageUp/PageDown jump\n  Mouse wheel scroll"
 }
 
 fn centered_rect(horizontal: u16, vertical: u16, area: Rect) -> Rect {

@@ -41,7 +41,11 @@ pub(crate) async fn run_tui_session(
 
     let mut terminal = Some(TerminalSession::new()?);
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    spawn_daemon_event_poller(app.client.clone(), app.event_cursor(), event_tx.clone());
+    let mut event_poller = Some(spawn_daemon_event_poller(
+        app.client.clone(),
+        app.event_cursor(),
+        event_tx.clone(),
+    ));
 
     if let Some(prompt) = initial_prompt {
         app.queue_prompt(prompt, &event_tx)?;
@@ -58,6 +62,16 @@ pub(crate) async fn run_tui_session(
             drop(terminal.take());
             if let Err(error) = app.run_external_action(action).await {
                 app.record_error(format!("{error:#}"));
+            }
+            if app.take_restart_event_poller() {
+                if let Some(handle) = event_poller.take() {
+                    handle.abort();
+                }
+                event_poller = Some(spawn_daemon_event_poller(
+                    app.client.clone(),
+                    app.event_cursor(),
+                    event_tx.clone(),
+                ));
             }
             terminal = Some(TerminalSession::new()?);
         }
@@ -91,6 +105,10 @@ pub(crate) async fn run_tui_session(
             }
             _ => {}
         }
+    }
+
+    if let Some(handle) = event_poller.take() {
+        handle.abort();
     }
 
     Ok(())

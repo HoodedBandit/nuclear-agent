@@ -6,6 +6,7 @@ const state = {
   healthTimer: null,
   lastData: null,
   activeChatSessionId: null,
+  pendingChatSessionId: null,
   activeTranscript: [],
   editingProviderId: null,
   editingConnectorKey: null,
@@ -22,6 +23,7 @@ const state = {
   refreshInFlight: null,
   healthInFlight: null,
   panelInFlight: {},
+  chatRunInFlight: false,
 };
 
 const elements = {
@@ -135,7 +137,9 @@ const elements = {
   runTaskPermission: document.getElementById("run-task-permission"),
   runTaskResult: document.getElementById("run-task-result"),
   chatSessionMeta: document.getElementById("chat-session-meta"),
+  chatMainTarget: document.getElementById("chat-main-target"),
   chatTranscript: document.getElementById("chat-transcript"),
+  chatMakeMainButton: document.getElementById("chat-make-main-button"),
   chatNewSession: document.getElementById("chat-new-session"),
   chatRenameButton: document.getElementById("chat-rename-button"),
   sessionsSummary: document.getElementById("sessions-summary"),
@@ -217,6 +221,52 @@ function apiPut(path, payload) {
 
 function apiDelete(path) {
   return apiRequest(path, { method: "DELETE" });
+}
+
+async function apiStream(path, payload, onEvent) {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      ...bearerHeaders(),
+    },
+    body: JSON.stringify(payload ?? {}),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    const error = new Error(
+      `${response.status} ${response.statusText}${text ? `: ${text}` : ""}`
+    );
+    error.status = response.status;
+    throw error;
+  }
+  if (!response.body) {
+    throw new Error("Streaming response body was not available.");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) {
+        onEvent(JSON.parse(line));
+      }
+      newlineIndex = buffer.indexOf("\n");
+    }
+  }
+  const trailing = buffer.trim();
+  if (trailing) {
+    onEvent(JSON.parse(trailing));
+  }
 }
 
 async function createDashboardSession(token) {
@@ -396,6 +446,7 @@ function syncProviderModeUi() {
     ? "Create a new provider without replacing existing logged-in providers or aliases."
     : `Editing provider ${state.editingProviderId}`;
   elements.providerReset.textContent = createMode ? "Reset" : "Create new";
+  elements.providerId.readOnly = !createMode;
   if (elements.providerSetMainRow) {
     elements.providerSetMainRow.hidden = createMode;
   }
@@ -564,6 +615,11 @@ function clearProviderBrowserAuthPolling() {
   }
 }
 
+function clearProviderSecretInputs() {
+  elements.providerApiKey.value = "";
+  elements.providerOauthToken.value = "";
+}
+
 async function pollProviderBrowserAuthSession(sessionId, { refresh = true } = {}) {
   const session = await apiGet(`/v1/provider-auth/${encodeURIComponent(sessionId)}`);
   if (state.providerAuthSessionId && state.providerAuthSessionId !== sessionId) {
@@ -583,8 +639,7 @@ async function pollProviderBrowserAuthSession(sessionId, { refresh = true } = {}
   state.providerAuthKind = null;
   state.providerAuthWindow = null;
   if (session.status === "completed") {
-    elements.providerApiKey.value = "";
-    elements.providerOauthToken.value = "";
+    clearProviderSecretInputs();
     state.editingProviderId = session.provider_id;
     setProviderBrowserAuthStatus(
       `${providerBrowserAuthLabel(session.kind)} credentials saved for ${session.provider_id}.`,
@@ -639,7 +694,7 @@ async function startProviderBrowserAuth() {
   }
   popup.document.title = `Starting ${descriptor.label} sign-in`;
   popup.document.body.innerHTML =
-    "<main style=\"font-family:sans-serif;max-width:560px;margin:48px auto;padding:0 16px;\"><h1>Starting sign-in...</h1><p>The daemon is preparing the provider authorization flow.</p></main>";
+    "<main><h1>Starting sign-in...</h1><p>The daemon is preparing the provider authorization flow.</p></main>";
 
   setProviderBrowserAuthStatus(`Starting ${descriptor.label} browser sign-in...`, "neutral");
   try {
@@ -769,11 +824,80 @@ function heroChip(label) {
   return `<span class="health-pill">${escapeHtml(label)}</span>`;
 }
 
+const ACTION_DATASET_KEYS = new Set([
+  "approvalApprove",
+  "approvalReject",
+  "memoryApprove",
+  "memoryReject",
+  "skillPublish",
+  "skillReject",
+  "missionPause",
+  "missionResume",
+  "missionDelay",
+  "missionCancel",
+  "autopilot",
+  "autonomy",
+  "evolve",
+  "connectorToggle",
+  "connectorEdit",
+  "connectorPoll",
+  "providerEdit",
+  "providerModels",
+  "providerClearCreds",
+  "providerDelete",
+  "aliasEdit",
+  "aliasMakeMain",
+  "aliasDelete",
+  "connectorDelete",
+  "permissionPreset",
+  "trustFlag",
+  "memoryDelete",
+  "useModel",
+  "sessionView",
+  "sessionUse",
+  "sessionRename",
+  "mcpDelete",
+  "daemonPersistence",
+  "daemonAutostart",
+]);
+
+function dataAttributeName(key) {
+  return key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+}
+
 function buttonHtml(label, datasetEntries, klass = "") {
   const attrs = Object.entries(datasetEntries)
-    .map(([key, value]) => `data-${escapeHtml(key)}="${escapeHtml(value)}"`)
+    .map(
+      ([key, value]) =>
+        `data-${escapeHtml(dataAttributeName(key))}="${escapeHtml(value)}"`
+    )
     .join(" ");
   return `<button class="button-small ${klass}" ${attrs}>${escapeHtml(label)}</button>`;
+}
+
+function hasActionDataset(element) {
+  return Object.keys(element?.dataset || {}).some((key) =>
+    ACTION_DATASET_KEYS.has(key)
+  );
+}
+
+function findActionTarget(start) {
+  let current =
+    start instanceof HTMLElement
+      ? start
+      : start instanceof Node
+        ? start.parentElement
+        : null;
+  while (current && current !== document.body) {
+    if (hasActionDataset(current)) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  if (current && hasActionDataset(current)) {
+    return current;
+  }
+  return null;
 }
 
 function renderEmpty(message) {
@@ -1359,9 +1483,65 @@ function renderEvents(events) {
     : renderEmpty("No daemon events yet.");
 }
 
+function renderChatAliasOptions(providers, aliases) {
+  const selectedValue = elements.runTaskAlias.value;
+  const providerNames = new Map(
+    (providers || []).map((provider) => [
+      provider.id,
+      provider.display_name || provider.id,
+    ])
+  );
+  const grouped = new Map();
+  (aliases || []).forEach((alias) => {
+    const providerId = alias.provider_id || "unknown";
+    if (!grouped.has(providerId)) {
+      grouped.set(providerId, []);
+    }
+    grouped.get(providerId).push(alias);
+  });
+  const options = ['<option value="">Select an alias</option>'];
+  Array.from(grouped.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([providerId, providerAliases]) => {
+      const providerLabel = providerNames.get(providerId) || providerId;
+      options.push(`<optgroup label="${escapeHtml(providerLabel)}">`);
+      providerAliases
+        .sort((left, right) => (left.alias || "").localeCompare(right.alias || ""))
+        .forEach((alias) => {
+          options.push(
+            `<option value="${escapeHtml(alias.alias)}">${escapeHtml(
+              `${alias.alias} · ${alias.model || providerId}`
+            )}</option>`
+          );
+        });
+      options.push("</optgroup>");
+    });
+  elements.runTaskAlias.innerHTML = options.join("");
+  if (selectedValue && (aliases || []).some((alias) => alias.alias === selectedValue)) {
+    elements.runTaskAlias.value = selectedValue;
+  } else if (state.lastData?.status?.main_agent_alias) {
+    elements.runTaskAlias.value = state.lastData.status.main_agent_alias;
+  }
+}
+
+function renderMainTargetSummary(mainTarget, mainAlias) {
+  if (mainTarget) {
+    elements.chatMainTarget.textContent = `Default main alias: ${mainTarget.alias} -> ${mainTarget.provider_display_name} / ${mainTarget.model}`;
+  } else if (mainAlias) {
+    elements.chatMainTarget.textContent = `Default main alias: ${mainAlias}`;
+  } else {
+    elements.chatMainTarget.textContent = "Default main alias: not configured.";
+  }
+}
+
 function renderProviders(providers, aliases) {
-  elements.providersSummary.textContent = `${providers.length} provider(s), ${aliases.length} alias(es)`;
   const mainAlias = state.lastData?.status?.main_agent_alias || null;
+  const mainTarget = state.lastData?.status?.main_target || null;
+  elements.providersSummary.textContent = mainTarget
+    ? `${providers.length} provider(s), ${aliases.length} alias(es) · main ${mainTarget.alias} -> ${mainTarget.provider_display_name} / ${mainTarget.model}`
+    : `${providers.length} provider(s), ${aliases.length} alias(es)`;
+  renderChatAliasOptions(providers, aliases);
+  renderMainTargetSummary(mainTarget, mainAlias);
   elements.providersList.innerHTML = providers.length
     ? providers
         .map(
@@ -1378,7 +1558,6 @@ function renderProviders(providers, aliases) {
                 <li>base_url: ${escapeHtml(fmt(provider.base_url))}</li>
                 <li>default_model: ${escapeHtml(fmt(provider.default_model))}</li>
                 <li>local: ${escapeHtml(fmtBoolean(provider.local))}</li>
-                <li>keychain: ${escapeHtml(fmt(provider.keychain_account))}</li>
               </ul>
               <div class="inline-actions">
                 ${buttonHtml("Edit", { providerEdit: provider.id }, "button-ghost")}
@@ -1402,6 +1581,7 @@ function renderProviders(providers, aliases) {
                   <p class="card-subtitle">${escapeHtml(alias.provider_id || "-")} / ${escapeHtml(alias.model || "-")}</p>
                 </div>
                 ${mainAlias === alias.alias ? badge("main", "good") : ""}
+                ${elements.runTaskAlias.value === alias.alias ? badge("current chat", "info") : ""}
               </div>
               ${alias.description ? `<p class="card-copy">${escapeHtml(alias.description)}</p>` : ""}
               <div class="inline-actions">
@@ -1699,6 +1879,12 @@ async function loadLogsPanel() {
   return logs;
 }
 
+async function loadSessionsPanel() {
+  const sessions = await refreshSessionsSummary();
+  renderActiveSessionDetail();
+  return sessions;
+}
+
 async function loadMcpPanel() {
   const mcpServers = await apiGet("/v1/mcp").catch(() => []);
   mergeLastData({ mcpServers });
@@ -1712,13 +1898,13 @@ const lazyPanelLoaders = {
   memory: loadMemoryReviewPanel,
   skills: loadSkillsPanel,
   profile: loadProfilePanel,
+  sessions: loadSessionsPanel,
   logs: loadLogsPanel,
   mcp: loadMcpPanel,
 };
 
 async function ensurePanelLoaded(panelId, { force = false } = {}) {
-  if (panelId === "sessions") {
-    state.loadedPanels.add(panelId);
+  if (panelId === "sessions" && !hasDashboardAuth()) {
     renderActiveSessionDetail();
     return null;
   }
@@ -1996,6 +2182,7 @@ function resetProviderForm(applyPreset = true) {
   state.editingProviderId = null;
   state.providerAutoDefaults = null;
   elements.providerForm.reset();
+  clearProviderSecretInputs();
   if (!state.providerAuthSessionId) {
     state.providerAuthStatusMessage = "";
     state.providerAuthStatusTone = "neutral";
@@ -2061,9 +2248,8 @@ function populateProviderForm(providerId) {
   elements.providerAuthMode.value = provider.auth_mode || "api_key";
   elements.providerDefaultModel.value = provider.default_model || "";
   elements.providerLocal.checked = !!provider.local;
-  elements.providerApiKey.value = "";
+  clearProviderSecretInputs();
   elements.providerOauthConfig.value = provider.oauth ? JSON.stringify(provider.oauth, null, 2) : "";
-  elements.providerOauthToken.value = "";
   const aliases = (state.lastData?.aliases || []).filter((entry) => entry.provider_id === provider.id);
   const primaryAlias = aliases[0];
   elements.providerAliasName.value = primaryAlias?.alias || "";
@@ -2106,9 +2292,31 @@ function renderActiveSessionDetail() {
     : renderEmpty("No session selected.");
 }
 
+function snapshotChatState() {
+  return {
+    activeChatSessionId: state.activeChatSessionId,
+    pendingChatSessionId: state.pendingChatSessionId,
+    activeTranscript: [...(state.activeTranscript || [])],
+    chatSessionMeta: elements.chatSessionMeta.textContent,
+  };
+}
+
+function restoreChatState(snapshot) {
+  state.activeChatSessionId = snapshot.activeChatSessionId;
+  state.pendingChatSessionId = snapshot.pendingChatSessionId;
+  state.activeTranscript = [...(snapshot.activeTranscript || [])];
+  elements.chatSessionMeta.textContent = snapshot.chatSessionMeta;
+  if (state.lastData) {
+    renderProviders(state.lastData.providers || [], state.lastData.aliases || []);
+  }
+  renderChatTranscript(state.activeTranscript);
+  renderActiveSessionDetail();
+}
+
 async function loadChatSession(sessionId, { focusChat = false } = {}) {
   const transcript = await apiGet(`/v1/sessions/${encodeURIComponent(sessionId)}`);
   state.activeChatSessionId = transcript.session.id;
+  state.pendingChatSessionId = null;
   state.activeTranscript = transcript.messages || [];
   elements.runTaskAlias.value = transcript.session.alias || "";
   elements.runTaskModel.value = "";
@@ -2128,6 +2336,7 @@ async function loadChatSession(sessionId, { focusChat = false } = {}) {
 
 function startNewChat() {
   state.activeChatSessionId = null;
+  state.pendingChatSessionId = null;
   state.activeTranscript = [];
   elements.runTaskPrompt.value = "";
   elements.chatSessionMeta.textContent = "New chat";
@@ -2135,47 +2344,247 @@ function startNewChat() {
   renderActiveSessionDetail();
 }
 
-function renderSessionMessages(messages) {
-  return messages.length
-    ? messages
+function setChatRunState(inFlight) {
+  state.chatRunInFlight = inFlight;
+  elements.chatNewSession.disabled = inFlight;
+  elements.chatRenameButton.disabled = inFlight;
+}
+
+function ensureChatRunIdle(actionLabel) {
+  if (state.chatRunInFlight) {
+    throw new Error(`Wait for the active chat run to finish before ${actionLabel}.`);
+  }
+}
+
+function messageTone(message) {
+  if (message.role === "user") {
+    return {
+      label: "You",
+      className: "chat-message chat-message--user",
+      subtitle: fmt(message.provider_id || "prompt"),
+    };
+  }
+  if (message.role === "assistant" && Array.isArray(message.tool_calls) && message.tool_calls.length) {
+    return {
+      label: "Thinking",
+      className: "chat-message chat-message--thinking",
+      subtitle: fmt(message.model || "planning"),
+    };
+  }
+  if (message.role === "assistant") {
+    return {
+      label: "Assistant",
+      className: "chat-message chat-message--assistant",
+      subtitle: fmt(message.model || message.provider_id || ""),
+    };
+  }
+  if (message.role === "tool") {
+    const failed = String(message.content || "").startsWith("ERROR:");
+    return {
+      label: failed ? "Tool Error" : "Tool",
+      className: `chat-message ${failed ? "chat-message--error" : "chat-message--tool"}`,
+      subtitle: fmt(message.tool_name || "tool execution"),
+    };
+  }
+  return {
+    label: "System",
+    className: "chat-message chat-message--system",
+    subtitle: fmt(message.provider_id || "system"),
+  };
+}
+
+function chatCodeLineClass(line) {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("@@") || trimmed.startsWith("diff --git")) {
+    return "chat-code__line chat-code__line--meta";
+  }
+  if (trimmed.startsWith("+") && !trimmed.startsWith("+++")) {
+    return "chat-code__line chat-code__line--add";
+  }
+  if (trimmed.startsWith("-") && !trimmed.startsWith("---")) {
+    return "chat-code__line chat-code__line--remove";
+  }
+  if (/^(fn|pub|async|class|function)\b/.test(trimmed)) {
+    return "chat-code__line chat-code__line--keyword";
+  }
+  return "chat-code__line";
+}
+
+function renderCodeBlock(content, language = "") {
+  const lines = String(content || "").split(/\r?\n/);
+  return `
+    <div class="chat-code-block">
+      <div class="chat-code-label">${escapeHtml(language ? `Code ${language}` : "Code")}</div>
+      <pre class="chat-code"><code>${lines
         .map(
-          (msg) => `
-            <article class="stack-card">
-              <div class="card-title-row">
-                <div><h4>${escapeHtml(msg.role || "unknown")}</h4></div>
-                ${badge(fmtDate(msg.created_at || msg.timestamp))}
-              </div>
-              <p class="card-copy" style="white-space:pre-wrap">${escapeHtml(
-                typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2)
-              )}</p>
-            </article>
+          (line) =>
+            `<span class="${chatCodeLineClass(line)}">${escapeHtml(line || " ")}</span>`
+        )
+        .join("")}</code></pre>
+    </div>
+  `;
+}
+
+function renderRichContent(content) {
+  const lines = String(content || "").split(/\r?\n/);
+  const blocks = [];
+  let paragraph = [];
+  let codeLines = [];
+  let codeLanguage = "";
+  let inCode = false;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) {
+      return;
+    }
+    blocks.push(
+      `<p class="card-copy">${escapeHtml(paragraph.join("\n"))}</p>`
+    );
+    paragraph = [];
+  };
+
+  const flushCode = () => {
+    if (!codeLines.length) {
+      blocks.push(renderCodeBlock("", codeLanguage));
+      return;
+    }
+    blocks.push(renderCodeBlock(codeLines.join("\n"), codeLanguage));
+    codeLines = [];
+    codeLanguage = "";
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        flushCode();
+        inCode = false;
+      } else {
+        flushParagraph();
+        inCode = true;
+        codeLanguage = trimmed.slice(3).trim();
+      }
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+    } else {
+      paragraph.push(line);
+    }
+  });
+
+  flushParagraph();
+  if (inCode) {
+    flushCode();
+  }
+
+  return blocks.join("");
+}
+
+function parseToolArgumentField(argumentsText, field) {
+  try {
+    const parsed = JSON.parse(argumentsText || "{}");
+    const value = parsed[field];
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value === null || typeof value === "undefined") {
+      return null;
+    }
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return null;
+  }
+}
+
+function renderToolCallPreview(toolCall) {
+  const name = toolCall.name || "tool";
+  let summary = name.replaceAll("_", " ");
+  let preview = "";
+  if (name === "run_shell") {
+    const command = parseToolArgumentField(toolCall.arguments, "command");
+    if (command) {
+      summary = `run shell: ${command}`;
+      preview = renderCodeBlock(command, "shell");
+    }
+  } else if (name === "apply_patch") {
+    const patch = parseToolArgumentField(toolCall.arguments, "patch");
+    if (patch) {
+      summary = "apply patch";
+      preview = renderCodeBlock(patch, "diff");
+    }
+  } else if (name === "write_file" || name === "append_file") {
+    const path = parseToolArgumentField(toolCall.arguments, "path");
+    const content = parseToolArgumentField(toolCall.arguments, "content");
+    summary = path ? `${name.replaceAll("_", " ")} ${path}` : name.replaceAll("_", " ");
+    if (content) {
+      preview = renderCodeBlock(content);
+    }
+  } else if (name === "replace_in_file") {
+    const path = parseToolArgumentField(toolCall.arguments, "path");
+    const oldValue = parseToolArgumentField(toolCall.arguments, "old");
+    const newValue = parseToolArgumentField(toolCall.arguments, "new");
+    summary = path ? `replace text in ${path}` : "replace text in file";
+    preview = renderCodeBlock(`--- old\n${oldValue || ""}\n+++ new\n${newValue || ""}`, "diff");
+  }
+  return `
+    <div class="chat-tool-preview">
+      <div class="chat-tool-preview__header">
+        ${badge("action")}
+        <span>${escapeHtml(summary)}</span>
+      </div>
+      ${preview}
+    </div>
+  `;
+}
+
+function renderConversationMessage(message) {
+  const tone = messageTone(message);
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  return `
+    <article class="${tone.className}">
+      <div class="chat-message__header">
+        <div class="chat-message__title">
+          ${badge(tone.label)}
+          <span>${escapeHtml(tone.subtitle)}</span>
+        </div>
+        ${badge(fmtDate(message.created_at || message.timestamp))}
+      </div>
+      ${message.content ? renderRichContent(message.content) : ""}
+      ${attachments
+        .map(
+          (attachment) => `
+            <div class="chat-attachment">
+              ${badge("image")}
+              <span>${escapeHtml(attachment.path || "")}</span>
+            </div>
           `
         )
-        .join("")
-    : renderEmpty("No messages in this session.");
+        .join("")}
+      ${toolCalls.length
+        ? `
+          <div class="chat-tool-preview-list">
+            ${toolCalls.map(renderToolCallPreview).join("")}
+          </div>
+        `
+        : ""}
+    </article>
+  `;
+}
+
+function renderConversationThread(messages, emptyText) {
+  return messages.length
+    ? messages.map(renderConversationMessage).join("")
+    : renderEmpty(emptyText);
+}
+
+function renderSessionMessages(messages) {
+  return renderConversationThread(messages, "No messages in this session.");
 }
 
 function renderChatTranscript(messages) {
-  elements.chatTranscript.innerHTML = messages.length
-    ? messages
-        .map(
-          (msg) => `
-            <article class="stack-card">
-              <div class="card-title-row">
-                <div>
-                  <h4>${escapeHtml(msg.role || "unknown")}</h4>
-                  <p class="card-subtitle">${escapeHtml(fmt(msg.model || msg.provider_id || ""))}</p>
-                </div>
-                ${badge(fmtDate(msg.created_at || msg.timestamp))}
-              </div>
-              <p class="card-copy" style="white-space:pre-wrap">${escapeHtml(
-                typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2)
-              )}</p>
-            </article>
-          `
-        )
-        .join("")
-    : renderEmpty("No active chat yet.");
+  elements.chatTranscript.innerHTML = renderConversationThread(messages, "No active chat yet.");
   elements.chatTranscript.scrollTop = elements.chatTranscript.scrollHeight;
 }
 
@@ -2255,6 +2664,7 @@ function clearDashboardConnectionState({ clearTokenInput = false } = {}) {
   clearProviderBrowserAuthPolling();
   state.dashboardSessionAuthenticated = false;
   state.token = "";
+  state.pendingChatSessionId = null;
   if (clearTokenInput) {
     elements.tokenInput.value = "";
   }
@@ -2455,7 +2865,7 @@ async function handleMissionAction(action, id) {
 
 function bindActions() {
   document.body.addEventListener("click", async (event) => {
-    const target = event.target;
+    const target = findActionTarget(event.target);
     if (!(target instanceof HTMLElement)) {
       return;
     }
@@ -2521,15 +2931,7 @@ function bindActions() {
         elements.aliasDescription.value = alias.description || "";
         elements.aliasMain.checked = state.lastData?.status?.main_agent_alias === alias.alias;
       } else if (target.dataset.aliasMakeMain) {
-        const alias = (state.lastData?.aliases || []).find((entry) => entry.alias === target.dataset.aliasMakeMain);
-        if (!alias) {
-          throw new Error("Unknown alias.");
-        }
-        await apiPost("/v1/aliases", {
-          alias,
-          set_as_main: true,
-        });
-        await refreshDashboard();
+        await updateMainAlias(target.dataset.aliasMakeMain);
       } else if (target.dataset.aliasDelete) {
         if (window.confirm(`Delete alias ${target.dataset.aliasDelete}?`)) {
           await apiDelete(`/v1/aliases/${encodeURIComponent(target.dataset.aliasDelete)}`);
@@ -2575,9 +2977,11 @@ function bindActions() {
           elements.sessionDetail.innerHTML = renderEmpty(`Failed to load session: ${err.message}`);
         }
       } else if (target.dataset.sessionUse) {
+        ensureChatRunIdle("switching chats");
         state.loadedPanels.add("sessions");
         await loadChatSession(target.dataset.sessionUse, { focusChat: true });
       } else if (target.dataset.sessionRename) {
+        ensureChatRunIdle("renaming chats");
         const title = window.prompt("New session title:", "") || "";
         if (!title.trim()) {
           return;
@@ -2768,6 +3172,7 @@ elements.providerForm.addEventListener("submit", async (event) => {
       payload.oauth_token = JSON.parse(oauthTokenText);
     }
     await apiPost("/v1/providers", payload);
+    clearProviderSecretInputs();
 
     if (aliasName) {
       if (!trimToNull(elements.providerAliasModel.value) && aliasModel) {
@@ -3048,6 +3453,9 @@ elements.connectorAddForm.addEventListener("submit", async (event) => {
 elements.runTaskForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
+    if (state.chatRunInFlight) {
+      throw new Error("A chat run is already in progress.");
+    }
     const prompt = elements.runTaskPrompt.value.trim();
     if (!prompt) {
       throw new Error("Prompt is required.");
@@ -3064,25 +3472,77 @@ elements.runTaskForm.addEventListener("submit", async (event) => {
     if (model) payload.requested_model = model;
     if (thinking) payload.thinking_level = thinking;
     if (permissionPreset) payload.permission_preset = permissionPreset;
-    elements.runTaskResult.innerHTML = renderEmpty("Sending...");
-    const result = await apiPost("/v1/run", payload);
+    const chatSnapshot = snapshotChatState();
+    setChatRunState(true);
+    const optimisticMessage = {
+      role: "user",
+      content: prompt,
+      created_at: new Date().toISOString(),
+      provider_id: alias || "user",
+      model: model || "",
+      tool_calls: [],
+      attachments: [],
+    };
+    state.activeTranscript = [...(state.activeTranscript || []), optimisticMessage];
+    renderChatTranscript(state.activeTranscript);
+    renderActiveSessionDetail();
+    elements.runTaskResult.innerHTML = renderEmpty("Working...");
+    let completedResponse = null;
+    let streamError = null;
+    state.pendingChatSessionId = null;
+    await apiStream("/v1/run/stream", payload, (streamEvent) => {
+      if (streamEvent.type === "session_started") {
+        state.pendingChatSessionId = streamEvent.session_id || state.pendingChatSessionId;
+        elements.chatSessionMeta.textContent = [
+          streamEvent.alias,
+          streamEvent.model,
+          streamEvent.session_id,
+        ]
+          .filter(Boolean)
+          .join(" | ");
+      } else if (streamEvent.type === "message" && streamEvent.message) {
+        state.activeTranscript = [...(state.activeTranscript || []), streamEvent.message];
+        renderChatTranscript(state.activeTranscript);
+        renderActiveSessionDetail();
+      } else if (streamEvent.type === "completed") {
+        completedResponse = streamEvent.response || null;
+      } else if (streamEvent.type === "error") {
+        streamError = streamEvent.message || "Task failed.";
+      }
+    });
+    if (streamError) {
+      throw new Error(streamError);
+    }
     elements.runTaskPrompt.value = "";
     elements.runTaskResult.innerHTML = renderEmpty("Response received.");
-    if (result && result.session_id) {
-      await loadChatSession(result.session_id);
+    if (completedResponse && completedResponse.session_id) {
+      await loadChatSession(completedResponse.session_id);
     }
     await refreshSessionsSummary();
   } catch (error) {
+    if (!completedResponse) {
+      restoreChatState(chatSnapshot);
+    } else {
+      state.pendingChatSessionId = null;
+    }
     elements.runTaskResult.innerHTML = renderEmpty(`Task failed: ${error.message}`);
+  } finally {
+    setChatRunState(false);
   }
 });
 
 elements.chatNewSession.addEventListener("click", () => {
-  startNewChat();
+  try {
+    ensureChatRunIdle("starting a new chat");
+    startNewChat();
+  } catch (error) {
+    setStatus(`Chat action failed: ${error.message}`, "warn");
+  }
 });
 
 elements.chatRenameButton.addEventListener("click", async () => {
   try {
+    ensureChatRunIdle("renaming chats");
     if (!state.activeChatSessionId) {
       throw new Error("No active chat to rename.");
     }
@@ -3155,6 +3615,31 @@ window.addEventListener("message", (event) => {
     setStatus(`Browser sign-in failed: ${error.message}`, "warn");
   });
 });
+
+async function updateMainAlias(alias) {
+  const selectedAlias = String(alias || "").trim();
+  if (!selectedAlias) {
+    throw new Error("Select an alias first.");
+  }
+  await apiPut("/v1/main-alias", { alias: selectedAlias });
+  await refreshDashboard({ includeLoadedPanels: false });
+  setStatus(`Default main alias set to ${selectedAlias}.`, "ok");
+}
+
+elements.runTaskAlias.addEventListener("change", () => {
+  if (state.lastData) {
+    renderProviders(state.lastData.providers || [], state.lastData.aliases || []);
+  }
+});
+
+elements.chatMakeMainButton.addEventListener("click", async () => {
+  try {
+    await updateMainAlias(elements.runTaskAlias.value);
+  } catch (error) {
+    setStatus(`Main alias update failed: ${error.message}`, "warn");
+  }
+});
+
 initializeDashboardConnection().catch((error) => {
   setStatus(`Refresh failed: ${error.message}`, "warn");
 });
