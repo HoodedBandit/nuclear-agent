@@ -1,4 +1,4 @@
-# Agent Builder
+﻿# Nuclear Agent
 
 CLI-first local agent runtime built in Rust for Windows and Linux.
 
@@ -25,7 +25,7 @@ GUI is intentionally deferred until the CLI path is stable.
 - `crates/agent-providers`: provider adapters and keychain-backed secrets
 - `crates/agent-policy`: trust and autonomy helpers
 - `crates/agent-daemon`: persistent runtime process
-- `crates/agent-cli`: terminal client binary named `autism`
+- `crates/agent-cli`: terminal client with a migration-safe legacy backend binary and a user-facing `nuclear` command
 
 ## Build
 
@@ -45,60 +45,60 @@ Packaged installs also include:
 - `install` for Linux
 - `install.cmd` as a Windows wrapper around `install.ps1`
 
-Those installers place `autism` on the user PATH and install a local binary so you can launch the CLI directly from the terminal.
-On Windows, if the bundled `autism.exe` is blocked by application control, `install.ps1` automatically falls back to building from the packaged source tree and will install `rustup` if needed. When the packaged source tree includes the dashboard E2E harness, `install.ps1` also installs the required npm dependencies and Playwright Chromium browser bundle automatically. Existing managed or system installs are reused instead of being overwritten.
+Those installers place `nuclear` on the user PATH for day-to-day use while preserving legacy `autism` command compatibility.
+On Windows, if the bundled `nuclear.exe` is blocked by application control, `install.ps1` automatically falls back to building from the packaged source tree and will install `rustup` if needed. When the packaged source tree includes the dashboard E2E harness, `install.ps1` also installs the required npm dependencies and Playwright Chromium browser bundle automatically. Existing managed or system installs are reused instead of being overwritten.
 
 ## Quick Start
 
 Run the setup wizard directly:
 
 ```powershell
-target\debug\autism.exe setup
+target\debug\nuclear.exe setup
 ```
 
-Or just launch the CLI in a terminal. If no usable config exists yet, `autism` now drops straight into the onboarding flow before opening chat.
+Or just launch the CLI in a terminal with `nuclear`. If no usable config exists yet, the CLI now drops straight into the onboarding flow before opening chat.
 
 Manual daemon control:
 
 ```powershell
-target\debug\autism.exe daemon start
-target\debug\autism.exe daemon status
-target\debug\autism.exe daemon config --mode always-on --auto-start true
-target\debug\autism.exe daemon stop
+target\debug\nuclear.exe daemon start
+target\debug\nuclear.exe daemon status
+target\debug\nuclear.exe daemon config --mode always-on --auto-start true
+target\debug\nuclear.exe daemon stop
 ```
 
 Add a hosted provider:
 
 ```powershell
-target\debug\autism.exe provider add --id anthropic --name Anthropic --kind anthropic --model claude-3-7-sonnet --api-key %ANTHROPIC_API_KEY% --main-alias claude
+target\debug\nuclear.exe provider add --id anthropic --name Anthropic --kind anthropic --model claude-3-7-sonnet --api-key %ANTHROPIC_API_KEY% --main-alias claude
 ```
 
 Add a Moonshot-compatible hosted provider:
 
 ```powershell
-target\debug\autism.exe provider add --id moonshot --name Moonshot --kind moonshot --model kimi-k2 --api-key %MOONSHOT_API_KEY%
+target\debug\nuclear.exe provider add --id moonshot --name Moonshot --kind moonshot --model kimi-k2 --api-key %MOONSHOT_API_KEY%
 ```
 
 Add an OpenRouter provider:
 
 ```powershell
-target\debug\autism.exe provider add --id openrouter --name OpenRouter --kind openrouter --model openai/gpt-4.1 --api-key %OPENROUTER_API_KEY%
+target\debug\nuclear.exe provider add --id openrouter --name OpenRouter --kind openrouter --model openai/gpt-4.1 --api-key %OPENROUTER_API_KEY%
 ```
 
 Add a Venice AI provider:
 
 ```powershell
-target\debug\autism.exe provider add --id venice --name Venice --kind venice --model venice-uncensored --api-key %VENICE_API_KEY%
+target\debug\nuclear.exe provider add --id venice --name Venice --kind venice --model venice-uncensored --api-key %VENICE_API_KEY%
 ```
 
 Configure a named hosted provider with the guided login flow:
 
 ```powershell
-target\debug\autism.exe login --kind openai-compatible
-target\debug\autism.exe login --kind anthropic
-target\debug\autism.exe login --kind moonshot
-target\debug\autism.exe login --kind openrouter
-target\debug\autism.exe login --kind venice
+target\debug\nuclear.exe login --kind openai-compatible
+target\debug\nuclear.exe login --kind anthropic
+target\debug\nuclear.exe login --kind moonshot
+target\debug\nuclear.exe login --kind openrouter
+target\debug\nuclear.exe login --kind venice
 ```
 
 The guided hosted login flow now offers three auth paths for every named provider:
@@ -116,26 +116,26 @@ Browser behavior is provider-specific:
 Configure an advanced compatible provider with browser OAuth:
 
 ```powershell
-target\debug\autism.exe login --id openai-oauth --name "OpenAI OAuth" --kind openai-compatible --auth oauth --model gpt-4.1
+target\debug\nuclear.exe login --id openai-oauth --name "OpenAI OAuth" --kind openai-compatible --auth oauth --model gpt-4.1
 ```
 
 Add a local provider:
 
 ```powershell
-target\debug\autism.exe provider add-local --id ollama-local --name Ollama --kind ollama --main-alias main
+target\debug\nuclear.exe provider add-local --id ollama-local --name Ollama --kind ollama --main-alias main
 ```
 
 List models exposed by a configured provider:
 
 ```powershell
-target\debug\autism.exe model list --provider openrouter
-target\debug\autism.exe model list --provider ollama-local
+target\debug\nuclear.exe model list --provider openrouter
+target\debug\nuclear.exe model list --provider ollama-local
 ```
 
 Start an interactive terminal session like `codex`:
 
 ```powershell
-target\debug\autism.exe
+target\debug\nuclear.exe
 ```
 
 Useful interactive commands:
@@ -164,78 +164,121 @@ Useful interactive commands:
 Start an interactive session with an initial prompt:
 
 ```powershell
-target\debug\autism.exe "Summarize the project status"
+target\debug\nuclear.exe "Summarize the project status"
 ```
 
 Run a prompt non-interactively:
 
 ```powershell
-target\debug\autism.exe exec "Summarize the project status"
-target\debug\autism.exe exec --json --output-schema schema.json --output-last-message final.txt "Return deployment metadata"
-target\debug\autism.exe exec --image diagram.png "Explain this architecture diagram"
+target\debug\nuclear.exe exec "Summarize the project status"
+target\debug\nuclear.exe exec --json --output-schema schema.json --output-last-message final.txt "Return deployment metadata"
+target\debug\nuclear.exe exec --image diagram.png "Explain this architecture diagram"
 ```
 
 Run concurrent subagent tasks on different aliases:
 
 ```powershell
-target\debug\autism.exe run --task claude="Write the backend plan" --task chatgpt="Write the release notes"
+target\debug\nuclear.exe run --task claude="Write the backend plan" --task chatgpt="Write the release notes"
 ```
 
 Run a review prompt non-interactively:
 
 ```powershell
-target\debug\autism.exe review --uncommitted
+target\debug\nuclear.exe review --uncommitted
 ```
 
 Resume or fork a previous terminal session:
 
 ```powershell
-target\debug\autism.exe resume --last
-target\debug\autism.exe fork --last
-target\debug\autism.exe session rename <session-id> "Better title"
+target\debug\nuclear.exe resume --last
+target\debug\nuclear.exe fork --last
+target\debug\nuclear.exe session rename <session-id> "Better title"
 ```
 
 Manage permission presets:
 
 ```powershell
-target\debug\autism.exe permissions
-target\debug\autism.exe permissions full-auto
+target\debug\nuclear.exe permissions
+target\debug\nuclear.exe permissions full-auto
 ```
 
 Register command-backed MCP/app tools:
 
 ```powershell
-target\debug\autism.exe mcp add --id local-shell --name "Local Shell MCP" --description "Bridge tool" --command python --arg scripts\bridge.py --tool-name bridge_tool --schema-file schema.json
-target\debug\autism.exe app add --id docs --name Docs --description "Search docs" --command python --arg scripts\docs.py --tool-name docs_search --schema-file schema.json
-target\debug\autism.exe mcp list
-target\debug\autism.exe app list
+target\debug\nuclear.exe mcp add --id local-shell --name "Local Shell MCP" --description "Bridge tool" --command python --arg scripts\bridge.py --tool-name bridge_tool --schema-file schema.json
+target\debug\nuclear.exe app add --id docs --name Docs --description "Search docs" --command python --arg scripts\docs.py --tool-name docs_search --schema-file schema.json
+target\debug\nuclear.exe mcp list
+target\debug\nuclear.exe app list
 ```
+
+Manage plugins:
+
+```powershell
+target\debug\nuclear.exe plugin install .\examples\echo-plugin --trust
+target\debug\nuclear.exe plugin install .\examples\echo-plugin --trust --grant-network
+target\debug\nuclear.exe plugin install "git+https://example.com/echo-plugin.git" --trust
+target\debug\nuclear.exe plugin install "market:echo-toolkit" --trust
+target\debug\nuclear.exe plugin update echo-toolkit
+target\debug\nuclear.exe plugin list
+target\debug\nuclear.exe plugin doctor
+target\debug\nuclear.exe plugin enable echo-toolkit
+target\debug\nuclear.exe plugin trust echo-toolkit
+target\debug\nuclear.exe plugin grant echo-toolkit --network
+target\debug\nuclear.exe plugin revoke echo-toolkit --network
+```
+
+Plugins are managed packages with an `agent-plugin.json` manifest. Local paths, `git+...` sources, and `market:...` marketplace entries are copied into the daemon data directory, hashed for integrity, and tracked with both a source reference and a resolved source path. Trust review is now tied to the installed package hash, so plugin updates require a fresh review before runtime projection resumes. High-risk plugin capabilities also require explicit grants for `shell`, `network`, and `full_disk`.
+
+Inspect a workspace with coding-focused repo signals:
+
+```powershell
+target\debug\nuclear.exe repo inspect .
+target\debug\nuclear.exe repo inspect . --json
+```
+
+Docs:
+- [`docs/plugins.md`](docs/plugins.md)
+- [`docs/operations.md`](docs/operations.md)
+- [`docs/benchmarks.md`](docs/benchmarks.md)
+- [`docs/reliability.md`](docs/reliability.md)
 
 Inspect and enable local skills:
 
 ```powershell
-target\debug\autism.exe skills list
-target\debug\autism.exe skills enable imagegen
-target\debug\autism.exe skills disable imagegen
+target\debug\nuclear.exe skills list
+target\debug\nuclear.exe skills enable imagegen
+target\debug\nuclear.exe skills disable imagegen
 ```
 
 Generate shell completions:
 
 ```powershell
-target\debug\autism.exe completion powershell
+target\debug\nuclear.exe completion powershell
 ```
 
 Inspect health:
 
 ```powershell
-target\debug\autism.exe doctor
+target\debug\nuclear.exe doctor
 ```
 
 Adjust trust settings without forcing unrelated flags:
 
 ```powershell
-target\debug\autism.exe trust --allow-shell false
-target\debug\autism.exe trust --path "J:\Nuclear AI box\Agent builder"
+target\debug\nuclear.exe trust --allow-shell false
+target\debug\nuclear.exe trust --path "J:\Nuclear AI box\Agent builder"
+```
+
+Run the coding benchmark harness against a built binary and configured local profile:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-bench.ps1 -TaskFile .\benchmarks\coding-smoke\tasks.jsonl
+```
+
+Run the HTTP control-plane soak harness against a live daemon:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-soak.ps1 -Token "<daemon-token>" -Workspace .
 ```
 
 ## Notes
@@ -247,13 +290,13 @@ target\debug\autism.exe trust --path "J:\Nuclear AI box\Agent builder"
 - `provider add-local --kind ollama` now auto-detects installed models when the local server is reachable; pass `--model` to override detection explicitly.
 - `doctor` now validates that each configured default model is actually present on the provider, which is especially useful for local Ollama installs.
 - Tool calls are executed locally by the daemon and currently include directory listing, file search, Codex-style `apply_patch`, file read/write/append/replace, copy/move/delete, recursive filename search, shell execution, environment inspection, git status/diff/log/show, path stat, directory creation, and HTTP fetch/request helpers.
-- Enabled skills are injected into the daemon prompt from `~/.codex/skills/.../SKILL.md`, and MCP/app connectors become dynamic tools when they are enabled and the session is in `full-auto`.
+- Enabled skills are injected into the daemon prompt from `~/.codex/skills/.../SKILL.md`, MCP/app connectors become dynamic tools when they are enabled and the session is in `full-auto`, and trusted managed plugin tools run through the hosted plugin protocol.
 - The interactive terminal loop now supports Codex-style slash commands for help, model alias switching, `fast`/thinking level changes, status, permissions, image attachment management, clipboard copy, session compaction, AGENTS bootstrapping, session rename, review, diff, new chat, resume, and fork.
-- The default terminal experience is now a TUI with transcript, input, help overlay, and searchable session picker; pass `autism chat --no-tui` if you want the original line-mode loop.
+- The default terminal experience is now a TUI with transcript, input, help overlay, and searchable session picker; pass `nuclear chat --no-tui` if you want the original line-mode loop.
 - `AGENTS.md` guidance is loaded automatically from `~/.codex/AGENTS.md` plus any `AGENTS.md` files found from the filesystem root down to the active working directory, with deeper files taking precedence.
 - Interactive `!` commands run directly in the local shell, and `!cd <path>` updates the active working directory for the session without sending that command to the model.
 - Sessions now carry titles and working directories so `session list`, `resume`, `fork`, and the picker can filter current-project history more effectively.
 - `--thinking` is available on the main non-interactive and session commands, and provider adapters now translate thinking levels into provider-native request fields for OpenAI-compatible endpoints, OpenRouter, and Anthropic.
 - Headless `exec` now supports `--json`, `--output-schema`, `--output-last-message`, `--ephemeral`, and image attachments.
 - `Think For Yourself` mode is intentionally dangerous and unlimited once enabled.
-- The daemon auto-start path launches the same `autism` binary in hidden daemon mode rather than relying on a second installed executable.
+- The daemon auto-start path launches the same `nuclear` binary in hidden daemon mode rather than relying on a second installed executable.

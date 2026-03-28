@@ -90,10 +90,10 @@ pub(super) async fn process_discord_connector(
                     if is_new {
                         append_log(
                             state,
-                            "warn",
-                            "discord",
-                            format!(
-                                "discord '{}' requires pairing approval for channel={} user={} (run 'autism discord approvals' to review)",
+                        "warn",
+                        "discord",
+                        format!(
+                                "discord '{}' requires pairing approval for channel={} user={} (run 'nuclear discord approvals' to review)",
                                 connector.id,
                                 approval.external_chat_id.as_deref().unwrap_or("-"),
                                 approval.external_user_id.as_deref().unwrap_or("-")

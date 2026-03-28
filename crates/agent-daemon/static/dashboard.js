@@ -8,15 +8,9 @@ const state = {
   activeChatSessionId: null,
   pendingChatSessionId: null,
   activeTranscript: [],
-  editingProviderId: null,
-  editingConnectorKey: null,
-  providerAuthSessionId: null,
-  providerAuthKind: null,
-  providerAuthWindow: null,
-  providerAuthPollTimer: null,
-  providerAuthStatusMessage: "",
-  providerAuthStatusTone: "neutral",
-  providerAutoDefaults: null,
+  activeSessionResumePacket: null,
+  sessionDetailPacket: null,
+  sessionDetailSessionId: null,
   lazyObserver: null,
   loadedPanels: new Set(),
   renderCache: {},
@@ -24,6 +18,73 @@ const state = {
   healthInFlight: null,
   panelInFlight: {},
   chatRunInFlight: false,
+  controlSocket: null,
+  controlSocketReady: false,
+  controlSocketPromise: null,
+  controlSocketRequests: new Map(),
+  controlRequestCounter: 0,
+  controlRefreshTimer: null,
+  controlSocketClosing: false,
+  activeDashboardTab: "overview",
+  chatAttachments: [],
+  chatCwd: "",
+  consoleEntries: [],
+};
+
+const DASHBOARD_TAB_STORAGE_KEY = "dashboardActiveTab";
+const DASHBOARD_TABS = [
+  {
+    id: "overview",
+    label: "Overview",
+    panels: ["overview", "workspace", "setup", "controls"],
+  },
+  {
+    id: "chat",
+    label: "Chat",
+    panels: ["run-task", "sessions"],
+  },
+  {
+    id: "operations",
+    label: "Operations",
+    panels: ["missions", "approvals", "memory", "skills", "profile", "memory-tools", "events"],
+  },
+  {
+    id: "integrations",
+    label: "Integrations",
+    panels: ["connectors", "providers", "plugins", "delegation", "mcp"],
+  },
+  {
+    id: "system",
+    label: "System",
+    panels: ["permissions", "logs", "daemon-config", "advanced"],
+  },
+];
+const PANEL_TO_TAB = Object.fromEntries(
+  DASHBOARD_TABS.flatMap((tab) => tab.panels.map((panelId) => [panelId, tab.id]))
+);
+const PANEL_LABELS = {
+  overview: "Overview",
+  workspace: "Workspace",
+  setup: "Setup",
+  controls: "Controls",
+  missions: "Missions",
+  approvals: "Approvals",
+  memory: "Memory Review",
+  skills: "Skills",
+  profile: "Profile",
+  "memory-tools": "Memory Tools",
+  events: "Events",
+  connectors: "Connectors",
+  providers: "Providers",
+  plugins: "Plugins",
+  delegation: "Delegation",
+  mcp: "MCP",
+  permissions: "Permissions",
+  logs: "Logs",
+  "daemon-config": "Daemon Config",
+  advanced: "Advanced",
+  "run-task": "Chat",
+  sessions: "Sessions",
 };
 
 const elements = {
@@ -62,43 +123,10 @@ const elements = {
   profileList: document.getElementById("profile-list"),
   connectorSummary: document.getElementById("connector-summary"),
   connectorCards: document.getElementById("connector-cards"),
-  connectorsBody: document.getElementById("connectors-body"),
   delegationSummary: document.getElementById("delegation-summary"),
   delegationList: document.getElementById("delegation-list"),
   eventsSummary: document.getElementById("events-summary"),
   eventsList: document.getElementById("events-list"),
-  providersSummary: document.getElementById("providers-summary"),
-  providersList: document.getElementById("providers-list"),
-  providerFormMode: document.getElementById("provider-form-mode"),
-  providerForm: document.getElementById("provider-form"),
-  providerPreset: document.getElementById("provider-preset"),
-  providerId: document.getElementById("provider-id"),
-  providerName: document.getElementById("provider-name"),
-  providerKind: document.getElementById("provider-kind"),
-  providerBaseUrl: document.getElementById("provider-base-url"),
-  providerAuthMode: document.getElementById("provider-auth-mode"),
-  providerDefaultModel: document.getElementById("provider-default-model"),
-  providerLocal: document.getElementById("provider-local"),
-  providerApiKey: document.getElementById("provider-api-key"),
-  providerOauthConfig: document.getElementById("provider-oauth-config"),
-  providerOauthToken: document.getElementById("provider-oauth-token"),
-  providerAliasName: document.getElementById("provider-alias-name"),
-  providerAliasModel: document.getElementById("provider-alias-model"),
-  providerAliasDescription: document.getElementById("provider-alias-description"),
-  providerSetMainRow: document.getElementById("provider-set-main-row"),
-  providerSetMain: document.getElementById("provider-set-main"),
-  providerBrowserAuth: document.getElementById("provider-browser-auth"),
-  providerBrowserAuthStatus: document.getElementById("provider-browser-auth-status"),
-  providerDiscoverModels: document.getElementById("provider-discover-models"),
-  providerReset: document.getElementById("provider-reset"),
-  providerModelResults: document.getElementById("provider-model-results"),
-  aliasesList: document.getElementById("aliases-list"),
-  aliasForm: document.getElementById("alias-form"),
-  aliasName: document.getElementById("alias-name"),
-  aliasProvider: document.getElementById("alias-provider"),
-  aliasModel: document.getElementById("alias-model"),
-  aliasDescription: document.getElementById("alias-description"),
-  aliasMain: document.getElementById("alias-main"),
   memorySearchForm: document.getElementById("memory-search-form"),
   memorySearchQuery: document.getElementById("memory-search-query"),
   memorySearchResults: document.getElementById("memory-search-results"),
@@ -107,6 +135,9 @@ const elements = {
   memoryCreateScope: document.getElementById("memory-create-scope"),
   memoryCreateSubject: document.getElementById("memory-create-subject"),
   memoryCreateContent: document.getElementById("memory-create-content"),
+  memoryRebuildForm: document.getElementById("memory-rebuild-form"),
+  memoryRebuildSessionId: document.getElementById("memory-rebuild-session-id"),
+  memoryRebuildEmbeddings: document.getElementById("memory-rebuild-embeddings"),
   permissionsSummary: document.getElementById("permissions-summary"),
   permissionPresetActions: document.getElementById("permission-preset-actions"),
   permissionsDetails: document.getElementById("permissions-details"),
@@ -118,22 +149,12 @@ const elements = {
   delegationMaxDepth: document.getElementById("delegation-max-depth"),
   delegationMaxParallel: document.getElementById("delegation-max-parallel"),
   delegationDisabledProviders: document.getElementById("delegation-disabled-providers"),
-  connectorAddForm: document.getElementById("connector-add-form"),
-  connectorAddType: document.getElementById("connector-add-type"),
-  connectorAddName: document.getElementById("connector-add-name"),
-  connectorAddId: document.getElementById("connector-add-id"),
-  connectorAddDescription: document.getElementById("connector-add-description"),
-  connectorAddAlias: document.getElementById("connector-add-alias"),
-  connectorAddModel: document.getElementById("connector-add-model"),
-  connectorAddCwd: document.getElementById("connector-add-cwd"),
-  connectorAddEnabled: document.getElementById("connector-add-enabled"),
-  connectorAddFields: document.getElementById("connector-add-fields"),
-  connectorReset: document.getElementById("connector-reset"),
   runTaskForm: document.getElementById("run-task-form"),
   runTaskPrompt: document.getElementById("run-task-prompt"),
   runTaskAlias: document.getElementById("run-task-alias"),
   runTaskModel: document.getElementById("run-task-model"),
   runTaskThinking: document.getElementById("run-task-thinking"),
+  runTaskMode: document.getElementById("run-task-mode"),
   runTaskPermission: document.getElementById("run-task-permission"),
   runTaskResult: document.getElementById("run-task-result"),
   chatSessionMeta: document.getElementById("chat-session-meta"),
@@ -158,6 +179,22 @@ const elements = {
   daemonConfigSummary: document.getElementById("daemon-config-summary"),
   daemonPersistenceActions: document.getElementById("daemon-persistence-actions"),
   daemonAutostartActions: document.getElementById("daemon-autostart-actions"),
+  dashboardTabLinks: document.getElementById("dashboard-tab-links"),
+  dashboardTabButtons: Array.from(document.querySelectorAll("[data-dashboard-tab-trigger]")),
+  chatForkButton: document.getElementById("chat-fork-button"),
+  chatCompactButton: document.getElementById("chat-compact-button"),
+  chatStatusShortcut: document.getElementById("chat-status-shortcut"),
+  chatDiffShortcut: document.getElementById("chat-diff-shortcut"),
+  chatReviewShortcut: document.getElementById("chat-review-shortcut"),
+  chatCopyShortcut: document.getElementById("chat-copy-shortcut"),
+  chatCwd: document.getElementById("chat-cwd"),
+  chatUseDaemonCwd: document.getElementById("chat-use-daemon-cwd"),
+  chatUseSessionCwd: document.getElementById("chat-use-session-cwd"),
+  chatUseWorkspaceCwd: document.getElementById("chat-use-workspace-cwd"),
+  chatAttachmentPath: document.getElementById("chat-attachment-path"),
+  chatAttachmentAdd: document.getElementById("chat-attachment-add"),
+  chatAttachments: document.getElementById("chat-attachments"),
+  chatAttachmentsClear: document.getElementById("chat-attachments-clear"),
 };
 
 function bearerHeaders() {
@@ -221,6 +258,122 @@ function apiPut(path, payload) {
 
 function apiDelete(path) {
   return apiRequest(path, { method: "DELETE" });
+}
+
+function saveActiveDashboardTab(tabId) {
+  try {
+    window.localStorage.setItem(DASHBOARD_TAB_STORAGE_KEY, tabId);
+  } catch (_) {
+  }
+}
+
+function loadActiveDashboardTab() {
+  try {
+    const saved = window.localStorage.getItem(DASHBOARD_TAB_STORAGE_KEY);
+    return DASHBOARD_TABS.some((tab) => tab.id === saved) ? saved : "overview";
+  } catch (_) {
+    return "overview";
+  }
+}
+
+function tabDefinition(tabId) {
+  return DASHBOARD_TABS.find((tab) => tab.id === tabId) || DASHBOARD_TABS[0];
+}
+
+function panelElement(panelId) {
+  return document.getElementById(panelId);
+}
+
+function updateDashboardTabButtons() {
+  elements.dashboardTabButtons.forEach((button) => {
+    const active = button.dataset.dashboardTabTrigger === state.activeDashboardTab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+}
+
+function renderDashboardTabLinks() {
+  const container = elements.dashboardTabLinks;
+  if (!container) {
+    return;
+  }
+  const tab = tabDefinition(state.activeDashboardTab);
+  container.innerHTML = tab.panels
+    .map(
+      (panelId) => `
+        <a href="#${panelId}" class="${window.location.hash === `#${panelId}` ? "is-active" : ""}">${escapeHtml(
+          PANEL_LABELS[panelId] || panelId
+        )}</a>
+      `
+    )
+    .join("");
+}
+
+function updateDashboardPanelVisibility() {
+  document.querySelectorAll("[data-dashboard-tab]").forEach((panel) => {
+    panel.hidden = panel.dataset.dashboardTab !== state.activeDashboardTab;
+  });
+}
+
+function forcePanelsForTab(tabId) {
+  return tabDefinition(tabId).panels.filter((panelId) => lazyPanelLoaders[panelId]);
+}
+
+function activateDashboardTab(tabId, { persist = true, scrollToTop = false } = {}) {
+  const tab = tabDefinition(tabId);
+  state.activeDashboardTab = tab.id;
+  updateDashboardTabButtons();
+  updateDashboardPanelVisibility();
+  renderDashboardTabLinks();
+  if (persist) {
+    saveActiveDashboardTab(tab.id);
+  }
+  if (scrollToTop) {
+    document.querySelector(".dashboard-nav")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  if (hasDashboardAuth()) {
+    refreshLoadedPanels(forcePanelsForTab(tab.id)).catch((error) => {
+      setStatus(`Panel load failed: ${error.message}`, "warn");
+    });
+  }
+}
+
+function activateTabForPanel(panelId) {
+  const tabId = PANEL_TO_TAB[panelId];
+  if (tabId) {
+    activateDashboardTab(tabId, { persist: true });
+  }
+}
+
+window.dashboardApp = {
+  apiDelete,
+  apiGet,
+  apiPost,
+  apiPut,
+  activateTab: activateDashboardTab,
+  getLastData: () => state.lastData,
+  hasDashboardAuth,
+  focusSection,
+  quickStartProvider,
+  refreshDashboard,
+  renderEmpty,
+  setStatus,
+  updateMainAlias,
+};
+
+function focusSection(id) {
+  activateTabForPanel(id);
+  renderDashboardTabLinks();
+  ensurePanelLoaded(id).catch(() => {});
+  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function quickStartProvider(presetKey) {
+  if (window.dashboardProviders?.quickStart) {
+    await window.dashboardProviders.quickStart(presetKey);
+    return;
+  }
+  focusSection("providers");
 }
 
 async function apiStream(path, payload, onEvent) {
@@ -291,459 +444,16 @@ async function createDashboardSession(token) {
   state.dashboardSessionAuthenticated = true;
   state.token = "";
   elements.tokenInput.value = "";
+  closeControlSocket({ rejectMessage: "Dashboard session was replaced." });
 }
 
 async function clearDashboardSession() {
+  closeControlSocket({ rejectMessage: "Dashboard session ended." });
   await fetch("/auth/dashboard/session", {
     method: "DELETE",
     credentials: "same-origin",
   });
   state.dashboardSessionAuthenticated = false;
-}
-
-const providerPresets = {
-  codex: {
-    id: "codex",
-    name: "ChatGPT Codex",
-    kind: "chat_gpt_codex",
-    baseUrl: "https://chatgpt.com/backend-api/codex",
-    authMode: "oauth",
-    defaultModel: "gpt-5-codex",
-    local: false,
-    browserAuthKind: "codex",
-    browserAuthLabel: "Codex",
-  },
-  openai: {
-    id: "openai",
-    name: "OpenAI",
-    kind: "open_ai_compatible",
-    baseUrl: "https://api.openai.com/v1",
-    authMode: "api_key",
-    defaultModel: "gpt-5",
-    local: false,
-  },
-  anthropic: {
-    id: "anthropic",
-    name: "Claude",
-    kind: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    authMode: "api_key",
-    defaultModel: "claude-sonnet-4-20250514",
-    local: false,
-    browserAuthKind: "claude",
-    browserAuthLabel: "Claude",
-  },
-  openrouter: {
-    id: "openrouter",
-    name: "OpenRouter",
-    kind: "open_ai_compatible",
-    baseUrl: "https://openrouter.ai/api/v1",
-    authMode: "api_key",
-    defaultModel: "openai/gpt-4.1",
-    local: false,
-  },
-  moonshot: {
-    id: "moonshot",
-    name: "Moonshot",
-    kind: "open_ai_compatible",
-    baseUrl: "https://api.moonshot.ai/v1",
-    authMode: "api_key",
-    defaultModel: "kimi-k2",
-    local: false,
-  },
-  venice: {
-    id: "venice",
-    name: "Venice AI",
-    kind: "open_ai_compatible",
-    baseUrl: "https://api.venice.ai/api/v1",
-    authMode: "api_key",
-    defaultModel: "venice-large",
-    local: false,
-  },
-  ollama: {
-    id: "ollama-local",
-    name: "Ollama",
-    kind: "ollama",
-    baseUrl: "http://127.0.0.1:11434",
-    authMode: "none",
-    defaultModel: null,
-    local: true,
-  },
-  custom: {
-    id: "",
-    name: "",
-    kind: "open_ai_compatible",
-    baseUrl: "",
-    authMode: "api_key",
-    defaultModel: null,
-    local: false,
-  },
-};
-
-function trimToNull(value) {
-  const trimmed = String(value ?? "").trim();
-  return trimmed ? trimmed : null;
-}
-
-function providerBrowserAuthLabel(kind) {
-  return kind === "claude" ? "Claude" : "Codex";
-}
-
-function suggestedProviderDefaultModel(kind, baseUrl) {
-  const normalizedBaseUrl = String(baseUrl ?? "").trim();
-  if (kind === "chat_gpt_codex") {
-    return "gpt-5-codex";
-  }
-  if (kind === "anthropic") {
-    return "claude-sonnet-4-20250514";
-  }
-  if (kind === "open_ai_compatible") {
-    if (normalizedBaseUrl === "https://api.openai.com/v1") {
-      return "gpt-5";
-    }
-    if (normalizedBaseUrl === "https://openrouter.ai/api/v1") {
-      return "openai/gpt-4.1";
-    }
-    if (normalizedBaseUrl === "https://api.moonshot.ai/v1") {
-      return "kimi-k2";
-    }
-    if (normalizedBaseUrl === "https://api.venice.ai/api/v1") {
-      return "venice-large";
-    }
-  }
-  return null;
-}
-
-function resolveProviderDefaultModel() {
-  return (
-    trimToNull(elements.providerDefaultModel.value) ||
-    suggestedProviderDefaultModel(elements.providerKind.value, elements.providerBaseUrl.value)
-  );
-}
-
-function applySuggestedProviderModelDefaults() {
-  const suggestedModel = resolveProviderDefaultModel();
-  if (suggestedModel && !trimToNull(elements.providerDefaultModel.value)) {
-    elements.providerDefaultModel.value = suggestedModel;
-  }
-  if (
-    suggestedModel &&
-    trimToNull(elements.providerAliasName.value) &&
-    !trimToNull(elements.providerAliasModel.value)
-  ) {
-    elements.providerAliasModel.value = suggestedModel;
-  }
-  return suggestedModel;
-}
-
-function isProviderCreateMode() {
-  return !state.editingProviderId;
-}
-
-function syncProviderModeUi() {
-  const createMode = isProviderCreateMode();
-  elements.providerFormMode.textContent = createMode
-    ? "Create a new provider without replacing existing logged-in providers or aliases."
-    : `Editing provider ${state.editingProviderId}`;
-  elements.providerReset.textContent = createMode ? "Reset" : "Create new";
-  elements.providerId.readOnly = !createMode;
-  if (elements.providerSetMainRow) {
-    elements.providerSetMainRow.hidden = createMode;
-  }
-  if (createMode) {
-    elements.providerSetMain.checked = false;
-  }
-}
-
-function providerSuggestionRequest() {
-  const preset = providerPresets[elements.providerPreset.value] || providerPresets.custom;
-  return {
-    preferred_provider_id:
-      trimToNull(elements.providerId.value) || preset.id || "provider",
-    preferred_alias_name: trimToNull(elements.providerAliasName.value),
-    default_model: resolveProviderDefaultModel(),
-    editing_provider_id: state.editingProviderId || null,
-    editing_alias_name: state.editingProviderId ? trimToNull(elements.providerAliasName.value) : null,
-  };
-}
-
-function applyProviderSuggestions(suggestions) {
-  const previous = state.providerAutoDefaults;
-  state.providerAutoDefaults = suggestions;
-  if (!isProviderCreateMode()) {
-    return;
-  }
-
-  const currentProviderId = trimToNull(elements.providerId.value);
-  if (!currentProviderId || (previous && currentProviderId === previous.provider_id)) {
-    elements.providerId.value = suggestions.provider_id || "";
-  }
-
-  const currentAliasName = trimToNull(elements.providerAliasName.value);
-  const previousAliasName = previous?.alias_name || null;
-  if (!currentAliasName || currentAliasName === previousAliasName) {
-    elements.providerAliasName.value = suggestions.alias_name || "";
-  }
-
-  const currentAliasModel = trimToNull(elements.providerAliasModel.value);
-  const previousAliasModel = previous?.alias_model || null;
-  if (!currentAliasModel || currentAliasModel === previousAliasModel) {
-    elements.providerAliasModel.value = suggestions.alias_model || "";
-  }
-}
-
-async function refreshProviderCreateSuggestions() {
-  if (!isProviderCreateMode()) {
-    state.providerAutoDefaults = null;
-    syncProviderModeUi();
-    return null;
-  }
-  if (!hasDashboardAuth()) {
-    state.providerAutoDefaults = null;
-    syncProviderModeUi();
-    return null;
-  }
-  const suggestions = await apiPost("/v1/providers/suggest", providerSuggestionRequest());
-  applyProviderSuggestions(suggestions);
-  syncProviderModeUi();
-  return suggestions;
-}
-
-async function resolveProviderFormSubmission() {
-  const createMode = isProviderCreateMode();
-  const requestedProviderId = trimToNull(elements.providerId.value);
-  const requestedAliasName = trimToNull(elements.providerAliasName.value);
-  let defaultModel = applySuggestedProviderModelDefaults();
-  let providerId = requestedProviderId;
-  let aliasName = requestedAliasName;
-  let aliasModel = trimToNull(elements.providerAliasModel.value) || (aliasName ? defaultModel : null);
-  const displayName = trimToNull(elements.providerName.value);
-
-  if (createMode) {
-    const suggestions = await apiPost("/v1/providers/suggest", providerSuggestionRequest());
-    applyProviderSuggestions(suggestions);
-    providerId = suggestions.provider_id;
-    aliasName = suggestions.alias_name;
-    aliasModel = suggestions.alias_model;
-    defaultModel = suggestions.alias_model || defaultModel;
-
-    const providerAdjusted =
-      requestedProviderId !== providerId;
-    const aliasAdjusted =
-      (requestedAliasName || null) !== aliasName;
-    if (providerAdjusted || aliasAdjusted) {
-      setStatus(
-        `Using safe multi-provider defaults for ${displayName || providerId}.`,
-        "neutral"
-      );
-    }
-  }
-
-  if (!providerId || !displayName) {
-    throw new Error("Provider ID and display name are required.");
-  }
-  if (aliasName && !aliasModel) {
-    throw new Error("Set a default model or alias model before creating an alias.");
-  }
-
-  let setAsMain = false;
-  if (aliasName) {
-    if (createMode) {
-      setAsMain = window.confirm(`Make '${aliasName}' the default alias?`);
-    } else {
-      setAsMain = elements.providerSetMain.checked;
-    }
-  }
-
-  return {
-    providerId,
-    displayName,
-    defaultModel,
-    aliasName,
-    aliasModel,
-    setAsMain,
-  };
-}
-
-function currentProviderBrowserAuthDescriptor() {
-  const preset = providerPresets[elements.providerPreset.value] || providerPresets.custom;
-  if (!state.editingProviderId && preset.browserAuthKind) {
-    return {
-      kind: preset.browserAuthKind,
-      label: preset.browserAuthLabel || providerBrowserAuthLabel(preset.browserAuthKind),
-    };
-  }
-  if (elements.providerKind.value === "chat_gpt_codex") {
-    return { kind: "codex", label: "Codex" };
-  }
-  if (elements.providerKind.value === "anthropic") {
-    return { kind: "claude", label: "Claude" };
-  }
-  return null;
-}
-
-function renderProviderBrowserAuthState() {
-  const descriptor = currentProviderBrowserAuthDescriptor();
-  const activeKind = state.providerAuthKind || descriptor?.kind || null;
-  const activeLabel = activeKind ? providerBrowserAuthLabel(activeKind) : "browser";
-  const isPending = !!state.providerAuthSessionId;
-  elements.providerBrowserAuth.textContent = isPending
-    ? `Waiting for ${activeLabel}...`
-    : descriptor
-      ? `Sign in with ${descriptor.label}`
-      : "Sign in with browser";
-  elements.providerBrowserAuth.disabled = !hasDashboardAuth() || isPending || !descriptor;
-  const fallbackMessage = descriptor
-    ? `${descriptor.label} browser sign-in will save credentials directly into this provider.`
-    : "Browser sign-in is available for ChatGPT Codex and Claude providers.";
-  elements.providerBrowserAuthStatus.textContent =
-    state.providerAuthStatusMessage || fallbackMessage;
-  elements.providerBrowserAuthStatus.dataset.tone =
-    state.providerAuthStatusTone || "neutral";
-}
-
-function setProviderBrowserAuthStatus(message, tone = "neutral") {
-  state.providerAuthStatusMessage = message;
-  state.providerAuthStatusTone = tone;
-  renderProviderBrowserAuthState();
-}
-
-function clearProviderBrowserAuthPolling() {
-  if (state.providerAuthPollTimer) {
-    clearInterval(state.providerAuthPollTimer);
-    state.providerAuthPollTimer = null;
-  }
-}
-
-function clearProviderSecretInputs() {
-  elements.providerApiKey.value = "";
-  elements.providerOauthToken.value = "";
-}
-
-async function pollProviderBrowserAuthSession(sessionId, { refresh = true } = {}) {
-  const session = await apiGet(`/v1/provider-auth/${encodeURIComponent(sessionId)}`);
-  if (state.providerAuthSessionId && state.providerAuthSessionId !== sessionId) {
-    return session;
-  }
-  if (session.status === "pending") {
-    const label = providerBrowserAuthLabel(session.kind);
-    setProviderBrowserAuthStatus(
-      `Continue the ${label} sign-in flow in the popup window.`,
-      "neutral"
-    );
-    return session;
-  }
-
-  clearProviderBrowserAuthPolling();
-  state.providerAuthSessionId = null;
-  state.providerAuthKind = null;
-  state.providerAuthWindow = null;
-  if (session.status === "completed") {
-    clearProviderSecretInputs();
-    state.editingProviderId = session.provider_id;
-    setProviderBrowserAuthStatus(
-      `${providerBrowserAuthLabel(session.kind)} credentials saved for ${session.provider_id}.`,
-      "ok"
-    );
-    if (refresh) {
-      await refreshDashboard({ includeLoadedPanels: false });
-      try {
-        populateProviderForm(session.provider_id);
-      } catch (_) {
-      }
-    }
-  } else {
-    setProviderBrowserAuthStatus(
-      session.error || `${providerBrowserAuthLabel(session.kind)} sign-in failed.`,
-      "warn"
-    );
-  }
-  renderProviderBrowserAuthState();
-  return session;
-}
-
-function startProviderBrowserAuthPolling(sessionId) {
-  clearProviderBrowserAuthPolling();
-  state.providerAuthPollTimer = window.setInterval(() => {
-    pollProviderBrowserAuthSession(sessionId, { refresh: true }).catch((error) => {
-      setProviderBrowserAuthStatus(`Browser sign-in check failed: ${error.message}`, "warn");
-      clearProviderBrowserAuthPolling();
-      state.providerAuthSessionId = null;
-      state.providerAuthKind = null;
-      state.providerAuthWindow = null;
-      renderProviderBrowserAuthState();
-    });
-  }, 1500);
-}
-
-async function startProviderBrowserAuth() {
-  const descriptor = currentProviderBrowserAuthDescriptor();
-  if (!descriptor) {
-    throw new Error("Browser sign-in is only available for Claude and Codex providers.");
-  }
-  const submission = await resolveProviderFormSubmission();
-  const { providerId, displayName, defaultModel, aliasName, aliasModel, setAsMain } = submission;
-
-  const popup = window.open(
-    "",
-    `provider-auth-${Date.now()}`,
-    "popup=yes,width=720,height=840"
-  );
-  if (!popup) {
-    throw new Error("The browser blocked the sign-in popup.");
-  }
-  popup.document.title = `Starting ${descriptor.label} sign-in`;
-  popup.document.body.innerHTML =
-    "<main><h1>Starting sign-in...</h1><p>The daemon is preparing the provider authorization flow.</p></main>";
-
-  setProviderBrowserAuthStatus(`Starting ${descriptor.label} browser sign-in...`, "neutral");
-  try {
-    const response = await apiPost("/v1/provider-auth/start", {
-      kind: descriptor.kind,
-      provider_id: providerId,
-      display_name: displayName,
-      default_model: defaultModel,
-      alias_name: aliasName,
-      alias_model: aliasModel,
-      alias_description: trimToNull(elements.providerAliasDescription.value),
-      set_as_main: setAsMain,
-    });
-    if (response.status === "completed") {
-      popup.close();
-      state.providerAuthSessionId = null;
-      state.providerAuthKind = null;
-      state.providerAuthWindow = null;
-      setProviderBrowserAuthStatus(
-        `${descriptor.label} credentials saved for ${providerId}.`,
-        "ok"
-      );
-      await refreshDashboard({ includeLoadedPanels: false });
-      populateProviderForm(providerId);
-      return;
-    }
-    if (!response.authorization_url) {
-      popup.close();
-      throw new Error("The daemon did not return an authorization URL.");
-    }
-    state.providerAuthSessionId = response.session_id;
-    state.providerAuthKind = descriptor.kind;
-    state.providerAuthWindow = popup;
-    popup.location.replace(response.authorization_url);
-    setProviderBrowserAuthStatus(
-      `Continue the ${descriptor.label} sign-in flow in the popup window.`,
-      "neutral"
-    );
-    renderProviderBrowserAuthState();
-    startProviderBrowserAuthPolling(response.session_id);
-  } catch (error) {
-    popup.close();
-    clearProviderBrowserAuthPolling();
-    state.providerAuthSessionId = null;
-    state.providerAuthKind = null;
-    state.providerAuthWindow = null;
-    setProviderBrowserAuthStatus(`Browser sign-in failed: ${error.message}`, "warn");
-    throw error;
-  }
 }
 
 function escapeHtml(value) {
@@ -838,9 +548,6 @@ const ACTION_DATASET_KEYS = new Set([
   "autopilot",
   "autonomy",
   "evolve",
-  "connectorToggle",
-  "connectorEdit",
-  "connectorPoll",
   "providerEdit",
   "providerModels",
   "providerClearCreds",
@@ -848,14 +555,15 @@ const ACTION_DATASET_KEYS = new Set([
   "aliasEdit",
   "aliasMakeMain",
   "aliasDelete",
-  "connectorDelete",
   "permissionPreset",
   "trustFlag",
   "memoryDelete",
   "useModel",
   "sessionView",
   "sessionUse",
+  "sessionFork",
   "sessionRename",
+  "chatAttachmentRemove",
   "mcpDelete",
   "daemonPersistence",
   "daemonAutostart",
@@ -902,6 +610,143 @@ function findActionTarget(start) {
 
 function renderEmpty(message) {
   return `<div class="empty-state">${escapeHtml(message)}</div>`;
+}
+
+function formatMemoryEvidence(memory, limit = 2) {
+  const refs = Array.isArray(memory?.evidence_refs) ? memory.evidence_refs : [];
+  if (!refs.length) {
+    return memory?.source_session_id ? `source session ${memory.source_session_id}` : "no evidence refs";
+  }
+  const parts = refs.slice(0, limit).map((ref) => {
+    const pieces = [];
+    if (ref.session_id) {
+      pieces.push(`session ${ref.session_id}`);
+    }
+    if (ref.role) {
+      pieces.push(String(ref.role));
+    }
+    if (ref.tool_name) {
+      pieces.push(`tool ${ref.tool_name}`);
+    }
+    if (ref.tool_call_id) {
+      pieces.push(`call ${ref.tool_call_id}`);
+    }
+    if (ref.message_id) {
+      pieces.push(`msg ${ref.message_id}`);
+    }
+    return pieces.join(" / ") || "evidence";
+  });
+  if (refs.length > limit) {
+    parts.push(`+${refs.length - limit} more`);
+  }
+  return parts.join(" | ");
+}
+
+function renderMemoryProvenance(memory) {
+  const items = [];
+  if (memory.observation_source) {
+    items.push(`observation: ${memory.observation_source}`);
+  }
+  if (memory.source_session_id) {
+    items.push(`session: ${memory.source_session_id}`);
+  }
+  if (memory.source_message_id) {
+    items.push(`message: ${memory.source_message_id}`);
+  }
+  items.push(`evidence: ${formatMemoryEvidence(memory)}`);
+  return items;
+}
+
+function renderMemoryCard(memory, { actions = "", showReview = true } = {}) {
+  const provenance = renderMemoryProvenance(memory);
+  return `
+    <article class="stack-card">
+      <div class="card-title-row">
+        <div>
+          <h3>${escapeHtml(memory.subject)}</h3>
+          <p class="card-subtitle">${escapeHtml(memory.kind)} · ${escapeHtml(memory.scope)}</p>
+        </div>
+        ${badge(`confidence ${fmt(memory.confidence)}`, memory.confidence >= 80 ? "good" : "warn")}
+      </div>
+      <p class="card-copy">${escapeHtml(memory.content)}</p>
+      <ul class="micro-list">
+        ${provenance.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        <li>workspace: ${escapeHtml(fmt(memory.workspace_key))}</li>
+        <li>provider: ${escapeHtml(fmt(memory.provider_id))}</li>
+        <li>updated: ${escapeHtml(fmtDate(memory.updated_at))}</li>
+      </ul>
+      ${
+        showReview
+          ? `<div class="inline-actions">
+              ${actions}
+            </div>`
+          : ""
+      }
+    </article>
+  `;
+}
+
+function renderSessionResumePacket(packet) {
+  if (!packet) {
+    return renderEmpty("No session selected.");
+  }
+  const linkedMemories = Array.isArray(packet.linked_memories) ? packet.linked_memories : [];
+  const relatedHits = Array.isArray(packet.related_transcript_hits) ? packet.related_transcript_hits : [];
+  return `
+    <article class="stack-card stack-card--resume">
+      <div class="card-title-row">
+        <div>
+          <h3>${escapeHtml(packet.session?.title || packet.session?.id || "Session")}</h3>
+          <p class="card-subtitle">${escapeHtml(packet.session?.alias || "-")} · ${escapeHtml(packet.session?.model || "-")}</p>
+        </div>
+        ${badge(packet.session?.task_mode || "default", packet.session?.task_mode === "build" ? "good" : packet.session?.task_mode === "daily" ? "info" : "neutral")}
+      </div>
+      <ul class="micro-list">
+        <li>session: ${escapeHtml(fmt(packet.session?.id))}</li>
+        <li>provider: ${escapeHtml(fmt(packet.session?.provider_id))}</li>
+        <li>cwd: ${escapeHtml(fmt(packet.session?.cwd))}</li>
+        <li>messages: ${escapeHtml(fmt(packet.session?.message_count))}</li>
+        <li>generated: ${escapeHtml(fmtDate(packet.generated_at))}</li>
+      </ul>
+      <div class="resume-section">
+        <h4>Recent messages</h4>
+        ${renderConversationThread(packet.recent_messages || [], "No recent messages available.")}
+      </div>
+      <div class="resume-section">
+        <h4>Linked memories</h4>
+        ${
+          linkedMemories.length
+            ? linkedMemories
+                .map((memory) => renderMemoryCard(memory, { actions: "", showReview: false }))
+                .join("")
+            : renderEmpty("No linked memories.")
+        }
+      </div>
+      <div class="resume-section">
+        <h4>Related transcript hits</h4>
+        ${
+          relatedHits.length
+            ? relatedHits
+                .map(
+                  (hit) => `
+                    <article class="stack-card stack-card--compact">
+                      <div class="card-title-row">
+                        <div>
+                          <h4>${escapeHtml(hit.session_id)}</h4>
+                          <p class="card-subtitle">${escapeHtml(hit.role || "-")} · ${escapeHtml(fmtDate(hit.created_at))}</p>
+                        </div>
+                        ${badge("hit", "info")}
+                      </div>
+                      <p class="card-copy">${escapeHtml(hit.preview)}</p>
+                    </article>
+                  `
+                )
+                .join("")
+            : renderEmpty("No related transcript hits.")
+        }
+      </div>
+    </article>
+  `;
 }
 
 function stableKey(value) {
@@ -958,6 +803,7 @@ function renderStatus(status) {
       status.skill_drafts,
       `${status.published_skills} published`,
     ],
+    ["Plugins", status.plugins || 0, "managed local packages"],
     ["Approvals", status.pending_connector_approvals, "connector gate queue"],
     [
       "Connectors",
@@ -1019,6 +865,7 @@ function renderStatus(status) {
     heroChip(`Memories: ${status.memories}`),
     heroChip(`Memory review: ${status.pending_memory_reviews}`),
     heroChip(`Skills: ${status.skill_drafts}/${status.published_skills} published`),
+    heroChip(`Plugins: ${status.plugins || 0}`),
     heroChip(`Approvals: ${status.pending_connector_approvals}`),
   ].join("");
 }
@@ -1274,37 +1121,6 @@ function renderProfile(profileMemories) {
     : renderEmpty("No profile memories yet.");
 }
 
-function connectorRow(kind, connector, target, detail, pollable, path) {
-  const actions = [
-    buttonHtml("Edit", { connectorEdit: `${kind}:${connector.id}` }, "button-ghost"),
-    buttonHtml(
-      connector.enabled ? "Disable" : "Enable",
-      { connectorToggle: `${kind}:${connector.id}` },
-      connector.enabled ? "button-small--ghost" : ""
-    ),
-    pollable ? buttonHtml("Poll", { connectorPoll: `${kind}:${connector.id}` }, "button-muted") : "",
-    buttonHtml("Delete", { connectorDelete: `${kind}:${connector.id}` }, "button-small--ghost"),
-  ]
-    .filter(Boolean)
-    .join("");
-  return `
-    <tr>
-      <td>${escapeHtml(kind)}</td>
-      <td>
-        <strong>${escapeHtml(connector.name)}</strong>
-        <div class="table-sub mono">${escapeHtml(connector.id)}</div>
-      </td>
-      <td>${badge(connector.enabled ? "enabled" : "disabled", connector.enabled ? "good" : "warn")}</td>
-      <td>${escapeHtml(fmt(target))}</td>
-      <td>
-        <div>${escapeHtml(fmt(detail))}</div>
-        <div class="table-sub">${escapeHtml(fmt(path))}</div>
-      </td>
-      <td><div class="inline-actions">${actions}</div></td>
-    </tr>
-  `;
-}
-
 function renderConnectors(
   status,
   telegrams,
@@ -1317,127 +1133,23 @@ function renderConnectors(
   gmails,
   braves
 ) {
-  gmails = gmails || [];
-  braves = braves || [];
-  const cards = [
-    ["Telegram", status.telegram_connectors],
-    ["Discord", status.discord_connectors],
-    ["Slack", status.slack_connectors],
-    ["Signal", status.signal_connectors],
-    ["Home Assistant", status.home_assistant_connectors],
-    ["Webhooks", status.webhook_connectors],
-    ["Inboxes", status.inbox_connectors],
-    ["Gmail", gmails.length],
-    ["Brave", braves.length],
-  ];
-  elements.connectorCards.innerHTML = cards
-    .map(
-      ([label, value]) => `
-        <article class="stat-card">
-          <p class="stat-card__label">${escapeHtml(label)}</p>
-          <p class="stat-card__value">${escapeHtml(value)}</p>
-          <p class="stat-card__hint">connector entries</p>
-        </article>
-      `
-    )
-    .join("");
-
-  const rows = [
-    ...telegrams.map((connector) =>
-      connectorRow(
-        "telegram",
-        connector,
-        fmtList(connector.allowed_chat_ids),
-        connector.requested_model || connector.alias || "-",
-        true,
-        connector.cwd
-      )
-    ),
-    ...discords.map((connector) =>
-      connectorRow(
-        "discord",
-        connector,
-        fmtList(connector.monitored_channel_ids),
-        connector.requested_model || connector.alias || "-",
-        true,
-        connector.cwd
-      )
-    ),
-    ...slacks.map((connector) =>
-      connectorRow(
-        "slack",
-        connector,
-        fmtList(connector.monitored_channel_ids),
-        connector.requested_model || connector.alias || "-",
-        true,
-        connector.cwd
-      )
-    ),
-    ...signals.map((connector) =>
-      connectorRow(
-        "signal",
-        connector,
-        fmtList(connector.monitored_group_ids),
-        connector.requested_model || connector.alias || "-",
-        true,
-        connector.cwd || connector.cli_path || connector.account
-      )
-    ),
-    ...homeAssistants.map((connector) =>
-      connectorRow(
-        "home-assistant",
-        connector,
-        fmtList(connector.monitored_entity_ids),
-        connector.requested_model || connector.alias || "-",
-        true,
-        connector.cwd || connector.base_url
-      )
-    ),
-    ...webhooks.map((connector) =>
-      connectorRow(
-        "webhook",
-        connector,
-        connector.alias || "-",
-        connector.requested_model || connector.cwd || "-",
-        false,
-        connector.prompt_template ? "template configured" : "-"
-      )
-    ),
-    ...inboxes.map((connector) =>
-      connectorRow(
-        "inbox",
-        connector,
-        connector.path,
-        connector.requested_model || connector.alias || "-",
-        true,
-        connector.cwd
-      )
-    ),
-    ...gmails.map((connector) =>
-      connectorRow(
-        "gmail",
-        connector,
-        fmtList(connector.allowed_emails || connector.monitored_labels),
-        connector.requested_model || connector.alias || "-",
-        true,
-        connector.cwd || connector.credentials_path || "-"
-      )
-    ),
-    ...braves.map((connector) =>
-      connectorRow(
-        "brave",
-        connector,
-        "web/news/images/local",
-        connector.requested_model || connector.alias || "online search",
-        false,
-        connector.cwd || "Brave Search API"
-      )
-    ),
-  ];
-  elements.connectorSummary.textContent = `${rows.length} connector entry/entries loaded`;
-  elements.connectorsBody.innerHTML = rows.length
-    ? rows.join("")
-    : `<tr><td colspan="6" class="empty-table">No connectors configured.</td></tr>`;
+  if (window.dashboardConnectors) {
+    window.dashboardConnectors.render({
+      status,
+      telegrams: telegrams || [],
+      discords: discords || [],
+      slacks: slacks || [],
+      signals: signals || [],
+      homeAssistants: homeAssistants || [],
+      webhooks: webhooks || [],
+      inboxes: inboxes || [],
+      gmails: gmails || [],
+      braves: braves || [],
+    });
+    return;
+  }
+  elements.connectorSummary.textContent = "Connector module unavailable";
+  elements.connectorCards.innerHTML = "";
 }
 
 function renderDelegation(targets) {
@@ -1481,119 +1193,6 @@ function renderEvents(events) {
         )
         .join("")
     : renderEmpty("No daemon events yet.");
-}
-
-function renderChatAliasOptions(providers, aliases) {
-  const selectedValue = elements.runTaskAlias.value;
-  const providerNames = new Map(
-    (providers || []).map((provider) => [
-      provider.id,
-      provider.display_name || provider.id,
-    ])
-  );
-  const grouped = new Map();
-  (aliases || []).forEach((alias) => {
-    const providerId = alias.provider_id || "unknown";
-    if (!grouped.has(providerId)) {
-      grouped.set(providerId, []);
-    }
-    grouped.get(providerId).push(alias);
-  });
-  const options = ['<option value="">Select an alias</option>'];
-  Array.from(grouped.entries())
-    .sort(([left], [right]) => left.localeCompare(right))
-    .forEach(([providerId, providerAliases]) => {
-      const providerLabel = providerNames.get(providerId) || providerId;
-      options.push(`<optgroup label="${escapeHtml(providerLabel)}">`);
-      providerAliases
-        .sort((left, right) => (left.alias || "").localeCompare(right.alias || ""))
-        .forEach((alias) => {
-          options.push(
-            `<option value="${escapeHtml(alias.alias)}">${escapeHtml(
-              `${alias.alias} · ${alias.model || providerId}`
-            )}</option>`
-          );
-        });
-      options.push("</optgroup>");
-    });
-  elements.runTaskAlias.innerHTML = options.join("");
-  if (selectedValue && (aliases || []).some((alias) => alias.alias === selectedValue)) {
-    elements.runTaskAlias.value = selectedValue;
-  } else if (state.lastData?.status?.main_agent_alias) {
-    elements.runTaskAlias.value = state.lastData.status.main_agent_alias;
-  }
-}
-
-function renderMainTargetSummary(mainTarget, mainAlias) {
-  if (mainTarget) {
-    elements.chatMainTarget.textContent = `Default main alias: ${mainTarget.alias} -> ${mainTarget.provider_display_name} / ${mainTarget.model}`;
-  } else if (mainAlias) {
-    elements.chatMainTarget.textContent = `Default main alias: ${mainAlias}`;
-  } else {
-    elements.chatMainTarget.textContent = "Default main alias: not configured.";
-  }
-}
-
-function renderProviders(providers, aliases) {
-  const mainAlias = state.lastData?.status?.main_agent_alias || null;
-  const mainTarget = state.lastData?.status?.main_target || null;
-  elements.providersSummary.textContent = mainTarget
-    ? `${providers.length} provider(s), ${aliases.length} alias(es) · main ${mainTarget.alias} -> ${mainTarget.provider_display_name} / ${mainTarget.model}`
-    : `${providers.length} provider(s), ${aliases.length} alias(es)`;
-  renderChatAliasOptions(providers, aliases);
-  renderMainTargetSummary(mainTarget, mainAlias);
-  elements.providersList.innerHTML = providers.length
-    ? providers
-        .map(
-          (provider) => `
-            <article class="stack-card">
-              <div class="card-title-row">
-                <div>
-                  <h4>${escapeHtml(provider.id)}</h4>
-                  <p class="card-subtitle">${escapeHtml(provider.display_name || provider.id)} · ${escapeHtml(provider.kind || "-")}</p>
-                </div>
-                ${badge(provider.auth_mode || "unknown", "info")}
-              </div>
-              <ul class="micro-list">
-                <li>base_url: ${escapeHtml(fmt(provider.base_url))}</li>
-                <li>default_model: ${escapeHtml(fmt(provider.default_model))}</li>
-                <li>local: ${escapeHtml(fmtBoolean(provider.local))}</li>
-              </ul>
-              <div class="inline-actions">
-                ${buttonHtml("Edit", { providerEdit: provider.id }, "button-ghost")}
-                ${buttonHtml("Models", { providerModels: provider.id }, "button-muted")}
-                ${buttonHtml("Clear creds", { providerClearCreds: provider.id }, "button-small--ghost")}
-                ${buttonHtml("Delete", { providerDelete: provider.id }, "button-small--ghost")}
-              </div>
-            </article>
-          `
-        )
-        .join("")
-    : renderEmpty("No providers configured.");
-  elements.aliasesList.innerHTML = aliases.length
-    ? aliases
-        .map(
-          (alias) => `
-            <article class="stack-card">
-              <div class="card-title-row">
-                <div>
-                  <h4>${escapeHtml(alias.alias || alias.name || alias.id)}</h4>
-                  <p class="card-subtitle">${escapeHtml(alias.provider_id || "-")} / ${escapeHtml(alias.model || "-")}</p>
-                </div>
-                ${mainAlias === alias.alias ? badge("main", "good") : ""}
-                ${elements.runTaskAlias.value === alias.alias ? badge("current chat", "info") : ""}
-              </div>
-              ${alias.description ? `<p class="card-copy">${escapeHtml(alias.description)}</p>` : ""}
-              <div class="inline-actions">
-                ${buttonHtml("Edit", { aliasEdit: alias.alias }, "button-ghost")}
-                ${mainAlias === alias.alias ? "" : buttonHtml("Set main", { aliasMakeMain: alias.alias }, "button-muted")}
-                ${buttonHtml("Delete", { aliasDelete: alias.alias }, "button-small--ghost")}
-              </div>
-            </article>
-          `
-        )
-        .join("")
-    : renderEmpty("No aliases configured.");
 }
 
 function renderPermissions(permissions) {
@@ -1681,16 +1280,17 @@ function renderSessions(sessions) {
                 <div class="table-sub mono">${escapeHtml(session.id)}</div>
               </td>
               <td>${escapeHtml(fmt(session.alias))}</td>
+              <td>${badge(session.task_mode || "default", session.task_mode === "build" ? "good" : session.task_mode === "daily" ? "info" : "neutral")}</td>
               <td>${escapeHtml(fmt(session.model || session.requested_model))}</td>
               <td>${escapeHtml(fmt(session.message_count))}</td>
               <td>${escapeHtml(fmtDate(session.created_at))}</td>
               <td>${escapeHtml(fmtDate(session.updated_at))}</td>
-              <td><div class="inline-actions">${buttonHtml("Chat", { sessionUse: session.id }, "button-muted")}${buttonHtml("View", { sessionView: session.id }, "button-ghost")}${buttonHtml("Rename", { sessionRename: session.id }, "button-small--ghost")}</div></td>
+              <td><div class="inline-actions">${buttonHtml("Chat", { sessionUse: session.id }, "button-muted")}${buttonHtml("View", { sessionView: session.id }, "button-ghost")}${buttonHtml("Fork", { sessionFork: session.id }, "button-ghost")}${buttonHtml("Rename", { sessionRename: session.id }, "button-small--ghost")}</div></td>
             </tr>
           `
         )
         .join("")
-    : `<tr><td colspan="7" class="empty-table">No sessions yet.</td></tr>`;
+    : `<tr><td colspan="8" class="empty-table">No sessions yet.</td></tr>`;
 }
 
 function renderMcpServers(servers) {
@@ -1767,6 +1367,7 @@ function normalizeBootstrapData(payload) {
     inboxes: payload.inbox_connectors || [],
     gmails: payload.gmail_connectors || [],
     braves: payload.brave_connectors || [],
+    plugins: payload.plugins || [],
     sessions: payload.sessions || [],
     events: payload.events || [],
     permissions: payload.permissions || "unknown",
@@ -1823,12 +1424,32 @@ function renderBootstrapData(data) {
   renderWhenChanged("events", data.events, () => renderEvents(data.events));
   renderWhenChanged(
     "providers",
-    { providers: data.providers, aliases: data.aliases, mainAlias: data.status?.main_agent_alias },
-    () => renderProviders(data.providers, data.aliases)
+    {
+      providers: data.providers,
+      aliases: data.aliases,
+      mainAlias: data.status?.main_agent_alias,
+      mainTarget: data.status?.main_target,
+    },
+    () => {
+      if (window.dashboardProviders) {
+        window.dashboardProviders.render(data);
+      }
+    }
   );
   renderWhenChanged("permissions", data.permissions, () => renderPermissions(data.permissions));
   renderWhenChanged("trust", data.trust, () => renderTrust(data.trust));
   renderWhenChanged("sessions", data.sessions, () => renderSessions(data.sessions));
+  if (window.dashboardPlugins) {
+    window.dashboardPlugins.render(data.plugins, state.lastData?.health?.plugins || []);
+  }
+  if (window.dashboardWorkspace) {
+    window.dashboardWorkspace.handleBootstrap(data).catch((error) => {
+      setStatus(`Workspace scan failed: ${error.message}`, "warn");
+    });
+  }
+  if (window.dashboardSettings) {
+    window.dashboardSettings.render(data);
+  }
   renderWhenChanged(
     "daemon-config",
     { persistence: data.status?.persistence_mode, autoStart: data.status?.auto_start },
@@ -1854,14 +1475,33 @@ async function loadApprovalsPanel() {
 async function loadMemoryReviewPanel() {
   const memoryReview = await apiGet("/v1/memory/review?limit=25");
   mergeLastData({ memoryReview });
-  renderWhenChanged("memory", memoryReview, () => renderMemory(memoryReview));
+  renderWhenChanged("memory", memoryReview, () => {
+    elements.memorySummary.textContent = `${memoryReview.length} memory candidate(s)`;
+    elements.memoryList.innerHTML = memoryReview.length
+      ? memoryReview
+          .map(
+            (memory) =>
+              renderMemoryCard(memory, {
+                actions:
+                  `${buttonHtml("Approve", { memoryApprove: memory.id })}` +
+                  `${buttonHtml("Reject", { memoryReject: memory.id }, "button-small--ghost")}`,
+              })
+          )
+          .join("")
+      : renderEmpty("No memory candidates pending review.");
+  });
   return memoryReview;
 }
 
 async function loadProfilePanel() {
   const profileMemories = await apiGet("/v1/memory/profile");
   mergeLastData({ profileMemories });
-  renderWhenChanged("profile", profileMemories, () => renderProfile(profileMemories));
+  renderWhenChanged("profile", profileMemories, () => {
+    elements.profileSummary.textContent = `${profileMemories.length} accepted profile fact(s)`;
+    elements.profileList.innerHTML = profileMemories.length
+      ? profileMemories.map((memory) => renderMemoryCard(memory, { showReview: false })).join("")
+      : renderEmpty("No profile memories yet.");
+  });
   return profileMemories;
 }
 
@@ -1956,6 +1596,9 @@ async function refreshHealth({ silent = false } = {}) {
       { status: state.lastData?.status?.persistence_mode, health },
       () => renderHealth(state.lastData?.status, health)
     );
+    if (window.dashboardPlugins) {
+      window.dashboardPlugins.render(state.lastData?.plugins || [], health.plugins || []);
+    }
     return health;
   })();
   try {
@@ -2039,15 +1682,19 @@ function resetDashboardSurface() {
   initializeLazyPanelPlaceholders();
   elements.connectorSummary.textContent = "No connector data yet";
   elements.connectorCards.innerHTML = "";
-  elements.connectorsBody.innerHTML =
-    `<tr><td colspan="6" class="empty-table">No connectors configured.</td></tr>`;
+  if (window.dashboardConnectors) {
+    window.dashboardConnectors.reset();
+  }
   elements.delegationSummary.textContent = "No delegation data yet";
   elements.delegationList.innerHTML = renderEmpty("No delegation targets available.");
   elements.eventsSummary.textContent = "No event data yet";
   elements.eventsList.innerHTML = renderEmpty("No daemon events yet.");
-  elements.providersSummary.textContent = "No provider data yet";
-  elements.providersList.innerHTML = renderEmpty("No providers configured.");
-  elements.aliasesList.innerHTML = renderEmpty("No aliases configured.");
+  state.activeSessionResumePacket = null;
+  state.sessionDetailPacket = null;
+  state.sessionDetailSessionId = null;
+  if (window.dashboardProviders) {
+    window.dashboardProviders.reset();
+  }
   elements.permissionsSummary.textContent = "No permissions data yet";
   elements.permissionPresetActions.innerHTML = "";
   elements.permissionsDetails.innerHTML = "";
@@ -2056,6 +1703,18 @@ function resetDashboardSurface() {
   elements.daemonConfigSummary.textContent = "No daemon config yet";
   elements.daemonPersistenceActions.innerHTML = "";
   elements.daemonAutostartActions.innerHTML = "";
+  if (window.dashboardPlugins) {
+    window.dashboardPlugins.reset();
+  }
+  if (window.dashboardWorkspace) {
+    window.dashboardWorkspace.reset();
+  }
+  if (window.dashboardSettings) {
+    window.dashboardSettings.reset();
+  }
+  renderChatAttachments();
+  renderConsoleEntries();
+  syncChatCwdInput();
 }
 
 async function refreshSessionsSummary() {
@@ -2089,7 +1748,19 @@ async function refreshDashboard(options = {}) {
     setStatus("Refreshing dashboard...", "neutral");
   }
   state.refreshInFlight = (async () => {
-    const bootstrap = normalizeBootstrapData(await apiGet("/v1/dashboard/bootstrap"));
+    let bootstrapPayload;
+    try {
+      bootstrapPayload = expectControlResponse(
+        await controlRequest({ kind: "dashboard_bootstrap" }),
+        "dashboard_bootstrap"
+      );
+    } catch (_) {
+      bootstrapPayload = await apiGet("/v1/dashboard/bootstrap");
+      if (state.dashboardSessionAuthenticated) {
+        ensureControlSocket().catch(() => {});
+      }
+    }
+    const bootstrap = normalizeBootstrapData(bootstrapPayload);
     state.dashboardSessionAuthenticated = true;
     mergeLastData(bootstrap);
     renderBootstrapData(bootstrap);
@@ -2101,16 +1772,6 @@ async function refreshDashboard(options = {}) {
     }
     elements.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     setStatus("Connected.", "ok");
-    if (isProviderCreateMode()) {
-      try {
-        await refreshProviderCreateSuggestions();
-      } catch (error) {
-        setStatus(`Provider suggestion failed: ${error.message}`, "warn");
-      }
-    } else {
-      syncProviderModeUi();
-    }
-    renderProviderBrowserAuthState();
     loadVisiblePanels();
   })();
   try {
@@ -2122,7 +1783,6 @@ async function refreshDashboard(options = {}) {
       return;
     }
     setStatus(`Refresh failed: ${error.message}`, "warn");
-    renderProviderBrowserAuthState();
     throw error;
   } finally {
     state.refreshInFlight = null;
@@ -2137,159 +1797,31 @@ function scheduleRefresh() {
     clearInterval(state.healthTimer);
   }
   if (state.autoRefresh && hasDashboardAuth()) {
-    state.refreshTimer = setInterval(() => {
-      refreshDashboard({
-        includeLoadedPanels: false,
-        includeHealth: false,
-        silent: true,
-      }).catch(() => {});
-    }, 12000);
+    if (!state.controlSocketReady) {
+      state.refreshTimer = setInterval(() => {
+        refreshDashboard({
+          includeLoadedPanels: false,
+          includeHealth: false,
+          silent: true,
+        }).catch(() => {});
+      }, 12000);
+    }
     state.healthTimer = setInterval(() => {
       refreshHealth({ silent: true }).catch(() => {});
     }, 60000);
   }
 }
 
-function providerPresetKeyFor(provider) {
-  if (!provider) {
-    return "custom";
-  }
-  if (provider.kind === "chat_gpt_codex") {
-    return "codex";
-  }
-  if (provider.kind === "anthropic" && provider.base_url === "https://api.anthropic.com") {
-    return "anthropic";
-  }
-  if (provider.kind === "open_ai_compatible" && provider.base_url === "https://api.openai.com/v1") {
-    return "openai";
-  }
-  if (provider.kind === "open_ai_compatible" && provider.base_url === "https://openrouter.ai/api/v1") {
-    return "openrouter";
-  }
-  if (provider.kind === "open_ai_compatible" && provider.base_url === "https://api.moonshot.ai/v1") {
-    return "moonshot";
-  }
-  if (provider.kind === "open_ai_compatible" && provider.base_url === "https://api.venice.ai/api/v1") {
-    return "venice";
-  }
-  if (provider.kind === "ollama") {
-    return "ollama";
-  }
-  return "custom";
-}
-
-function resetProviderForm(applyPreset = true) {
-  state.editingProviderId = null;
-  state.providerAutoDefaults = null;
-  elements.providerForm.reset();
-  clearProviderSecretInputs();
-  if (!state.providerAuthSessionId) {
-    state.providerAuthStatusMessage = "";
-    state.providerAuthStatusTone = "neutral";
-  }
-  syncProviderModeUi();
-  if (applyPreset) {
-    applyProviderPreset(elements.providerPreset.value || "codex");
-    refreshProviderCreateSuggestions().catch((error) => {
-      setStatus(`Provider suggestion failed: ${error.message}`, "warn");
-    });
-  }
-  elements.providerModelResults.innerHTML = "";
-  renderProviderBrowserAuthState();
-}
-
-function applyProviderPreset(presetKey) {
-  const preset = providerPresets[presetKey] || providerPresets.custom;
-  const previous = state.providerAutoDefaults;
-  const currentProviderId = trimToNull(elements.providerId.value);
-  if (!currentProviderId || (previous && currentProviderId === previous.provider_id)) {
-    elements.providerId.value = preset.id;
-  }
-  elements.providerName.value = preset.name;
-  elements.providerKind.value = preset.kind;
-  elements.providerBaseUrl.value = preset.baseUrl;
-  elements.providerAuthMode.value = preset.authMode;
-  elements.providerLocal.checked = preset.local;
-  if (!state.editingProviderId) {
-    elements.providerDefaultModel.value = preset.defaultModel || "";
-    const currentAliasName = trimToNull(elements.providerAliasName.value);
-    const previousAliasName = previous?.alias_name || null;
-    if (!currentAliasName || currentAliasName === previousAliasName) {
-      elements.providerAliasName.value = "";
-    }
-    const currentAliasModel = trimToNull(elements.providerAliasModel.value);
-    const previousAliasModel = previous?.alias_model || null;
-    if (!currentAliasModel || currentAliasModel === previousAliasModel) {
-      elements.providerAliasModel.value = preset.defaultModel || "";
-    }
-    elements.providerAliasDescription.value = "";
-  }
-  if (!state.providerAuthSessionId) {
-    state.providerAuthStatusMessage = "";
-    state.providerAuthStatusTone = "neutral";
-  }
-  applySuggestedProviderModelDefaults();
-  syncProviderModeUi();
-  renderProviderBrowserAuthState();
-}
-
-function populateProviderForm(providerId) {
-  const provider = (state.lastData?.providers || []).find((entry) => entry.id === providerId);
-  if (!provider) {
-    throw new Error(`Unknown provider '${providerId}'.`);
-  }
-  state.editingProviderId = providerId;
-  state.providerAutoDefaults = null;
-  elements.providerPreset.value = providerPresetKeyFor(provider);
-  elements.providerId.value = provider.id;
-  elements.providerName.value = provider.display_name || provider.id;
-  elements.providerKind.value = provider.kind;
-  elements.providerBaseUrl.value = provider.base_url || "";
-  elements.providerAuthMode.value = provider.auth_mode || "api_key";
-  elements.providerDefaultModel.value = provider.default_model || "";
-  elements.providerLocal.checked = !!provider.local;
-  clearProviderSecretInputs();
-  elements.providerOauthConfig.value = provider.oauth ? JSON.stringify(provider.oauth, null, 2) : "";
-  const aliases = (state.lastData?.aliases || []).filter((entry) => entry.provider_id === provider.id);
-  const primaryAlias = aliases[0];
-  elements.providerAliasName.value = primaryAlias?.alias || "";
-  elements.providerAliasModel.value = primaryAlias?.model || provider.default_model || "";
-  elements.providerAliasDescription.value = primaryAlias?.description || "";
-  elements.providerSetMain.checked = state.lastData?.status?.main_agent_alias === primaryAlias?.alias;
-  applySuggestedProviderModelDefaults();
-  syncProviderModeUi();
-  if (!state.providerAuthSessionId) {
-    state.providerAuthStatusMessage = "";
-    state.providerAuthStatusTone = "neutral";
-  }
-  renderProviderBrowserAuthState();
-}
-
-async function discoverProviderModels(providerId) {
-  const models = await apiGet(`/v1/providers/${encodeURIComponent(providerId)}/models`);
-  elements.providerModelResults.innerHTML = Array.isArray(models) && models.length
-    ? models
-        .map(
-          (model) => `
-            <article class="stack-card">
-              <div class="card-title-row">
-                <div><h4>${escapeHtml(model)}</h4></div>
-                ${buttonHtml("Use", { useModel: model }, "button-ghost")}
-              </div>
-            </article>
-          `
-        )
-        .join("")
-    : renderEmpty("No models reported by the provider.");
-}
-
 function renderActiveSessionDetail() {
   if (!state.loadedPanels.has("sessions")) {
     return;
   }
-  elements.sessionDetail.innerHTML = state.activeChatSessionId
-    ? renderSessionMessages(state.activeTranscript || [])
-    : renderEmpty("No session selected.");
+  const packet = state.sessionDetailPacket || state.activeSessionResumePacket;
+  elements.sessionDetail.innerHTML = packet
+    ? renderSessionResumePacket(packet)
+    : state.activeChatSessionId
+      ? renderSessionMessages(state.activeTranscript || [])
+      : renderEmpty("No session selected.");
 }
 
 function snapshotChatState() {
@@ -2297,7 +1829,12 @@ function snapshotChatState() {
     activeChatSessionId: state.activeChatSessionId,
     pendingChatSessionId: state.pendingChatSessionId,
     activeTranscript: [...(state.activeTranscript || [])],
+    activeSessionResumePacket: state.activeSessionResumePacket,
+    sessionDetailPacket: state.sessionDetailPacket,
+    sessionDetailSessionId: state.sessionDetailSessionId,
     chatSessionMeta: elements.chatSessionMeta.textContent,
+    chatAttachments: [...state.chatAttachments],
+    chatCwd: state.chatCwd,
   };
 }
 
@@ -2305,32 +1842,47 @@ function restoreChatState(snapshot) {
   state.activeChatSessionId = snapshot.activeChatSessionId;
   state.pendingChatSessionId = snapshot.pendingChatSessionId;
   state.activeTranscript = [...(snapshot.activeTranscript || [])];
+  state.activeSessionResumePacket = snapshot.activeSessionResumePacket || null;
+  state.sessionDetailPacket = snapshot.sessionDetailPacket || null;
+  state.sessionDetailSessionId = snapshot.sessionDetailSessionId || null;
   elements.chatSessionMeta.textContent = snapshot.chatSessionMeta;
-  if (state.lastData) {
-    renderProviders(state.lastData.providers || [], state.lastData.aliases || []);
+  state.chatAttachments = [...(snapshot.chatAttachments || [])];
+  setChatCwd(snapshot.chatCwd || "");
+  if (state.lastData && window.dashboardProviders) {
+    window.dashboardProviders.render(state.lastData);
   }
+  renderChatAttachments();
   renderChatTranscript(state.activeTranscript);
   renderActiveSessionDetail();
 }
 
 async function loadChatSession(sessionId, { focusChat = false } = {}) {
   const transcript = await apiGet(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+  const packet = await apiGet(`/v1/sessions/${encodeURIComponent(sessionId)}/resume-packet`).catch(() => null);
   state.activeChatSessionId = transcript.session.id;
   state.pendingChatSessionId = null;
   state.activeTranscript = transcript.messages || [];
+  state.activeSessionResumePacket = packet;
+  state.sessionDetailSessionId = transcript.session.id;
+  state.sessionDetailPacket = packet;
+  state.chatAttachments = [];
+  renderChatAttachments();
+  setChatCwd(transcript.session.cwd || "");
   elements.runTaskAlias.value = transcript.session.alias || "";
   elements.runTaskModel.value = "";
+  elements.runTaskMode.value = transcript.session.task_mode || "";
   elements.chatSessionMeta.textContent = [
     transcript.session.title || transcript.session.id,
     transcript.session.alias,
     transcript.session.model,
+    transcript.session.task_mode || "default",
   ]
     .filter(Boolean)
     .join(" | ");
   renderChatTranscript(transcript.messages || []);
   renderActiveSessionDetail();
   if (focusChat) {
-    document.getElementById("run-task").scrollIntoView({ behavior: "smooth", block: "start" });
+    focusSection("run-task");
   }
 }
 
@@ -2338,8 +1890,13 @@ function startNewChat() {
   state.activeChatSessionId = null;
   state.pendingChatSessionId = null;
   state.activeTranscript = [];
+  state.activeSessionResumePacket = null;
+  state.sessionDetailPacket = null;
+  state.sessionDetailSessionId = null;
   elements.runTaskPrompt.value = "";
   elements.chatSessionMeta.textContent = "New chat";
+  renderChatAttachments();
+  syncChatCwdInput();
   renderChatTranscript([]);
   renderActiveSessionDetail();
 }
@@ -2348,6 +1905,10 @@ function setChatRunState(inFlight) {
   state.chatRunInFlight = inFlight;
   elements.chatNewSession.disabled = inFlight;
   elements.chatRenameButton.disabled = inFlight;
+  elements.chatForkButton.disabled = inFlight;
+  elements.chatCompactButton.disabled = inFlight;
+  elements.chatAttachmentAdd.disabled = inFlight;
+  elements.chatAttachmentsClear.disabled = inFlight;
 }
 
 function ensureChatRunIdle(actionLabel) {
@@ -2588,62 +2149,102 @@ function renderChatTranscript(messages) {
   elements.chatTranscript.scrollTop = elements.chatTranscript.scrollHeight;
 }
 
-function resetConnectorForm() {
-  state.editingConnectorKey = null;
-  elements.connectorAddForm.reset();
-  elements.connectorAddEnabled.checked = true;
-  updateConnectorAddFields();
+function syncChatCwdInput() {
+  if (elements.chatCwd && document.activeElement !== elements.chatCwd) {
+    elements.chatCwd.value = state.chatCwd || "";
+  }
 }
 
-function populateConnectorForm(kind, id) {
-  const connector = lookupConnector(kind, id);
-  if (!connector) {
-    throw new Error("Unknown connector.");
+function setChatCwd(nextCwd) {
+  state.chatCwd = String(nextCwd || "").trim();
+  syncChatCwdInput();
+}
+
+function currentWorkspaceReport() {
+  return window.dashboardWorkspace?.getReport?.() || null;
+}
+
+function renderChatAttachments() {
+  if (!elements.chatAttachments) {
+    return;
   }
-  state.editingConnectorKey = `${kind}:${id}`;
-  elements.connectorAddType.value = kind;
-  updateConnectorAddFields();
-  elements.connectorAddName.value = connector.name || "";
-  elements.connectorAddId.value = connector.id || "";
-  elements.connectorAddDescription.value = connector.description || "";
-  elements.connectorAddAlias.value = connector.alias || "";
-  elements.connectorAddModel.value = connector.requested_model || "";
-  elements.connectorAddCwd.value = connector.cwd || "";
-  elements.connectorAddEnabled.checked = connector.enabled !== false;
-  const fieldValues = {
-    path: connector.path,
-    prompt_template: connector.prompt_template,
-    delete_after_read: !!connector.delete_after_read,
-    require_pairing_approval: connector.require_pairing_approval !== false,
-    allowed_chat_ids: (connector.allowed_chat_ids || []).join(", "),
-    allowed_user_ids: (connector.allowed_user_ids || []).join(", "),
-    monitored_channel_ids: (connector.monitored_channel_ids || []).join(", "),
-    allowed_channel_ids: (connector.allowed_channel_ids || []).join(", "),
-    monitored_group_ids: (connector.monitored_group_ids || []).join(", "),
-    allowed_group_ids: (connector.allowed_group_ids || []).join(", "),
-    monitored_entity_ids: (connector.monitored_entity_ids || []).join(", "),
-    allowed_service_domains: (connector.allowed_service_domains || []).join(", "),
-    allowed_service_entity_ids: (connector.allowed_service_entity_ids || []).join(", "),
-    allowed_sender_addresses: (connector.allowed_sender_addresses || []).join(", "),
-    label_filter: connector.label_filter,
-    base_url: connector.base_url,
-    api_key: "",
-    account: connector.account,
-    cli_path: connector.cli_path,
-  };
-  elements.connectorAddFields.querySelectorAll("[data-connector-field]").forEach((input) => {
-    const key = input.dataset.connectorField;
-    if (input instanceof HTMLInputElement && input.type === "checkbox") {
-      input.checked = Boolean(fieldValues[key]);
-    } else {
-      input.value = fieldValues[key] || "";
+  elements.chatAttachments.innerHTML = state.chatAttachments.length
+    ? state.chatAttachments
+        .map(
+          (attachment, index) => `
+            <article class="stack-card">
+              <div class="card-title-row">
+                <div>
+                  <h4>${escapeHtml(attachment.path)}</h4>
+                  <p class="card-subtitle">${escapeHtml(attachment.kind || "image")}</p>
+                </div>
+                ${buttonHtml("Remove", { chatAttachmentRemove: String(index) }, "button-small--ghost")}
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("No attachments queued.");
+}
+
+function renderConsoleEntries() {
+  const entries = state.consoleEntries.slice(0, 8);
+  elements.runTaskResult.innerHTML = entries.length
+    ? entries
+        .map(
+          (entry) => `
+            <article class="console-entry">
+              <div class="console-entry__header">
+                <div class="chat-message__title">
+                  ${badge(entry.label || "console", entry.tone || "info")}
+                  <span>${escapeHtml(entry.title || "")}</span>
+                </div>
+                <span class="panel__meta">${escapeHtml(fmtDate(entry.timestamp))}</span>
+              </div>
+              ${
+                entry.body
+                  ? entry.preformatted
+                    ? `<pre>${escapeHtml(entry.body)}</pre>`
+                    : renderRichContent(entry.body)
+                  : ""
+              }
+            </article>
+          `
+        )
+        .join("")
+    : renderEmpty("Slash commands, shell output, and chat task summaries appear here.");
+}
+
+function pushConsoleEntry(title, body, options = {}) {
+  state.consoleEntries = [
+    {
+      title,
+      body: String(body || "").trim(),
+      tone: options.tone || "info",
+      label: options.label || "console",
+      preformatted: options.preformatted !== false,
+      timestamp: new Date().toISOString(),
+    },
+    ...state.consoleEntries,
+  ].slice(0, 16);
+  renderConsoleEntries();
+}
+
+function latestAssistantMessage(messages = state.activeTranscript || []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant") {
+      return message;
     }
-  });
+  }
+  return null;
 }
 
 function persistToken(token) {
   state.token = token.trim();
-  renderProviderBrowserAuthState();
+  if (window.dashboardProviders && state.lastData) {
+    window.dashboardProviders.render(state.lastData);
+  }
 }
 
 function bootstrapToken() {
@@ -2661,10 +2262,13 @@ function bootstrapToken() {
 }
 
 function clearDashboardConnectionState({ clearTokenInput = false } = {}) {
-  clearProviderBrowserAuthPolling();
+  closeControlSocket({ rejectMessage: "Dashboard connection was cleared." });
   state.dashboardSessionAuthenticated = false;
   state.token = "";
   state.pendingChatSessionId = null;
+  state.chatAttachments = [];
+  state.consoleEntries = [];
+  state.chatCwd = "";
   if (clearTokenInput) {
     elements.tokenInput.value = "";
   }
@@ -2677,7 +2281,9 @@ function clearDashboardConnectionState({ clearTokenInput = false } = {}) {
   resetDashboardSurface();
   renderChatTranscript([]);
   elements.chatSessionMeta.textContent = "New chat";
-  renderProviderBrowserAuthState();
+  renderChatAttachments();
+  renderConsoleEntries();
+  syncChatCwdInput();
 }
 
 async function initializeDashboardConnection() {
@@ -2755,62 +2361,6 @@ async function setEvolve(mode) {
   await refreshDashboard();
 }
 
-function lookupConnector(kind, id) {
-  if (!state.lastData) {
-    return null;
-  }
-  const groups = {
-    telegram: state.lastData.telegrams,
-    discord: state.lastData.discords,
-    slack: state.lastData.slacks,
-    signal: state.lastData.signals,
-    "home-assistant": state.lastData.homeAssistants,
-    webhook: state.lastData.webhooks,
-    inbox: state.lastData.inboxes,
-    gmail: state.lastData.gmails,
-    brave: state.lastData.braves,
-  };
-  return (groups[kind] || []).find((entry) => entry.id === id) || null;
-}
-
-function connectorBasePath(kind) {
-  return {
-    telegram: "/v1/telegram",
-    discord: "/v1/discord",
-    slack: "/v1/slack",
-    signal: "/v1/signal",
-    "home-assistant": "/v1/home-assistant",
-    webhook: "/v1/webhooks",
-    inbox: "/v1/inboxes",
-    gmail: "/v1/gmail",
-    brave: "/v1/brave",
-  }[kind];
-}
-
-async function toggleConnector(kind, id) {
-  const connector = lookupConnector(kind, id);
-  const basePath = connectorBasePath(kind);
-  if (!connector || !basePath) {
-    throw new Error("Unknown connector.");
-  }
-  await apiPost(basePath, {
-    connector: {
-      ...connector,
-      enabled: !connector.enabled,
-    },
-  });
-  await refreshDashboard();
-}
-
-async function pollConnector(kind, id) {
-  const basePath = connectorBasePath(kind);
-  if (!basePath || kind === "webhook" || kind === "brave") {
-    throw new Error("This connector does not support polling.");
-  }
-  await apiPost(`${basePath}/${encodeURIComponent(id)}/poll`, {});
-  await refreshDashboard();
-}
-
 async function handleApprovalAction(id, approved) {
   const note = window.prompt(`Optional note for ${approved ? "approving" : "rejecting"} this pairing:`, "") || "";
   await apiPost(
@@ -2863,6 +2413,348 @@ async function handleMissionAction(action, id) {
   await refreshDashboard();
 }
 
+function currentChatCwd() {
+  const typed = elements.chatCwd?.value?.trim() || "";
+  if (typed !== state.chatCwd) {
+    state.chatCwd = typed;
+  }
+  return state.chatCwd;
+}
+
+function activeSessionSummary() {
+  return (state.lastData?.sessions || []).find((session) => session.id === state.activeChatSessionId) || null;
+}
+
+function buildRunTaskPayload(prompt, overrides = {}) {
+  const activeSession = activeSessionSummary();
+  const payload = {
+    prompt,
+    session_id: state.activeChatSessionId,
+    cwd: currentChatCwd() || null,
+    attachments: [...state.chatAttachments],
+  };
+  const alias = String(overrides.alias ?? elements.runTaskAlias.value).trim();
+  const model = String(overrides.model ?? elements.runTaskModel.value).trim();
+  const thinking = String(overrides.thinking ?? elements.runTaskThinking.value).trim();
+  const taskMode = String(
+    overrides.taskMode ?? elements.runTaskMode.value ?? activeSession?.task_mode ?? ""
+  ).trim();
+  const permissionPreset = String(overrides.permissionPreset ?? elements.runTaskPermission.value).trim();
+  if (alias) payload.alias = alias;
+  if (model) payload.requested_model = model;
+  if (thinking) payload.thinking_level = thinking;
+  if (taskMode) payload.task_mode = taskMode;
+  if (permissionPreset) payload.permission_preset = permissionPreset;
+  return payload;
+}
+
+function preferAliasForProvider(providerId) {
+  const aliases = state.lastData?.aliases || [];
+  const currentAlias = elements.runTaskAlias.value.trim();
+  const current = aliases.find((alias) => alias.alias === currentAlias && alias.provider_id === providerId);
+  if (current) {
+    return current.alias;
+  }
+  const mainAlias = state.lastData?.status?.main_agent_alias;
+  const main = aliases.find((alias) => alias.alias === mainAlias && alias.provider_id === providerId);
+  if (main) {
+    return main.alias;
+  }
+  const direct = aliases.find((alias) => alias.alias === providerId && alias.provider_id === providerId);
+  if (direct) {
+    return direct.alias;
+  }
+  return aliases
+    .filter((alias) => alias.provider_id === providerId)
+    .sort((left, right) => left.alias.localeCompare(right.alias))[0]?.alias || null;
+}
+
+function resolveProviderAliasSelection(value) {
+  const aliases = state.lastData?.aliases || [];
+  const providers = state.lastData?.providers || [];
+  const exactAlias = aliases.find((alias) => alias.alias.toLowerCase() === value.toLowerCase());
+  if (exactAlias) {
+    return exactAlias.alias;
+  }
+  const normalized = value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const matches = providers
+    .filter((provider) => {
+      const display = String(provider.display_name || provider.id || "");
+      return (
+        String(provider.id || "").toLowerCase() === value.toLowerCase() ||
+        display.toLowerCase() === value.toLowerCase() ||
+        String(provider.id || "").replace(/[^a-z0-9]/gi, "").toLowerCase() === normalized ||
+        display.replace(/[^a-z0-9]/gi, "").toLowerCase() === normalized
+      );
+    })
+    .map((provider) => preferAliasForProvider(provider.id))
+    .filter(Boolean);
+  const unique = [...new Set(matches)];
+  if (unique.length === 1) {
+    return unique[0];
+  }
+  if (!unique.length) {
+    throw new Error(`unknown logged-in provider '${value}'`);
+  }
+  throw new Error(`provider selection '${value}' is ambiguous`);
+}
+
+function resolveSessionTarget(target) {
+  const sessions = state.lastData?.sessions || [];
+  if (!target) {
+    return null;
+  }
+  if (target === "last") {
+    return sessions[0]?.id || null;
+  }
+  const exact = sessions.find((session) => session.id === target || session.title === target);
+  if (exact) {
+    return exact.id;
+  }
+  const prefix = sessions.find((session) => session.id.startsWith(target));
+  return prefix?.id || null;
+}
+
+function formatRecordLines(records, mapper) {
+  return records.length ? records.map(mapper).join("\n") : "None.";
+}
+
+function formatConnectorSummary(connectors) {
+  return formatRecordLines(connectors, (connector) => {
+    const details = [
+      `${connector.id} [${connector.name || connector.id}]`,
+      `enabled=${fmtBoolean(!!connector.enabled)}`,
+      connector.alias ? `alias=${connector.alias}` : null,
+      connector.requested_model ? `model=${connector.requested_model}` : null,
+      connector.cwd ? `cwd=${connector.cwd}` : null,
+    ].filter(Boolean);
+    return details.join(" ");
+  });
+}
+
+function formatStatusSummary() {
+  const status = state.lastData?.status;
+  if (!status) {
+    return "No daemon status loaded yet.";
+  }
+  const activeSession = activeSessionSummary();
+  return [
+    `session=${state.activeChatSessionId || "(new)"}`,
+    activeSession?.title ? `title=${activeSession.title}` : null,
+    `alias=${elements.runTaskAlias.value || status.main_agent_alias || "-"}`,
+    `model=${elements.runTaskModel.value || activeSession?.model || "-"}`,
+    `thinking=${elements.runTaskThinking.value || "default"}`,
+    `mode=${elements.runTaskMode.value || activeSession?.task_mode || "default"}`,
+    `permission_preset=${elements.runTaskPermission.value || state.lastData?.permissions || "default"}`,
+    `attachments=${state.chatAttachments.length}`,
+    `cwd=${currentChatCwd() || "(daemon cwd)"}`,
+    status.main_target
+      ? `main=${status.main_target.alias} (${status.main_target.provider_id}/${status.main_target.model})`
+      : "main=(not configured)",
+    `autonomy=${status.autonomy?.state || "-"}`,
+    `autopilot=${status.autopilot?.state || "-"}`,
+    `active_missions=${status.active_missions || 0}`,
+    `memories=${status.memories || 0}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildReviewPrompt(diffText, customPrompt) {
+  const instructions =
+    customPrompt && customPrompt.trim()
+      ? customPrompt.trim()
+      : "Review these code changes. Focus on bugs, regressions, security issues, and missing tests. Put findings first, ordered by severity, and be concise.";
+  return `${instructions}\n\nReview target:\n\`\`\`\n${diffText}\n\`\`\``;
+}
+
+async function copyLatestAssistantOutput() {
+  const latest = latestAssistantMessage();
+  if (!latest?.content?.trim()) {
+    throw new Error("No assistant output available to copy.");
+  }
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("Clipboard access is not available in this browser.");
+  }
+  await navigator.clipboard.writeText(latest.content);
+  pushConsoleEntry("Clipboard", "Copied the latest assistant reply.", {
+    tone: "good",
+    label: "clipboard",
+    preformatted: false,
+  });
+}
+
+function parseMaybeInteger(value, label) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative integer.`);
+  }
+  return parsed;
+}
+
+function addChatAttachment(pathValue) {
+  const path = String(pathValue || "").trim();
+  if (!path) {
+    throw new Error("Attachment path is required.");
+  }
+  state.chatAttachments = [...state.chatAttachments, { kind: "image", path }];
+  renderChatAttachments();
+  pushConsoleEntry("Attachments", `Queued image attachment:\n${path}`, {
+    tone: "good",
+    label: "attachments",
+  });
+}
+
+function clearChatAttachments() {
+  state.chatAttachments = [];
+  renderChatAttachments();
+}
+
+async function forkSessionById(sessionId) {
+  const response = await apiPost(`/v1/sessions/${encodeURIComponent(sessionId)}/fork`, {});
+  await refreshSessionsSummary();
+  await loadChatSession(response.session.id, { focusChat: true });
+  pushConsoleEntry("Fork", `Forked session into ${response.session.id}.`, {
+    tone: "good",
+    label: "session",
+    preformatted: false,
+  });
+}
+
+async function compactActiveChat() {
+  if (!state.activeChatSessionId) {
+    throw new Error("No active chat to compact.");
+  }
+  const response = await apiPost(`/v1/sessions/${encodeURIComponent(state.activeChatSessionId)}/compact`, {
+    alias: elements.runTaskAlias.value.trim() || null,
+    requested_model: elements.runTaskModel.value.trim() || null,
+    cwd: currentChatCwd() || null,
+    thinking_level: elements.runTaskThinking.value || null,
+    task_mode: elements.runTaskMode.value || null,
+    permission_preset: elements.runTaskPermission.value || null,
+  });
+  await refreshSessionsSummary();
+  await loadChatSession(response.session.id, { focusChat: true });
+  pushConsoleEntry("Compact", `Compacted into session ${response.session.id}.`, {
+    tone: "good",
+    label: "session",
+    preformatted: false,
+  });
+}
+
+async function executeShellCommand(command) {
+  const response = await apiPost("/v1/workspace/shell", {
+    command,
+    cwd: currentChatCwd() || null,
+  });
+  setChatCwd(response.cwd || "");
+  pushConsoleEntry(`Shell ${command}`, response.output || "(no output)", {
+    tone: "info",
+    label: "shell",
+  });
+}
+
+async function executeChatPrompt(prompt, overrides = {}) {
+  let chatSnapshot = null;
+  let completedResponse = null;
+  const payload = buildRunTaskPayload(prompt, overrides);
+  try {
+    if (state.chatRunInFlight) {
+      throw new Error("A chat run is already in progress.");
+    }
+    chatSnapshot = snapshotChatState();
+    setChatRunState(true);
+    const optimisticMessage = {
+      role: "user",
+      content: prompt,
+      created_at: new Date().toISOString(),
+      provider_id: payload.alias || "user",
+      model: payload.requested_model || "",
+      tool_calls: [],
+      attachments: payload.attachments || [],
+    };
+    state.activeTranscript = [...(state.activeTranscript || []), optimisticMessage];
+    renderChatTranscript(state.activeTranscript);
+    renderActiveSessionDetail();
+    pushConsoleEntry("Chat", "Working...", {
+      tone: "info",
+      label: "chat",
+      preformatted: false,
+    });
+    let streamError = null;
+    state.pendingChatSessionId = null;
+    const handleStreamEvent = (streamEvent) => {
+      if (streamEvent.type === "session_started") {
+        state.pendingChatSessionId = streamEvent.session_id || state.pendingChatSessionId;
+        elements.chatSessionMeta.textContent = [
+          streamEvent.alias,
+          streamEvent.model,
+          streamEvent.session_id,
+        ]
+          .filter(Boolean)
+          .join(" | ");
+      } else if (streamEvent.type === "message" && streamEvent.message) {
+        state.activeTranscript = [...(state.activeTranscript || []), streamEvent.message];
+        renderChatTranscript(state.activeTranscript);
+        renderActiveSessionDetail();
+      } else if (streamEvent.type === "completed") {
+        completedResponse = streamEvent.response || null;
+      } else if (streamEvent.type === "error") {
+        streamError = streamEvent.message || "Task failed.";
+      }
+    };
+    try {
+      completedResponse = expectControlResponse(
+        await controlRequest(
+          {
+            kind: "run_task",
+            payload: {
+              request: payload,
+            },
+          },
+          { onEvent: handleStreamEvent }
+        ),
+        "run_task"
+      );
+    } catch (_) {
+      await apiStream("/v1/run/stream", payload, handleStreamEvent);
+    }
+    if (streamError) {
+      throw new Error(streamError);
+    }
+    elements.runTaskPrompt.value = "";
+    pushConsoleEntry("Chat", "Response received.", {
+      tone: "good",
+      label: "chat",
+      preformatted: false,
+    });
+    if (completedResponse && completedResponse.session_id) {
+      await loadChatSession(completedResponse.session_id);
+    } else if (state.pendingChatSessionId) {
+      await loadChatSession(state.pendingChatSessionId);
+    } else if (!state.activeChatSessionId) {
+      const newestSessionId = state.lastData?.sessions?.[0]?.id || null;
+      if (newestSessionId) {
+        await loadChatSession(newestSessionId);
+      }
+    }
+    await refreshSessionsSummary();
+  } catch (error) {
+    if (!completedResponse && chatSnapshot) {
+      restoreChatState(chatSnapshot);
+    } else {
+      state.pendingChatSessionId = null;
+    }
+    pushConsoleEntry("Chat failed", error.message, {
+      tone: "danger",
+      label: "chat",
+    });
+    throw error;
+  } finally {
+    setChatRunState(false);
+  }
+}
+
 function bindActions() {
   document.body.addEventListener("click", async (event) => {
     const target = findActionTarget(event.target);
@@ -2896,56 +2788,6 @@ function bindActions() {
         await setAutonomy(target.dataset.autonomy);
       } else if (target.dataset.evolve) {
         await setEvolve(target.dataset.evolve);
-      } else if (target.dataset.connectorToggle) {
-        const [kind, id] = target.dataset.connectorToggle.split(":");
-        await toggleConnector(kind, id);
-      } else if (target.dataset.connectorEdit) {
-        const [kind, id] = target.dataset.connectorEdit.split(":");
-        populateConnectorForm(kind, id);
-        document.getElementById("connector-add").scrollIntoView({ behavior: "smooth", block: "start" });
-      } else if (target.dataset.connectorPoll) {
-        const [kind, id] = target.dataset.connectorPoll.split(":");
-        await pollConnector(kind, id);
-      } else if (target.dataset.providerEdit) {
-        populateProviderForm(target.dataset.providerEdit);
-        document.getElementById("providers").scrollIntoView({ behavior: "smooth", block: "start" });
-      } else if (target.dataset.providerModels) {
-        await discoverProviderModels(target.dataset.providerModels);
-      } else if (target.dataset.providerClearCreds) {
-        await apiDelete(`/v1/providers/${encodeURIComponent(target.dataset.providerClearCreds)}/credentials`);
-        await refreshDashboard();
-      } else if (target.dataset.providerDelete) {
-        if (window.confirm(`Delete provider ${target.dataset.providerDelete}? Aliases pointing at it will also be removed.`)) {
-          await apiDelete(`/v1/providers/${encodeURIComponent(target.dataset.providerDelete)}`);
-          await refreshDashboard();
-          resetProviderForm();
-        }
-      } else if (target.dataset.aliasEdit) {
-        const alias = (state.lastData?.aliases || []).find((entry) => entry.alias === target.dataset.aliasEdit);
-        if (!alias) {
-          throw new Error("Unknown alias.");
-        }
-        elements.aliasName.value = alias.alias;
-        elements.aliasProvider.value = alias.provider_id;
-        elements.aliasModel.value = alias.model;
-        elements.aliasDescription.value = alias.description || "";
-        elements.aliasMain.checked = state.lastData?.status?.main_agent_alias === alias.alias;
-      } else if (target.dataset.aliasMakeMain) {
-        await updateMainAlias(target.dataset.aliasMakeMain);
-      } else if (target.dataset.aliasDelete) {
-        if (window.confirm(`Delete alias ${target.dataset.aliasDelete}?`)) {
-          await apiDelete(`/v1/aliases/${encodeURIComponent(target.dataset.aliasDelete)}`);
-          await refreshDashboard();
-        }
-      } else if (target.dataset.connectorDelete) {
-        const [kind, id] = target.dataset.connectorDelete.split(":");
-        if (window.confirm(`Delete ${kind} connector ${id}?`)) {
-          const basePath = connectorBasePath(kind);
-          if (basePath) {
-            await apiDelete(`${basePath}/${encodeURIComponent(id)}`);
-            await refreshDashboard();
-          }
-        }
       } else if (target.dataset.permissionPreset) {
         await apiPut("/v1/permissions", { permission_preset: target.dataset.permissionPreset });
         await refreshDashboard();
@@ -2961,18 +2803,15 @@ function bindActions() {
           await apiDelete(`/v1/memory/${target.dataset.memoryDelete}`);
           await refreshDashboard();
         }
-      } else if (target.dataset.useModel) {
-        elements.providerDefaultModel.value = target.dataset.useModel;
-        if (!elements.providerAliasModel.value.trim()) {
-          elements.providerAliasModel.value = target.dataset.useModel;
-        }
-        await refreshProviderCreateSuggestions();
       } else if (target.dataset.sessionView) {
         try {
           state.loadedPanels.add("sessions");
-          const session = await apiGet(`/v1/sessions/${encodeURIComponent(target.dataset.sessionView)}`);
-          const messages = session.messages || session.history || [];
-          elements.sessionDetail.innerHTML = renderSessionMessages(messages);
+          const packet = await apiGet(
+            `/v1/sessions/${encodeURIComponent(target.dataset.sessionView)}/resume-packet`
+          );
+          state.sessionDetailSessionId = packet.session?.id || target.dataset.sessionView;
+          state.sessionDetailPacket = packet;
+          elements.sessionDetail.innerHTML = renderSessionResumePacket(packet);
         } catch (err) {
           elements.sessionDetail.innerHTML = renderEmpty(`Failed to load session: ${err.message}`);
         }
@@ -2980,6 +2819,9 @@ function bindActions() {
         ensureChatRunIdle("switching chats");
         state.loadedPanels.add("sessions");
         await loadChatSession(target.dataset.sessionUse, { focusChat: true });
+      } else if (target.dataset.sessionFork) {
+        ensureChatRunIdle("forking chats");
+        await forkSessionById(target.dataset.sessionFork);
       } else if (target.dataset.sessionRename) {
         ensureChatRunIdle("renaming chats");
         const title = window.prompt("New session title:", "") || "";
@@ -2990,6 +2832,12 @@ function bindActions() {
         await refreshSessionsSummary();
         if (state.activeChatSessionId === target.dataset.sessionRename) {
           await loadChatSession(target.dataset.sessionRename);
+        }
+      } else if (target.dataset.chatAttachmentRemove) {
+        const index = Number.parseInt(target.dataset.chatAttachmentRemove, 10);
+        if (Number.isInteger(index) && index >= 0) {
+          state.chatAttachments = state.chatAttachments.filter((_, currentIndex) => currentIndex !== index);
+          renderChatAttachments();
         }
       } else if (target.dataset.mcpDelete) {
         if (window.confirm(`Delete MCP server ${target.dataset.mcpDelete}?`)) {
@@ -3036,11 +2884,6 @@ elements.clearButton.addEventListener("click", async () => {
   clearDashboardConnectionState({ clearTokenInput: true });
   state.activeChatSessionId = null;
   state.activeTranscript = [];
-  state.providerAuthSessionId = null;
-  state.providerAuthKind = null;
-  state.providerAuthWindow = null;
-  state.providerAuthStatusMessage = "";
-  state.providerAuthStatusTone = "neutral";
   setStatus("Waiting for a daemon token.", "neutral");
 });
 
@@ -3063,161 +2906,6 @@ elements.missionSchedule.addEventListener("click", async () => {
     await createMission(true);
   } catch (error) {
     setStatus(`Mission schedule failed: ${error.message}`, "warn");
-  }
-});
-
-elements.providerPreset.addEventListener("change", () => {
-  if (!state.editingProviderId) {
-    applyProviderPreset(elements.providerPreset.value);
-    refreshProviderCreateSuggestions().catch((error) => {
-      setStatus(`Provider suggestion failed: ${error.message}`, "warn");
-    });
-  }
-});
-
-elements.providerReset.addEventListener("click", () => {
-  resetProviderForm();
-});
-
-elements.providerBrowserAuth.addEventListener("click", async () => {
-  try {
-    await startProviderBrowserAuth();
-  } catch (error) {
-    setStatus(`Browser sign-in failed: ${error.message}`, "warn");
-  }
-});
-
-elements.providerKind.addEventListener("change", () => {
-  if (!state.providerAuthSessionId) {
-    state.providerAuthStatusMessage = "";
-    state.providerAuthStatusTone = "neutral";
-  }
-  applySuggestedProviderModelDefaults();
-  renderProviderBrowserAuthState();
-  refreshProviderCreateSuggestions().catch((error) => {
-    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
-  });
-});
-
-elements.providerBaseUrl.addEventListener("change", () => {
-  applySuggestedProviderModelDefaults();
-  renderProviderBrowserAuthState();
-  refreshProviderCreateSuggestions().catch((error) => {
-    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
-  });
-});
-
-elements.providerDefaultModel.addEventListener("change", () => {
-  if (trimToNull(elements.providerAliasName.value) && !trimToNull(elements.providerAliasModel.value)) {
-    elements.providerAliasModel.value = trimToNull(elements.providerDefaultModel.value) || "";
-  }
-  refreshProviderCreateSuggestions().catch((error) => {
-    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
-  });
-});
-
-elements.providerId.addEventListener("change", () => {
-  refreshProviderCreateSuggestions().catch((error) => {
-    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
-  });
-});
-
-elements.providerAliasName.addEventListener("change", () => {
-  applySuggestedProviderModelDefaults();
-  renderProviderBrowserAuthState();
-  refreshProviderCreateSuggestions().catch((error) => {
-    setStatus(`Provider suggestion failed: ${error.message}`, "warn");
-  });
-});
-
-elements.providerDiscoverModels.addEventListener("click", async () => {
-  try {
-    const providerId = elements.providerId.value.trim();
-    if (!providerId) {
-      throw new Error("Save or enter a provider ID first.");
-    }
-    await discoverProviderModels(providerId);
-  } catch (error) {
-    setStatus(`Model discovery failed: ${error.message}`, "warn");
-  }
-});
-
-elements.providerForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const submission = await resolveProviderFormSubmission();
-    const { providerId, displayName, defaultModel, aliasName, aliasModel, setAsMain } = submission;
-    const provider = {
-      id: providerId,
-      display_name: displayName,
-      kind: elements.providerKind.value,
-      base_url: elements.providerBaseUrl.value.trim(),
-      auth_mode: elements.providerAuthMode.value,
-      default_model: defaultModel,
-      keychain_account: null,
-      oauth: null,
-      local: elements.providerLocal.checked,
-    };
-    const oauthConfigText = elements.providerOauthConfig.value.trim();
-    if (oauthConfigText) {
-      provider.oauth = JSON.parse(oauthConfigText);
-    }
-    const payload = {
-      provider,
-      api_key: elements.providerApiKey.value.trim() || null,
-      oauth_token: null,
-    };
-    const oauthTokenText = elements.providerOauthToken.value.trim();
-    if (oauthTokenText) {
-      payload.oauth_token = JSON.parse(oauthTokenText);
-    }
-    await apiPost("/v1/providers", payload);
-    clearProviderSecretInputs();
-
-    if (aliasName) {
-      if (!trimToNull(elements.providerAliasModel.value) && aliasModel) {
-        elements.providerAliasModel.value = aliasModel;
-      }
-      await apiPost("/v1/aliases", {
-        alias: {
-          alias: aliasName,
-          provider_id: providerId,
-          model: aliasModel,
-          description: elements.providerAliasDescription.value.trim() || null,
-        },
-        set_as_main: setAsMain,
-      });
-    }
-    await refreshDashboard();
-    populateProviderForm(providerId);
-    setStatus(`Provider ${providerId} saved.`, "ok");
-  } catch (error) {
-    setStatus(`Provider save failed: ${error.message}`, "warn");
-  }
-});
-
-elements.aliasForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const name = elements.aliasName.value.trim();
-    const providerId = elements.aliasProvider.value.trim();
-    const model = elements.aliasModel.value.trim();
-    if (!name || !providerId || !model) {
-      throw new Error("Alias name, provider ID, and model are required.");
-    }
-    await apiPost("/v1/aliases", {
-      alias: {
-        alias: name,
-        provider_id: providerId,
-        model,
-        description: elements.aliasDescription.value.trim() || null,
-      },
-      set_as_main: elements.aliasMain.checked,
-    });
-    elements.aliasForm.reset();
-    await refreshDashboard();
-  } catch (error) {
-    setStatus(`Alias save failed: ${error.message}`, "warn");
   }
 });
 
@@ -3261,25 +2949,52 @@ elements.memorySearchForm.addEventListener("submit", async (event) => {
       throw new Error("Search query is required.");
     }
     const results = await apiPost("/v1/memory/search", { query });
-    const items = Array.isArray(results) ? results : results.results || [];
-    elements.memorySearchResults.innerHTML = items.length
+    const items = Array.isArray(results) ? results : results.memories || results.results || [];
+    const transcriptHits = Array.isArray(results.transcript_hits) ? results.transcript_hits : [];
+    const memoryCards = items.length
       ? items
-          .map(
-            (memory) => `
-              <article class="stack-card">
-                <div class="card-title-row">
-                  <div>
-                    <h4>${escapeHtml(memory.subject)}</h4>
-                    <p class="card-subtitle">${escapeHtml(memory.kind || "-")} · ${escapeHtml(memory.scope || "-")}</p>
-                  </div>
-                  ${buttonHtml("Delete", { memoryDelete: memory.id }, "button-small--ghost")}
-                </div>
-                <p class="card-copy">${escapeHtml(memory.content)}</p>
-              </article>
-            `
+          .map((memory) =>
+            renderMemoryCard(memory, {
+              actions: buttonHtml("Delete", { memoryDelete: memory.id }, "button-small--ghost"),
+            })
           )
           .join("")
-      : renderEmpty("No matching memories found.");
+      : "";
+    const transcriptCard = transcriptHits.length
+      ? `
+        <article class="stack-card stack-card--resume">
+          <div class="card-title-row">
+            <div>
+              <h4>Transcript hits</h4>
+              <p class="card-subtitle">${escapeHtml(transcriptHits.length)} related message(s)</p>
+            </div>
+            ${badge("transcripts", "info")}
+          </div>
+          <div class="resume-section">
+            ${transcriptHits
+              .map(
+                (hit) => `
+                  <article class="stack-card stack-card--compact">
+                    <div class="card-title-row">
+                      <div>
+                        <h4>${escapeHtml(hit.session_id)}</h4>
+                        <p class="card-subtitle">${escapeHtml(hit.role || "-")} · ${escapeHtml(fmtDate(hit.created_at))}</p>
+                      </div>
+                      ${badge("hit", "info")}
+                    </div>
+                    <p class="card-copy">${escapeHtml(hit.preview)}</p>
+                  </article>
+                `
+              )
+              .join("")}
+          </div>
+        </article>
+      `
+      : "";
+    elements.memorySearchResults.innerHTML =
+      memoryCards || transcriptCard
+        ? `${memoryCards}${transcriptCard}`
+        : renderEmpty("No matching memories found.");
   } catch (error) {
     setStatus(`Memory search failed: ${error.message}`, "warn");
   }
@@ -3290,6 +3005,11 @@ elements.memoryCreateForm.addEventListener("submit", async (event) => {
   try {
     const subject = elements.memoryCreateSubject.value.trim();
     const content = elements.memoryCreateContent.value.trim();
+    const sourceSessionId =
+      state.activeChatSessionId ||
+      state.sessionDetailSessionId ||
+      elements.memoryRebuildSessionId?.value.trim() ||
+      null;
     if (!subject || !content) {
       throw new Error("Subject and content are required.");
     }
@@ -3298,6 +3018,11 @@ elements.memoryCreateForm.addEventListener("submit", async (event) => {
       scope: elements.memoryCreateScope.value,
       subject,
       content,
+      confidence: 100,
+      source_session_id: sourceSessionId,
+      workspace_key: currentChatCwd() || null,
+      tags: ["manual"],
+      review_status: "accepted",
     });
     elements.memoryCreateForm.reset();
     await refreshDashboard();
@@ -3306,228 +3031,55 @@ elements.memoryCreateForm.addEventListener("submit", async (event) => {
   }
 });
 
-function connectorTypeFields(type) {
-  const fieldMap = {
-    telegram: [
-      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
-      { label: "Bot token", id: "bot_token", placeholder: "123456:ABC-DEF..." },
-      { label: "Allowed chat IDs (comma-separated)", id: "allowed_chat_ids", placeholder: "12345,67890" },
-      { label: "Allowed user IDs (comma-separated)", id: "allowed_user_ids", placeholder: "12345,67890" },
-    ],
-    discord: [
-      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
-      { label: "Bot token", id: "bot_token", placeholder: "Discord bot token" },
-      { label: "Monitored channel IDs (comma-separated)", id: "monitored_channel_ids", placeholder: "123,456" },
-      { label: "Allowed channel IDs (comma-separated)", id: "allowed_channel_ids", placeholder: "123,456" },
-      { label: "Allowed user IDs (comma-separated)", id: "allowed_user_ids", placeholder: "123,456" },
-    ],
-    slack: [
-      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
-      { label: "Bot token", id: "bot_token", placeholder: "xoxb-..." },
-      { label: "Monitored channel IDs (comma-separated)", id: "monitored_channel_ids", placeholder: "C01..." },
-      { label: "Allowed channel IDs (comma-separated)", id: "allowed_channel_ids", placeholder: "C01..." },
-      { label: "Allowed user IDs (comma-separated)", id: "allowed_user_ids", placeholder: "U01..." },
-    ],
-    signal: [
-      { label: "Account", id: "account", placeholder: "+1234567890" },
-      { label: "CLI path", id: "cli_path", placeholder: "/usr/bin/signal-cli" },
-      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
-      { label: "Monitored group IDs (comma-separated)", id: "monitored_group_ids", placeholder: "group-id" },
-      { label: "Allowed group IDs (comma-separated)", id: "allowed_group_ids", placeholder: "group-id" },
-      { label: "Allowed user IDs (comma-separated)", id: "allowed_user_ids", placeholder: "+1234567890" },
-    ],
-    "home-assistant": [
-      { label: "Base URL", id: "base_url", placeholder: "http://homeassistant.local:8123" },
-      { label: "Access token", id: "access_token", placeholder: "HA long-lived access token" },
-      { label: "Monitored entity IDs (comma-separated)", id: "monitored_entity_ids", placeholder: "sensor.temp" },
-      { label: "Allowed service domains (comma-separated)", id: "allowed_service_domains", placeholder: "light,switch" },
-      { label: "Allowed service entity IDs (comma-separated)", id: "allowed_service_entity_ids", placeholder: "light.office" },
-    ],
-    webhook: [
-      { label: "Prompt template", id: "prompt_template", placeholder: "Handle: {{body}}" },
-      { label: "Webhook token", id: "webhook_token", placeholder: "Generated or pasted shared secret" },
-    ],
-    inbox: [
-      { label: "Path", id: "path", placeholder: "/path/to/inbox" },
-      { label: "Delete after read", id: "delete_after_read", type: "checkbox" },
-    ],
-    gmail: [
-      { label: "OAuth token", id: "oauth_token", placeholder: "Gmail OAuth access token" },
-      { label: "Require pairing approval", id: "require_pairing_approval", type: "checkbox" },
-      { label: "Allowed senders (comma-separated)", id: "allowed_sender_addresses", placeholder: "user@example.com" },
-      { label: "Label filter", id: "label_filter", placeholder: "INBOX" },
-    ],
-    brave: [
-      { label: "API key", id: "api_key", placeholder: "BSA..." },
-    ],
-  };
-  return fieldMap[type] || [];
+if (elements.memoryRebuildForm) {
+  elements.memoryRebuildForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const sessionId = elements.memoryRebuildSessionId?.value.trim() || "";
+      const recomputeEmbeddings = Boolean(elements.memoryRebuildEmbeddings?.checked);
+      const response = await apiPost("/v1/memory/rebuild", {
+        session_id: sessionId || undefined,
+        recompute_embeddings: recomputeEmbeddings,
+      });
+      elements.memoryRebuildForm.reset();
+      setStatus(
+        `Rebuilt memory from ${response.sessions_scanned} session(s) and ${response.observations_scanned} observation(s).`,
+        "ok"
+      );
+      await refreshDashboard({ includeLoadedPanels: true, forcePanels: ["memory", "profile", "sessions"] });
+      if (state.sessionDetailSessionId) {
+        const packet = await apiGet(
+          `/v1/sessions/${encodeURIComponent(state.sessionDetailSessionId)}/resume-packet`
+        ).catch(() => null);
+        if (packet) {
+          state.sessionDetailPacket = packet;
+          renderActiveSessionDetail();
+        }
+      }
+    } catch (error) {
+      setStatus(`Memory rebuild failed: ${error.message}`, "warn");
+    }
+  });
 }
 
-function updateConnectorAddFields() {
-  const type = elements.connectorAddType.value;
-  const fields = connectorTypeFields(type);
-  elements.connectorAddFields.innerHTML = fields
-    .map(
-      (field) =>
-        field.type === "checkbox"
-          ? `
-        <label class="checkbox-field">
-          <input type="checkbox" data-connector-field="${escapeHtml(field.id)}">
-          <span>${escapeHtml(field.label)}</span>
-        </label>
-      `
-          : `
-        <label class="field">
-          <span>${escapeHtml(field.label)}</span>
-          <input type="text" data-connector-field="${escapeHtml(field.id)}" autocomplete="off" placeholder="${escapeHtml(field.placeholder || "")}">
-        </label>
-      `
-    )
-    .join("");
+if (window.dashboardConnectors) {
+  window.dashboardConnectors.bind();
 }
-
-elements.connectorAddType.addEventListener("change", updateConnectorAddFields);
-updateConnectorAddFields();
-elements.connectorReset.addEventListener("click", () => {
-  resetConnectorForm();
-});
-
-elements.connectorAddForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const type = elements.connectorAddType.value;
-    const name = elements.connectorAddName.value.trim();
-    if (!name) {
-      throw new Error("Connector name is required.");
-    }
-    const connector = {
-      id: elements.connectorAddId.value.trim() || crypto.randomUUID(),
-      name,
-      description: elements.connectorAddDescription.value.trim(),
-      enabled: elements.connectorAddEnabled.checked,
-    };
-    if (elements.connectorAddAlias.value.trim()) {
-      connector.alias = elements.connectorAddAlias.value.trim();
-    }
-    if (elements.connectorAddModel.value.trim()) {
-      connector.requested_model = elements.connectorAddModel.value.trim();
-    }
-    if (elements.connectorAddCwd.value.trim()) {
-      connector.cwd = elements.connectorAddCwd.value.trim();
-    }
-    const fieldInputs = elements.connectorAddFields.querySelectorAll("[data-connector-field]");
-    const payload = { connector };
-    for (const input of fieldInputs) {
-      const key = input.dataset.connectorField;
-      if (input instanceof HTMLInputElement && input.type === "checkbox") {
-        connector[key] = input.checked;
-        continue;
-      }
-      const value = input.value.trim();
-      if (!value) {
-        continue;
-      }
-      if (["bot_token", "access_token", "oauth_token", "webhook_token", "api_key"].includes(key)) {
-        payload[key] = value;
-      } else if (key === "allowed_chat_ids" || key === "allowed_user_ids") {
-        connector[key] = parseDelimitedList(value, (item) => Number.parseInt(item, 10)).filter((item) => Number.isFinite(item));
-      } else if (key.endsWith("_ids") || key.endsWith("_addresses") || key.endsWith("_domains")) {
-        connector[key] = parseDelimitedList(value);
-      } else {
-        connector[key] = value;
-      }
-    }
-    const basePath = connectorBasePath(type);
-    if (!basePath) {
-      throw new Error(`Unknown connector type: ${type}`);
-    }
-    await apiPost(basePath, payload);
-    resetConnectorForm();
-    await refreshDashboard();
-  } catch (error) {
-    setStatus(`Connector save failed: ${error.message}`, "warn");
-  }
-});
 
 elements.runTaskForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    if (state.chatRunInFlight) {
-      throw new Error("A chat run is already in progress.");
-    }
-    const prompt = elements.runTaskPrompt.value.trim();
-    if (!prompt) {
+    const input = elements.runTaskPrompt.value.trim();
+    if (!input) {
       throw new Error("Prompt is required.");
     }
-    const payload = {
-      prompt,
-      session_id: state.activeChatSessionId,
-    };
-    const alias = elements.runTaskAlias.value.trim();
-    const model = elements.runTaskModel.value.trim();
-    const thinking = elements.runTaskThinking.value;
-    const permissionPreset = elements.runTaskPermission.value;
-    if (alias) payload.alias = alias;
-    if (model) payload.requested_model = model;
-    if (thinking) payload.thinking_level = thinking;
-    if (permissionPreset) payload.permission_preset = permissionPreset;
-    const chatSnapshot = snapshotChatState();
-    setChatRunState(true);
-    const optimisticMessage = {
-      role: "user",
-      content: prompt,
-      created_at: new Date().toISOString(),
-      provider_id: alias || "user",
-      model: model || "",
-      tool_calls: [],
-      attachments: [],
-    };
-    state.activeTranscript = [...(state.activeTranscript || []), optimisticMessage];
-    renderChatTranscript(state.activeTranscript);
-    renderActiveSessionDetail();
-    elements.runTaskResult.innerHTML = renderEmpty("Working...");
-    let completedResponse = null;
-    let streamError = null;
-    state.pendingChatSessionId = null;
-    await apiStream("/v1/run/stream", payload, (streamEvent) => {
-      if (streamEvent.type === "session_started") {
-        state.pendingChatSessionId = streamEvent.session_id || state.pendingChatSessionId;
-        elements.chatSessionMeta.textContent = [
-          streamEvent.alias,
-          streamEvent.model,
-          streamEvent.session_id,
-        ]
-          .filter(Boolean)
-          .join(" | ");
-      } else if (streamEvent.type === "message" && streamEvent.message) {
-        state.activeTranscript = [...(state.activeTranscript || []), streamEvent.message];
-        renderChatTranscript(state.activeTranscript);
-        renderActiveSessionDetail();
-      } else if (streamEvent.type === "completed") {
-        completedResponse = streamEvent.response || null;
-      } else if (streamEvent.type === "error") {
-        streamError = streamEvent.message || "Task failed.";
-      }
-    });
-    if (streamError) {
-      throw new Error(streamError);
+    if (input.startsWith("!")) {
+      await executeShellCommand(input.slice(1).trim());
+    } else if (!(await runSlashCommand(input))) {
+      await executeChatPrompt(input);
     }
-    elements.runTaskPrompt.value = "";
-    elements.runTaskResult.innerHTML = renderEmpty("Response received.");
-    if (completedResponse && completedResponse.session_id) {
-      await loadChatSession(completedResponse.session_id);
-    }
-    await refreshSessionsSummary();
   } catch (error) {
-    if (!completedResponse) {
-      restoreChatState(chatSnapshot);
-    } else {
-      state.pendingChatSessionId = null;
-    }
-    elements.runTaskResult.innerHTML = renderEmpty(`Task failed: ${error.message}`);
-  } finally {
-    setChatRunState(false);
+    setStatus(`Chat action failed: ${error.message}`, "warn");
   }
 });
 
@@ -3558,6 +3110,95 @@ elements.chatRenameButton.addEventListener("click", async () => {
   }
 });
 
+elements.chatForkButton.addEventListener("click", async () => {
+  try {
+    ensureChatRunIdle("forking chats");
+    if (!state.activeChatSessionId) {
+      throw new Error("No active chat to fork.");
+    }
+    await forkSessionById(state.activeChatSessionId);
+  } catch (error) {
+    setStatus(`Chat fork failed: ${error.message}`, "warn");
+  }
+});
+
+elements.chatCompactButton.addEventListener("click", async () => {
+  try {
+    ensureChatRunIdle("compacting chats");
+    await compactActiveChat();
+  } catch (error) {
+    setStatus(`Chat compact failed: ${error.message}`, "warn");
+  }
+});
+
+elements.chatAttachmentAdd.addEventListener("click", () => {
+  try {
+    addChatAttachment(elements.chatAttachmentPath.value);
+    elements.chatAttachmentPath.value = "";
+  } catch (error) {
+    setStatus(`Attachment failed: ${error.message}`, "warn");
+  }
+});
+
+elements.chatAttachmentsClear.addEventListener("click", () => {
+  clearChatAttachments();
+  pushConsoleEntry("Attachments", "attachments cleared", {
+    tone: "good",
+    label: "attachments",
+    preformatted: false,
+  });
+});
+
+elements.chatAttachmentPath.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    elements.chatAttachmentAdd.click();
+  }
+});
+
+elements.chatCwd.addEventListener("change", () => {
+  setChatCwd(elements.chatCwd.value);
+});
+
+elements.chatUseDaemonCwd.addEventListener("click", () => {
+  setChatCwd("");
+  pushConsoleEntry("Workspace", "Chat cwd reset to the daemon working directory.", {
+    tone: "info",
+    label: "workspace",
+    preformatted: false,
+  });
+});
+
+elements.chatUseSessionCwd.addEventListener("click", () => {
+  setChatCwd(activeSessionSummary()?.cwd || "");
+});
+
+elements.chatUseWorkspaceCwd.addEventListener("click", () => {
+  const report = currentWorkspaceReport();
+  const workspacePath =
+    report?.workspace_root ||
+    report?.requested_path ||
+    document.getElementById("workspace-path")?.value ||
+    "";
+  setChatCwd(workspacePath);
+});
+
+elements.chatStatusShortcut.addEventListener("click", () => {
+  runSlashCommand("/status").catch((error) => setStatus(`Status failed: ${error.message}`, "warn"));
+});
+
+elements.chatDiffShortcut.addEventListener("click", () => {
+  runSlashCommand("/diff").catch((error) => setStatus(`Diff failed: ${error.message}`, "warn"));
+});
+
+elements.chatReviewShortcut.addEventListener("click", () => {
+  runSlashCommand("/review").catch((error) => setStatus(`Review failed: ${error.message}`, "warn"));
+});
+
+elements.chatCopyShortcut.addEventListener("click", () => {
+  copyLatestAssistantOutput().catch((error) => setStatus(`Copy failed: ${error.message}`, "warn"));
+});
+
 elements.mcpAddForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -3586,36 +3227,41 @@ elements.mcpAddForm.addEventListener("submit", async (event) => {
 
 bootstrapToken();
 initializeLazyPanelPlaceholders();
-resetProviderForm();
+const initialPanelId = window.location.hash.replace(/^#/, "");
+state.activeDashboardTab = PANEL_TO_TAB[initialPanelId] || loadActiveDashboardTab();
+updateDashboardTabButtons();
+updateDashboardPanelVisibility();
+renderDashboardTabLinks();
+renderChatAttachments();
+renderConsoleEntries();
+syncChatCwdInput();
 startNewChat();
+if (window.dashboardProviders) {
+  window.dashboardProviders.bind();
+}
+if (window.dashboardWorkspace) {
+  window.dashboardWorkspace.bind();
+}
+if (window.dashboardSettings) {
+  window.dashboardSettings.bind();
+}
 bindActions();
 setupLazyPanels();
 scheduleRefresh();
+elements.dashboardTabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    activateDashboardTab(button.dataset.dashboardTabTrigger, { scrollToTop: true });
+  });
+});
 window.addEventListener("hashchange", () => {
   const panelId = window.location.hash.replace(/^#/, "");
   if (panelId) {
+    focusSection(panelId);
     ensurePanelLoaded(panelId).catch((error) => {
       setStatus(`Panel load failed: ${error.message}`, "warn");
     });
   }
 });
-window.addEventListener("message", (event) => {
-  if (event.origin !== window.location.origin) {
-    return;
-  }
-  const data = event.data;
-  if (!data || data.type !== "provider-auth" || !data.sessionId) {
-    return;
-  }
-  if (state.providerAuthSessionId && state.providerAuthSessionId !== data.sessionId) {
-    return;
-  }
-  pollProviderBrowserAuthSession(data.sessionId, { refresh: true }).catch((error) => {
-    setProviderBrowserAuthStatus(`Browser sign-in failed: ${error.message}`, "warn");
-    setStatus(`Browser sign-in failed: ${error.message}`, "warn");
-  });
-});
-
 async function updateMainAlias(alias) {
   const selectedAlias = String(alias || "").trim();
   if (!selectedAlias) {
@@ -3627,8 +3273,8 @@ async function updateMainAlias(alias) {
 }
 
 elements.runTaskAlias.addEventListener("change", () => {
-  if (state.lastData) {
-    renderProviders(state.lastData.providers || [], state.lastData.aliases || []);
+  if (state.lastData && window.dashboardProviders) {
+    window.dashboardProviders.render(state.lastData);
   }
 });
 

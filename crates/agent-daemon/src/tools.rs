@@ -28,10 +28,8 @@ use tokio::{process::Command, time::timeout};
 use crate::{
     append_log, execute_batch_request,
     patch::{apply_hunks_to_text, parse_patch_text, PatchOperation},
-    AppState, DelegationExecutionOptions,
+    AppState, DelegationExecutionOptions, HostedPluginTool,
 };
-use agent_providers::store_api_key;
-
 mod admin_helpers;
 mod argument_helpers;
 mod connector_tools;
@@ -77,9 +75,11 @@ pub(crate) struct ToolContext {
     pub http_client: Client,
     pub mcp_servers: Vec<McpServerConfig>,
     pub app_connectors: Vec<AppConnectorConfig>,
+    pub plugin_tools: Vec<HostedPluginTool>,
     pub brave_connectors: Vec<BraveConnectorConfig>,
     pub current_alias: Option<String>,
     pub default_thinking_level: Option<ThinkingLevel>,
+    pub task_mode: Option<agent_core::TaskMode>,
     pub delegation: DelegationConfig,
     pub delegation_targets: Vec<DelegationTarget>,
     pub delegation_depth: u8,
@@ -446,6 +446,15 @@ pub(crate) fn tool_definitions(context: &ToolContext) -> Vec<ToolDefinition> {
                 tools.push(tool);
             }
         }
+        for plugin_tool in &context.plugin_tools {
+            if let Some(tool) = dynamic_tool_definition(
+                &plugin_tool.tool_name,
+                &plugin_tool.description,
+                &plugin_tool.input_schema_json,
+            ) {
+                tools.push(tool);
+            }
+        }
     }
 
     tools
@@ -454,8 +463,7 @@ pub(crate) fn tool_definitions(context: &ToolContext) -> Vec<ToolDefinition> {
 pub(crate) fn effective_tool_definitions(context: &ToolContext) -> Vec<ToolDefinition> {
     let mut tools = tool_definitions(context);
     tools.retain(|tool| tool_allowed_by_preset(&tool.name, context.permission_preset));
-    if !context.background_shell_allowed || !allow_shell(&context.trust_policy, &context.autonomy)
-    {
+    if !context.background_shell_allowed || !allow_shell(&context.trust_policy, &context.autonomy) {
         tools.retain(|tool| {
             !matches!(
                 tool.name.as_str(),
@@ -491,8 +499,8 @@ pub(crate) async fn execute_tool_call(
         )
     } else {
         match execute_tool_call_inner(context, call).await {
-        Ok(output) => (output, ToolExecutionOutcome::Success),
-        Err(error) => (format!("ERROR: {error:#}"), ToolExecutionOutcome::Error),
+            Ok(output) => (output, ToolExecutionOutcome::Success),
+            Err(error) => (format!("ERROR: {error:#}"), ToolExecutionOutcome::Error),
         }
     };
     let sanitized_arguments = sanitize_tool_arguments(&call.name, &call.arguments);
@@ -677,9 +685,11 @@ mod tests {
             http_client: Client::new(),
             mcp_servers: Vec::new(),
             app_connectors: Vec::new(),
+            plugin_tools: Vec::new(),
             brave_connectors: Vec::new(),
             current_alias: Some("main".to_string()),
             default_thinking_level: None,
+            task_mode: None,
             delegation: agent_core::DelegationConfig::default(),
             delegation_targets: Vec::new(),
             delegation_depth: 0,

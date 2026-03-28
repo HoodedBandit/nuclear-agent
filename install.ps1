@@ -1,5 +1,5 @@
 param(
-    [string]$InstallDir = $env:AUTISM_INSTALL_DIR,
+    [string]$InstallDir,
     [switch]$NoPathPersist,
     [switch]$PreferSourceBuild,
     [switch]$SkipPlaywrightSetup
@@ -63,11 +63,19 @@ function Choose-DefaultInstallDir {
 }
 
 function Get-ManagedDependencyRoot {
+    if (-not [string]::IsNullOrWhiteSpace($env:NUCLEAR_DEPENDENCY_ROOT)) {
+        return $env:NUCLEAR_DEPENDENCY_ROOT
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($env:AUTISM_DEPENDENCY_ROOT)) {
         return $env:AUTISM_DEPENDENCY_ROOT
     }
 
     return Join-Path $env:LOCALAPPDATA "Programs\NuclearAI\Autism\deps"
+}
+
+function Get-ManagedPlaywrightRoot {
+    return Join-Path (Get-ManagedDependencyRoot) "ms-playwright"
 }
 
 function Resolve-SourceRoot {
@@ -89,7 +97,9 @@ function Resolve-BundledBinary {
     param([string]$Root)
 
     $candidates = @(
+        (Join-Path $Root "bin\windows-x64\nuclear.exe"),
         (Join-Path $Root "bin\windows-x64\autism.exe"),
+        (Join-Path $Root "target\release\nuclear.exe"),
         (Join-Path $Root "target\release\autism.exe")
     )
 
@@ -240,6 +250,43 @@ function Get-ManagedNodeHome {
     return $null
 }
 
+function Get-BundledNodeHome {
+    param([string]$Root)
+
+    $candidates = @(
+        (Join-Path $Root "deps"),
+        (Join-Path $Root "source\deps")
+    )
+
+    foreach ($candidateRoot in $candidates) {
+        if (-not (Test-Path $candidateRoot)) {
+            continue
+        }
+
+        $candidate = Get-ChildItem -Path $candidateRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "node-v*-win-*" } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if ($candidate -and (Test-Path (Join-Path $candidate.FullName "node.exe"))) {
+            return $candidate.FullName
+        }
+    }
+
+    return $null
+}
+
+function Copy-DirectoryContents {
+    param(
+        [string]$Source,
+        [string]$Destination
+    )
+
+    Ensure-InstallDir -TargetDir $Destination
+    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Destination $_.Name) -Recurse -Force
+    }
+}
+
 function Get-NodeDownloadInfo {
     $archTag = Get-NodeArchTag
     $zipTag = "win-$archTag-zip"
@@ -266,6 +313,8 @@ function Get-NodeDownloadInfo {
 }
 
 function Install-PortableNode {
+    param([string]$BundleRoot)
+
     $existing = Get-ManagedNodeHome
     if ($existing) {
         Add-ToProcessPath -Entry $existing
@@ -274,6 +323,23 @@ function Install-PortableNode {
 
     $dependencyRoot = Get-ManagedDependencyRoot
     Ensure-InstallDir -TargetDir $dependencyRoot
+
+    $bundledNode = $null
+    if (-not [string]::IsNullOrWhiteSpace($BundleRoot)) {
+        $bundledNode = Get-BundledNodeHome -Root $BundleRoot
+    }
+    if ($bundledNode) {
+        $targetHome = Join-Path $dependencyRoot (Split-Path -Leaf $bundledNode)
+        if (-not (Test-Path (Join-Path $targetHome "node.exe"))) {
+            Write-Step "Node.js not found; using bundled portable Node.js runtime"
+            if (Test-Path $targetHome) {
+                Remove-Item -Recurse -Force $targetHome
+            }
+            Copy-DirectoryContents -Source $bundledNode -Destination $targetHome
+        }
+        Add-ToProcessPath -Entry $targetHome
+        return $targetHome
+    }
 
     $download = Get-NodeDownloadInfo
     $targetHome = Join-Path $dependencyRoot $download.FolderName
@@ -306,6 +372,8 @@ function Install-PortableNode {
 }
 
 function Ensure-NodeRuntime {
+    param([string]$BundleRoot)
+
     $nodePath = Get-NodeCommand -Name "node"
     $npmPath = Get-NodeCommand -Name "npm"
     if ($nodePath -and $npmPath) {
@@ -316,7 +384,7 @@ function Ensure-NodeRuntime {
         }
     }
 
-    $managedNodeHome = Install-PortableNode
+    $managedNodeHome = Install-PortableNode -BundleRoot $BundleRoot
     $nodePath = Get-NodeCommand -Name "node"
     $npmPath = Get-NodeCommand -Name "npm"
     if (-not $nodePath -or -not $npmPath) {
@@ -382,6 +450,23 @@ function Get-LocalPlaywrightCommand {
     return $null
 }
 
+function Get-BundledPlaywrightRoot {
+    param([string]$Root)
+
+    $candidates = @(
+        (Join-Path $Root "deps\ms-playwright"),
+        (Join-Path $Root "source\deps\ms-playwright")
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
 function Ensure-PlaywrightDependencies {
     param(
         [string]$SourceRoot,
@@ -413,10 +498,33 @@ function Ensure-PlaywrightDependencies {
     }
 }
 
-function Get-PlaywrightInstallLocations {
-    param([string]$PlaywrightCommand)
+function Invoke-Playwright {
+    param(
+        [string]$PlaywrightCommand,
+        [string[]]$Arguments,
+        [string]$BrowsersPath
+    )
 
-    $output = & $PlaywrightCommand install chromium --dry-run 2>&1 | Out-String
+    $previousBrowsersPath = $env:PLAYWRIGHT_BROWSERS_PATH
+    try {
+        $env:PLAYWRIGHT_BROWSERS_PATH = $BrowsersPath
+        & $PlaywrightCommand @Arguments 2>&1 | Out-String
+    } finally {
+        if ($null -eq $previousBrowsersPath) {
+            Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
+        } else {
+            $env:PLAYWRIGHT_BROWSERS_PATH = $previousBrowsersPath
+        }
+    }
+}
+
+function Get-PlaywrightInstallLocations {
+    param(
+        [string]$PlaywrightCommand,
+        [string]$BrowsersPath
+    )
+
+    $output = Invoke-Playwright -PlaywrightCommand $PlaywrightCommand -Arguments @("install", "chromium", "--dry-run") -BrowsersPath $BrowsersPath
     if ($LASTEXITCODE -ne 0) {
         throw "Playwright dry-run failed with exit code $LASTEXITCODE.`n$output"
     }
@@ -435,9 +543,12 @@ function Get-PlaywrightInstallLocations {
 }
 
 function Test-PlaywrightChromiumInstalled {
-    param([string]$PlaywrightCommand)
+    param(
+        [string]$PlaywrightCommand,
+        [string]$BrowsersPath
+    )
 
-    $locations = Get-PlaywrightInstallLocations -PlaywrightCommand $PlaywrightCommand
+    $locations = Get-PlaywrightInstallLocations -PlaywrightCommand $PlaywrightCommand -BrowsersPath $BrowsersPath
     foreach ($location in $locations) {
         if (-not (Test-Path $location)) {
             return $false
@@ -448,7 +559,10 @@ function Test-PlaywrightChromiumInstalled {
 }
 
 function Ensure-PlaywrightChromium {
-    param([string]$SourceRoot)
+    param(
+        [string]$SourceRoot,
+        [string]$BundleRoot
+    )
 
     if ($SkipPlaywrightSetup) {
         Write-Step "Skipping Playwright browser setup for this install run"
@@ -459,7 +573,7 @@ function Ensure-PlaywrightChromium {
         return
     }
 
-    $nodeRuntime = Ensure-NodeRuntime
+    $nodeRuntime = Ensure-NodeRuntime -BundleRoot $BundleRoot
     if ($nodeRuntime.Managed) {
         Write-Step "Using managed Node.js runtime for package dependency setup"
     }
@@ -471,15 +585,31 @@ function Ensure-PlaywrightChromium {
         throw "Playwright CLI was not found after npm dependency installation."
     }
 
-    if (Test-PlaywrightChromiumInstalled -PlaywrightCommand $playwrightCommand) {
+    $browsersPath = Get-ManagedPlaywrightRoot
+    Ensure-InstallDir -TargetDir $browsersPath
+
+    if (Test-PlaywrightChromiumInstalled -PlaywrightCommand $playwrightCommand -BrowsersPath $browsersPath) {
         Write-Step "Playwright Chromium is already installed; leaving the existing browser bundle in place"
         return
+    }
+
+    $bundledPlaywrightRoot = $null
+    if (-not [string]::IsNullOrWhiteSpace($BundleRoot)) {
+        $bundledPlaywrightRoot = Get-BundledPlaywrightRoot -Root $BundleRoot
+    }
+    if ($bundledPlaywrightRoot) {
+        Write-Step "Using bundled Playwright browser bundle"
+        Copy-DirectoryContents -Source $bundledPlaywrightRoot -Destination $browsersPath
+        if (Test-PlaywrightChromiumInstalled -PlaywrightCommand $playwrightCommand -BrowsersPath $browsersPath) {
+            Write-Step "Playwright Chromium is available from the bundled browser payload"
+            return
+        }
     }
 
     Write-Step "Installing Playwright Chromium browser bundle"
     Push-Location $SourceRoot
     try {
-        & $playwrightCommand install chromium
+        Invoke-Playwright -PlaywrightCommand $playwrightCommand -Arguments @("install", "chromium") -BrowsersPath $browsersPath | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Playwright Chromium install failed with exit code $LASTEXITCODE"
         }
@@ -561,7 +691,7 @@ function Get-InstalledAutismProcesses {
     }
 
     $normalized = [System.IO.Path]::GetFullPath($BinaryPath)
-    Get-CimInstance Win32_Process -Filter "Name = 'autism.exe'" -ErrorAction SilentlyContinue |
+    Get-CimInstance Win32_Process -Filter "Name = 'nuclear.exe' OR Name = 'autism.exe'" -ErrorAction SilentlyContinue |
         Where-Object {
             $_.ExecutablePath -and
             ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $normalized)
@@ -575,7 +705,7 @@ function Stop-InstalledAutismProcesses {
         return
     }
 
-    Write-Step "Stopping any running autism processes from the install directory"
+    Write-Step "Stopping any running Nuclear Agent compatibility processes from the install directory"
     try {
         & $BinaryPath daemon stop *> $null
     } catch {
@@ -595,29 +725,174 @@ function Stop-InstalledAutismProcesses {
     }
 }
 
-function Write-CommandShim {
-    param([string]$InstallDir)
+function Get-AppConfigPath {
+    if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        return $null
+    }
 
-    $shimPath = Join-Path $InstallDir "autism.cmd"
-    $lines = @(
-        "@echo off",
-        """%~dp0autism.exe"" %*"
+    $configPath = Join-Path $env:APPDATA "NuclearAI\Agent Builder\config\config.json"
+    if (Test-Path $configPath) {
+        return $configPath
+    }
+
+    return $null
+}
+
+function Get-ConfiguredDaemonEndpoint {
+    $configPath = Get-AppConfigPath
+    if (-not $configPath) {
+        return $null
+    }
+
+    try {
+        $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+
+    if (-not $config.daemon) {
+        return $null
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$config.daemon.host) -or -not $config.daemon.port) {
+        return $null
+    }
+
+    return @{
+        Host = [string]$config.daemon.host
+        Port = [int]$config.daemon.port
+        Token = [string]$config.daemon.token
+    }
+}
+
+function Get-ListeningProcessIdsForPort {
+    param([int]$Port)
+
+    $processIds = @()
+
+    try {
+        $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+        foreach ($connection in $connections) {
+            if ($connection.OwningProcess) {
+                $processIds += [int]$connection.OwningProcess
+            }
+        }
+    } catch {
+    }
+
+    if ($processIds.Count -eq 0) {
+        try {
+            $netstatOutput = & netstat -ano -p tcp 2>$null
+            foreach ($line in $netstatOutput) {
+                if ($line -match "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+                    $processIds += [int]$matches[1]
+                }
+            }
+        } catch {
+        }
+    }
+
+    return @($processIds | Select-Object -Unique)
+}
+
+function Test-PortListening {
+    param([int]$Port)
+
+    return @(Get-ListeningProcessIdsForPort -Port $Port).Length -gt 0
+}
+
+function Wait-ForPortToClose {
+    param(
+        [int]$Port,
+        [int]$TimeoutSeconds = 15
     )
-    Set-Content -Path $shimPath -Value $lines -Encoding Ascii
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-PortListening -Port $Port)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    return (-not (Test-PortListening -Port $Port))
+}
+
+function Stop-ConfiguredDaemon {
+    param([string]$BinaryPath)
+
+    $daemon = Get-ConfiguredDaemonEndpoint
+    if (-not $daemon) {
+        return
+    }
+
+    if (-not (Test-PortListening -Port $daemon.Port)) {
+        return
+    }
+
+    Write-Step "Stopping configured daemon on $($daemon.Host):$($daemon.Port)"
+
+    $stopRequested = $false
+    if (Test-Path $BinaryPath) {
+        try {
+            & $BinaryPath daemon stop *> $null
+            if ($LASTEXITCODE -eq 0) {
+                $stopRequested = $true
+            }
+        } catch {
+        }
+    }
+
+    if (-not $stopRequested -and -not [string]::IsNullOrWhiteSpace($daemon.Token)) {
+        try {
+            Invoke-RestMethod `
+                -Method Post `
+                -Uri ("http://{0}:{1}/v1/shutdown" -f $daemon.Host, $daemon.Port) `
+                -Headers @{ Authorization = "Bearer $($daemon.Token)" } `
+                -ContentType "application/json" `
+                -Body "{}" | Out-Null
+            $stopRequested = $true
+        } catch {
+        }
+    }
+
+    if (Wait-ForPortToClose -Port $daemon.Port -TimeoutSeconds 15) {
+        return
+    }
+
+    $processIds = @(Get-ListeningProcessIdsForPort -Port $daemon.Port)
+    foreach ($processId in $processIds) {
+        try {
+            $process = Get-Process -Id $processId -ErrorAction Stop
+        } catch {
+            continue
+        }
+
+        if ($process.ProcessName -in @("nuclear", "autism")) {
+            Write-Step "Forcing shutdown of lingering Nuclear Agent daemon on port $($daemon.Port)"
+            try {
+                Stop-Process -Id $processId -Force -ErrorAction Stop
+            } catch {
+            }
+        }
+    }
+
+    [void](Wait-ForPortToClose -Port $daemon.Port -TimeoutSeconds 5)
 }
 
 function Build-BinaryFromSource {
     param(
         [string]$SourceRoot,
-        [string]$TargetBinary
+        [string]$TargetBinary,
+        [string]$LegacyBinary
     )
 
     $cargoPath = Ensure-Cargo
 
-    Write-Step "Building autism.exe from source"
+    Write-Step "Building Nuclear Agent from source"
     Push-Location $SourceRoot
     try {
-        & $cargoPath build --release --bin autism
+        & $cargoPath build --release --bin nuclear --bin autism
         if ($LASTEXITCODE -ne 0) {
             throw "cargo build failed"
         }
@@ -625,12 +900,18 @@ function Build-BinaryFromSource {
         Pop-Location
     }
 
-    $builtBinary = Join-Path $SourceRoot "target\release\autism.exe"
+    $builtBinary = Join-Path $SourceRoot "target\release\nuclear.exe"
     if (-not (Test-Path $builtBinary)) {
         throw "Cargo reported success but $builtBinary was not found."
     }
 
+    $builtLegacyBinary = Join-Path $SourceRoot "target\release\autism.exe"
+    if (-not (Test-Path $builtLegacyBinary)) {
+        throw "Cargo reported success but $builtLegacyBinary was not found."
+    }
+
     Copy-FileAtomic -Source $builtBinary -Destination $TargetBinary
+    Copy-FileAtomic -Source $builtLegacyBinary -Destination $LegacyBinary
 }
 
 function Ensure-InstallDir {
@@ -676,29 +957,46 @@ try {
     }
 
     if ([string]::IsNullOrWhiteSpace($InstallDir)) {
+        $InstallDir = if (-not [string]::IsNullOrWhiteSpace($env:NUCLEAR_INSTALL_DIR)) {
+            $env:NUCLEAR_INSTALL_DIR
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:AUTISM_INSTALL_DIR)) {
+            $env:AUTISM_INSTALL_DIR
+        } else {
+            $null
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($InstallDir)) {
         $InstallDir = Choose-DefaultInstallDir
     }
 
-    $binaryPath = Join-Path $InstallDir "autism.exe"
+    $binaryPath = Join-Path $InstallDir "nuclear.exe"
+    $legacyBinaryPath = Join-Path $InstallDir "autism.exe"
     $bundledBinary = Resolve-BundledBinary -Root $scriptRoot
 
-    Write-Step "Installing autism CLI"
+    Write-Step "Installing Nuclear Agent CLI"
     Write-Step "Install directory: $InstallDir"
     Ensure-InstallDir -TargetDir $InstallDir
     Stop-InstalledAutismProcesses -BinaryPath $binaryPath
+    Stop-InstalledAutismProcesses -BinaryPath $legacyBinaryPath
 
     $usedBundledBinary = $false
     if ($bundledBinary -and -not $PreferSourceBuild) {
         Write-Step "Using bundled Windows binary"
         Copy-FileAtomic -Source $bundledBinary -Destination $binaryPath
+        Copy-FileAtomic -Source $bundledBinary -Destination $legacyBinaryPath
         Unblock-PathTree -Path $binaryPath
+        Unblock-PathTree -Path $legacyBinaryPath
         $usedBundledBinary = $true
     } else {
-        Build-BinaryFromSource -SourceRoot $sourceRoot -TargetBinary $binaryPath
+        Build-BinaryFromSource -SourceRoot $sourceRoot -TargetBinary $binaryPath -LegacyBinary $legacyBinaryPath
         Unblock-PathTree -Path $binaryPath
+        Unblock-PathTree -Path $legacyBinaryPath
     }
 
-    Write-CommandShim -InstallDir $InstallDir
+    Remove-Item -Path (Join-Path $InstallDir "nuclear.cmd") -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $InstallDir "autism.cmd") -Force -ErrorAction SilentlyContinue
+    Stop-ConfiguredDaemon -BinaryPath $binaryPath
 
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $updatedFuturePath = $false
@@ -725,8 +1023,9 @@ try {
     } catch {
         if ($usedBundledBinary -and (Test-ApplicationControlBlock -ErrorRecord $_)) {
             Write-Step "Bundled binary appears blocked by Windows policy; falling back to a local source build"
-            Build-BinaryFromSource -SourceRoot $sourceRoot -TargetBinary $binaryPath
+            Build-BinaryFromSource -SourceRoot $sourceRoot -TargetBinary $binaryPath -LegacyBinary $legacyBinaryPath
             Unblock-PathTree -Path $binaryPath
+            Unblock-PathTree -Path $legacyBinaryPath
             $version = Get-VersionOutput -BinaryPath $binaryPath
         } else {
             throw
@@ -742,8 +1041,9 @@ try {
     }
 
     Write-Step "Installed version: $version"
-    Ensure-PlaywrightChromium -SourceRoot $sourceRoot
-    Write-Step "Run: autism"
+    Ensure-PlaywrightChromium -SourceRoot $sourceRoot -BundleRoot $scriptRoot
+    Write-Step "Run: nuclear"
+    Write-Step "Legacy command compatibility: autism"
     Write-Step "If an already-open terminal does not recognize the command, close it and open a new terminal window."
 } catch {
     $root = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $PSCommandPath }

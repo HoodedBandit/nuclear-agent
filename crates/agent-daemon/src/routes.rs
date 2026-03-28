@@ -12,46 +12,49 @@ use futures::stream;
 use std::convert::Infallible;
 
 use agent_core::{
-    BatchTaskRequest, BatchTaskResponse, DashboardLaunchResponse, RunTaskRequest,
-    RunTaskResponse, RunTaskStreamEvent,
+    BatchTaskRequest, BatchTaskResponse, DashboardLaunchResponse, RunTaskRequest, RunTaskResponse,
+    RunTaskStreamEvent,
 };
 
 use crate::{
     add_mission, approve_connector_approval, approve_memory, autonomy_status, autopilot_status,
-    get_provider_browser_auth_status,
-    call_home_assistant_service_route, cancel_mission, clear_provider_credentials,
-    dashboard_bootstrap,
-    dashboard::{dashboard_css, dashboard_index, dashboard_js, dashboard_root},
-    delegation_status, delete_alias, delete_app_connector, delete_brave_connector, delete_discord_connector,
-    delete_gmail_connector, delete_home_assistant_connector, delete_inbox_connector,
-    delete_mcp_server, delete_provider, delete_signal_connector, delete_slack_connector,
-    delete_telegram_connector, delete_webhook_connector, doctor, enable_autonomy, evolve_status,
-    forget_memory, get_brave_connector, get_discord_connector, get_gmail_connector,
-    get_home_assistant_connector, get_home_assistant_entity_state_route, get_inbox_connector, get_mission,
-    get_permission_preset, get_session, get_signal_connector, get_skill_draft, get_slack_connector,
-    get_telegram_connector, get_trust, get_webhook_connector, list_aliases, list_app_connectors,
-    list_brave_connectors, list_connector_approvals, list_delegation_targets, list_discord_connectors,
-    list_enabled_skills, list_events, list_gmail_connectors, list_home_assistant_connectors,
-    list_inbox_connectors, list_logs, list_mcp_servers, list_memories, list_memory_review_queue,
-    list_mission_checkpoints, list_missions, list_profile_memories, list_provider_models,
+    call_home_assistant_service_route, cancel_mission, clear_provider_credentials, compact_session,
+    control_socket::control_socket_route,
+    dashboard::{add_dashboard_asset_routes, dashboard_index, dashboard_root},
+    dashboard_bootstrap, delegation_status, delete_alias, delete_app_connector,
+    delete_brave_connector, delete_discord_connector, delete_gmail_connector,
+    delete_home_assistant_connector, delete_inbox_connector, delete_mcp_server, delete_plugin,
+    delete_provider, delete_signal_connector, delete_slack_connector, delete_telegram_connector,
+    delete_webhook_connector, doctor, enable_autonomy, evolve_status, export_config, forget_memory,
+    fork_session, get_brave_connector, get_discord_connector, get_gmail_connector,
+    get_home_assistant_connector, get_home_assistant_entity_state_route, get_inbox_connector,
+    get_mission, get_permission_preset, get_plugin, get_plugin_doctor_report,
+    get_provider_browser_auth_status, get_session, get_session_resume_packet, get_signal_connector,
+    get_skill_draft, get_slack_connector, get_telegram_connector, get_trust, get_webhook_connector,
+    import_config, inspect_workspace_route, install_plugin, list_aliases, list_app_connectors,
+    list_brave_connectors, list_connector_approvals, list_delegation_targets,
+    list_discord_connectors, list_enabled_skills, list_events, list_gmail_connectors,
+    list_home_assistant_connectors, list_inbox_connectors, list_logs, list_mcp_servers,
+    list_memories, list_memory_review_queue, list_mission_checkpoints, list_missions,
+    list_plugin_doctor_reports, list_plugins, list_profile_memories, list_provider_models,
     list_providers, list_sessions, list_signal_connectors, list_skill_drafts,
     list_slack_connectors, list_telegram_connectors, list_webhook_connectors, pause_autonomy,
     pause_evolve_mode, pause_mission, poll_discord_connector_route, poll_gmail_connector_route,
     poll_home_assistant_connector_route, poll_inbox_connector_route, poll_signal_connector_route,
-    poll_slack_connector_route, poll_telegram_connector_route, publish_skill_draft,
-    provider_browser_auth_callback, provider_browser_auth_complete,
-    receive_webhook_event, reject_connector_approval, reject_memory, reject_skill_draft,
-    rename_session, resolve_alias_and_provider, resume_autonomy, resume_evolve_mode,
-    resume_mission, search_memory, send_discord_message_route, send_gmail_message_route,
-    send_signal_message_route, send_slack_message_route, send_telegram_message_route, shutdown,
-    start_evolve_mode, start_provider_browser_auth, status, stop_evolve_mode,
-    suggest_provider_defaults,
+    poll_slack_connector_route, poll_telegram_connector_route, provider_browser_auth_callback,
+    provider_browser_auth_complete, publish_skill_draft, rebuild_memory, receive_webhook_event,
+    reject_connector_approval, reject_memory, reject_skill_draft, rename_session, reset_onboarding,
+    resolve_alias_and_provider, resume_autonomy, resume_evolve_mode, resume_mission, search_memory,
+    send_discord_message_route, send_gmail_message_route, send_signal_message_route,
+    send_slack_message_route, send_telegram_message_route, shutdown, start_evolve_mode,
+    start_provider_browser_auth, status, stop_evolve_mode, suggest_provider_defaults,
     update_autopilot, update_daemon_config, update_delegation_config, update_enabled_skills,
-    update_main_alias, update_permission_preset, update_trust, upsert_alias,
-    upsert_app_connector, upsert_brave_connector, upsert_discord_connector, upsert_gmail_connector,
-    upsert_home_assistant_connector, upsert_inbox_connector, upsert_mcp_server, upsert_memory,
-    upsert_provider, upsert_signal_connector, upsert_slack_connector, upsert_telegram_connector,
-    upsert_webhook_connector, ApiError, AppState,
+    update_main_alias, update_permission_preset, update_plugin, update_plugin_state, update_trust,
+    upsert_alias, upsert_app_connector, upsert_brave_connector, upsert_discord_connector,
+    upsert_gmail_connector, upsert_home_assistant_connector, upsert_inbox_connector,
+    upsert_mcp_server, upsert_memory, upsert_provider, upsert_signal_connector,
+    upsert_slack_connector, upsert_telegram_connector, upsert_webhook_connector,
+    workspace_diff_route, workspace_init_agents_route, workspace_shell_route, ApiError, AppState,
 };
 use crate::{
     execute_batch_request, execute_task_request, execute_task_request_with_events,
@@ -71,7 +74,13 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
     Router::new()
         .route("/v1/status", get(status))
         .route("/v1/dashboard/bootstrap", get(dashboard_bootstrap))
+        .route("/v1/workspace/inspect", post(inspect_workspace_route))
+        .route("/v1/workspace/diff", post(workspace_diff_route))
+        .route("/v1/workspace/init", post(workspace_init_agents_route))
+        .route("/v1/workspace/shell", post(workspace_shell_route))
+        .route("/v1/onboarding/reset", post(reset_onboarding))
         .route("/v1/shutdown", post(shutdown))
+        .route("/v1/config", get(export_config).put(import_config))
         .route("/v1/providers", get(list_providers).post(upsert_provider))
         .route("/v1/providers/suggest", post(suggest_provider_defaults))
         .route("/v1/providers/{provider_id}", delete(delete_provider))
@@ -117,6 +126,20 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/delegation/targets", get(list_delegation_targets))
         .route("/v1/mcp", get(list_mcp_servers).post(upsert_mcp_server))
         .route("/v1/mcp/{server_id}", delete(delete_mcp_server))
+        .route("/v1/plugins", get(list_plugins))
+        .route("/v1/plugins/install", post(install_plugin))
+        .route("/v1/plugins/doctor", get(list_plugin_doctor_reports))
+        .route(
+            "/v1/plugins/{plugin_id}",
+            get(get_plugin)
+                .put(update_plugin_state)
+                .delete(delete_plugin),
+        )
+        .route("/v1/plugins/{plugin_id}/update", post(update_plugin))
+        .route(
+            "/v1/plugins/{plugin_id}/doctor",
+            get(get_plugin_doctor_report),
+        )
         .route(
             "/v1/apps",
             get(list_app_connectors).post(upsert_app_connector),
@@ -286,11 +309,13 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/memory/profile", get(list_profile_memories))
         .route("/v1/memory/review", get(list_memory_review_queue))
         .route("/v1/memory/search", post(search_memory))
+        .route("/v1/memory/rebuild", post(rebuild_memory))
         .route("/v1/memory/{memory_id}/approve", post(approve_memory))
         .route("/v1/memory/{memory_id}/reject", post(reject_memory))
         .route("/v1/memory/{memory_id}", delete(forget_memory))
         .route("/v1/logs", get(list_logs))
         .route("/v1/events", get(list_events))
+        .route("/v1/ws", get(control_socket_route))
         .route("/v1/doctor", get(doctor))
         .route("/v1/dashboard/launch", post(create_dashboard_launch))
         .route("/v1/run", post(run_task))
@@ -298,7 +323,13 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/batch", post(run_batch))
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/{session_id}", get(get_session))
+        .route(
+            "/v1/sessions/{session_id}/resume-packet",
+            get(get_session_resume_packet),
+        )
         .route("/v1/sessions/{session_id}/title", put(rename_session))
+        .route("/v1/sessions/{session_id}/fork", post(fork_session))
+        .route("/v1/sessions/{session_id}/compact", post(compact_session))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer,
@@ -307,21 +338,30 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
 }
 
 pub(crate) fn build_public_routes(state: AppState) -> Router {
-    Router::new()
-        .route("/", get(dashboard_root))
-        .route("/ui", get(dashboard_index))
-        .route("/dashboard", get(dashboard_index))
-        .route("/dashboard.css", get(dashboard_css))
-        .route("/dashboard.js", get(dashboard_js))
-        .route(
-            "/auth/dashboard/session",
-            post(create_dashboard_session).delete(clear_dashboard_session),
-        )
-        .route("/auth/dashboard/launch/{launch_id}", get(consume_dashboard_launch))
-        .route("/auth/provider/callback", get(provider_browser_auth_callback))
-        .route("/auth/provider/complete", get(provider_browser_auth_complete))
-        .route("/v1/hooks/{connector_id}", post(receive_webhook_event))
-        .with_state(state)
+    add_dashboard_asset_routes(
+        Router::new()
+            .route("/", get(dashboard_root))
+            .route("/ui", get(dashboard_index))
+            .route("/dashboard", get(dashboard_index))
+            .route(
+                "/auth/dashboard/session",
+                post(create_dashboard_session).delete(clear_dashboard_session),
+            )
+            .route(
+                "/auth/dashboard/launch/{launch_id}",
+                get(consume_dashboard_launch),
+            )
+            .route(
+                "/auth/provider/callback",
+                get(provider_browser_auth_callback),
+            )
+            .route(
+                "/auth/provider/complete",
+                get(provider_browser_auth_complete),
+            )
+            .route("/v1/hooks/{connector_id}", post(receive_webhook_event)),
+    )
+    .with_state(state)
 }
 
 async fn create_dashboard_session(
@@ -454,14 +494,16 @@ fn prune_dashboard_sessions(
     sessions: &mut std::collections::HashMap<String, chrono::DateTime<Utc>>,
 ) {
     let now = Utc::now();
-    sessions.retain(|_, last_seen| now - *last_seen <= Duration::seconds(DASHBOARD_SESSION_TTL_SECS));
+    sessions
+        .retain(|_, last_seen| now - *last_seen <= Duration::seconds(DASHBOARD_SESSION_TTL_SECS));
 }
 
 fn prune_dashboard_launches(
     launches: &mut std::collections::HashMap<String, chrono::DateTime<Utc>>,
 ) {
     let now = Utc::now();
-    launches.retain(|_, created_at| now - *created_at <= Duration::seconds(DASHBOARD_LAUNCH_TTL_SECS));
+    launches
+        .retain(|_, created_at| now - *created_at <= Duration::seconds(DASHBOARD_LAUNCH_TTL_SECS));
 }
 
 fn dashboard_session_cookie(session_id: &str, secure: bool) -> String {
@@ -522,6 +564,7 @@ async fn run_task(
             thinking_level: payload.thinking_level,
             attachments: payload.attachments,
             permission_preset: payload.permission_preset,
+            task_mode: payload.task_mode,
             output_schema_json: payload.output_schema_json,
             persist: !payload.ephemeral,
             background: false,
@@ -566,6 +609,7 @@ async fn run_task_stream(
                 thinking_level: payload.thinking_level,
                 attachments: payload.attachments,
                 permission_preset: payload.permission_preset,
+                task_mode: payload.task_mode,
                 output_schema_json: payload.output_schema_json,
                 persist: !payload.ephemeral,
                 background: false,
@@ -632,10 +676,7 @@ mod tests {
     use agent_core::AppConfig;
     use agent_storage::Storage;
     use axum::response::IntoResponse;
-    use std::sync::{
-        atomic::AtomicBool,
-        Arc,
-    };
+    use std::sync::{atomic::AtomicBool, Arc};
     use tokio::sync::{mpsc, Notify, RwLock};
     use uuid::Uuid;
 
@@ -700,12 +741,7 @@ mod tests {
         assert!(launch.launch_path.starts_with("/auth/dashboard/launch/"));
         assert_eq!(state.dashboard_launches.read().await.len(), 1);
 
-        let launch_id = launch
-            .launch_path
-            .rsplit('/')
-            .next()
-            .unwrap()
-            .to_string();
+        let launch_id = launch.launch_path.rsplit('/').next().unwrap().to_string();
         let first = consume_dashboard_launch(
             State(state.clone()),
             HeaderMap::new(),
@@ -715,10 +751,7 @@ mod tests {
         .unwrap()
         .into_response();
         assert_eq!(first.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            first.headers().get(header::LOCATION).unwrap(),
-            "/ui"
-        );
+        assert_eq!(first.headers().get(header::LOCATION).unwrap(), "/ui");
         assert!(first.headers().contains_key(header::SET_COOKIE));
 
         let second = consume_dashboard_launch(
@@ -731,5 +764,33 @@ mod tests {
             Err(status) => assert_eq!(status, StatusCode::UNAUTHORIZED),
             Ok(_) => panic!("expected second launch consumption to fail"),
         }
+    }
+
+    #[tokio::test]
+    async fn onboarding_reset_replaces_config_and_returns_new_token() {
+        let state = test_state();
+        let old_token = {
+            let mut config = state.config.write().await;
+            config.daemon.token = "old-dashboard-token".to_string();
+            config.onboarding_complete = true;
+            state.storage.save_config(&config).unwrap();
+            config.daemon.token.clone()
+        };
+
+        let Json(response) = reset_onboarding(
+            State(state.clone()),
+            Json(crate::control::OnboardingResetRequest { confirmed: true }),
+        )
+        .await
+        .unwrap();
+
+        let reloaded = state.storage.load_config().unwrap();
+        let active = state.config.read().await.clone();
+        assert_eq!(active, reloaded);
+        assert_ne!(response.daemon_token, old_token);
+        assert_eq!(response.daemon_token, active.daemon.token);
+        assert!(!active.onboarding_complete);
+        assert_eq!(response.removed_credentials, 0);
+        assert!(response.credential_warnings.is_empty());
     }
 }

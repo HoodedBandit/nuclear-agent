@@ -27,6 +27,7 @@ mod discord;
 mod gmail;
 mod home_assistant;
 mod inbox;
+mod runtime_registry;
 mod signal;
 mod slack;
 mod telegram;
@@ -36,19 +37,20 @@ pub(crate) use admin::{
     delete_app_connector, delete_brave_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_signal_connector,
     delete_slack_connector, delete_telegram_connector, delete_webhook_connector,
-    get_brave_connector, get_discord_connector, get_gmail_connector,
-    get_home_assistant_connector, get_inbox_connector, get_signal_connector, get_slack_connector,
-    get_telegram_connector, get_webhook_connector, list_app_connectors, list_brave_connectors,
-    list_discord_connectors, list_gmail_connectors,
-    list_home_assistant_connectors, list_inbox_connectors, list_signal_connectors,
-    list_slack_connectors, list_telegram_connectors, list_webhook_connectors, upsert_app_connector,
-    upsert_brave_connector, upsert_discord_connector, upsert_gmail_connector,
-    upsert_home_assistant_connector, upsert_inbox_connector, upsert_signal_connector, upsert_slack_connector,
+    get_brave_connector, get_discord_connector, get_gmail_connector, get_home_assistant_connector,
+    get_inbox_connector, get_signal_connector, get_slack_connector, get_telegram_connector,
+    get_webhook_connector, list_app_connectors, list_brave_connectors, list_discord_connectors,
+    list_gmail_connectors, list_home_assistant_connectors, list_inbox_connectors,
+    list_signal_connectors, list_slack_connectors, list_telegram_connectors,
+    list_webhook_connectors, upsert_app_connector, upsert_brave_connector,
+    upsert_discord_connector, upsert_gmail_connector, upsert_home_assistant_connector,
+    upsert_inbox_connector, upsert_signal_connector, upsert_slack_connector,
     upsert_telegram_connector, upsert_webhook_connector,
 };
 pub(crate) use approvals::{
     approve_connector_approval, list_connector_approvals, reject_connector_approval,
 };
+use runtime_registry::{connector_display_name, connector_log_category};
 
 pub(crate) async fn poll_inbox_connector_route(
     State(state): State<AppState>,
@@ -535,22 +537,13 @@ pub(crate) async fn send_gmail_message_route(
         ));
     }
     let token = gmail::load_gmail_oauth_token(&connector)?;
-    let message_id = gmail::send_gmail_message(
-        &state.http_client,
-        &token,
-        to,
-        subject,
-        body,
-    )
-    .await?;
+    let message_id =
+        gmail::send_gmail_message(&state.http_client, &token, to, subject, body).await?;
     append_log(
         &state,
         "info",
         "gmail",
-        format!(
-            "gmail '{}' sent outbound message to {}",
-            connector.id, to
-        ),
+        format!("gmail '{}' sent outbound message to {}", connector.id, to),
     )?;
     Ok(Json(GmailSendResponse {
         connector_id: connector.id,
@@ -626,57 +619,7 @@ pub(crate) async fn receive_webhook_event(
 
 pub(crate) async fn poll_inbox_connectors(state: &AppState) -> Result<usize, ApiError> {
     refresh_connector_config(state).await?;
-    let connectors = {
-        let config = state.config.read().await;
-        config
-            .inbox_connectors
-            .iter()
-            .filter(|connector| connector.enabled)
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    let mut queued = 0usize;
-    for connector in connectors {
-        let (_, queued_missions) = inbox::process_inbox_connector(state, &connector)?;
-        queued += queued_missions;
-    }
-    queued += telegram::poll_telegram_connectors(state).await?;
-    queued += discord::poll_discord_connectors(state).await?;
-    queued += slack::poll_slack_connectors(state).await?;
-    queued += home_assistant::poll_home_assistant_connectors(state).await?;
-    queued += signal::poll_signal_connectors(state).await?;
-    queued += gmail::poll_gmail_connectors(state).await?;
-    Ok(queued)
-}
-
-fn connector_display_name(kind: ConnectorKind) -> &'static str {
-    match kind {
-        ConnectorKind::App => "app",
-        ConnectorKind::Webhook => "webhook",
-        ConnectorKind::Inbox => "inbox",
-        ConnectorKind::Telegram => "telegram",
-        ConnectorKind::Discord => "discord",
-        ConnectorKind::Slack => "slack",
-        ConnectorKind::HomeAssistant => "home assistant",
-        ConnectorKind::Signal => "signal",
-        ConnectorKind::Gmail => "gmail",
-        ConnectorKind::Brave => "brave",
-    }
-}
-
-fn connector_log_category(kind: ConnectorKind) -> &'static str {
-    match kind {
-        ConnectorKind::App => "apps",
-        ConnectorKind::Webhook => "webhooks",
-        ConnectorKind::Inbox => "inboxes",
-        ConnectorKind::Telegram => "telegram",
-        ConnectorKind::Discord => "discord",
-        ConnectorKind::Slack => "slack",
-        ConnectorKind::HomeAssistant => "home_assistant",
-        ConnectorKind::Signal => "signal",
-        ConnectorKind::Gmail => "gmail",
-        ConnectorKind::Brave => "brave",
-    }
+    runtime_registry::poll_enabled_connectors(state).await
 }
 
 fn ensure_connector_enabled(

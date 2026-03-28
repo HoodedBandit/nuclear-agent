@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "echo-toolkit",
+  "name": "Echo Toolkit",
+  "version": "0.8.0",
+  "description": "Fixture plugin for dashboard E2E coverage",
+  "compatibility": {
+    "min_host_version": 1,
+    "max_host_version": 1
+  },
+  "permissions": {
+    "shell": false,
+    "network": false,
+    "full_disk": false
+  },
+  "tools": [
+    {
+      "name": "echo_tool",
+      "description": "Echo structured input",
+      "command": "node",
+      "args": ["tool.js"],
+      "input_schema_json": "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"],\"additionalProperties\":false}",
+      "cwd": ".",
+      "permissions": {
+        "shell": false,
+        "network": false,
+        "full_disk": false
+      },
+      "timeout_seconds": 10
+    }
+  ]
+}

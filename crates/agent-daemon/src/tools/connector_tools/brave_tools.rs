@@ -4,7 +4,9 @@ use reqwest::Client;
 use serde::Serialize;
 use url::Url;
 
-use super::super::argument_helpers::{optional_bool, optional_string, optional_u64, required_string, truncate};
+use super::super::argument_helpers::{
+    optional_bool, optional_string, optional_u64, required_string, truncate,
+};
 use super::*;
 
 const BRAVE_API_BASE_URL: &str = "https://api.search.brave.com";
@@ -66,11 +68,9 @@ struct BraveResultItem {
 }
 
 pub(super) fn tool_definitions(context: &ToolContext) -> Vec<ToolDefinition> {
-    if !context
-        .brave_connectors
-        .iter()
-        .any(|connector| connector.enabled && has_connector_secret(connector.api_key_keychain_account.as_deref()))
-    {
+    if !context.brave_connectors.iter().any(|connector| {
+        connector.enabled && has_connector_secret(connector.api_key_keychain_account.as_deref())
+    }) {
         return Vec::new();
     }
 
@@ -116,10 +116,7 @@ pub(super) async fn execute_tool_call(
 fn common_search_schema(include_extra_snippets: bool, include_image_flags: bool) -> Value {
     let mut properties = serde_json::Map::new();
     properties.insert("query".to_string(), json!({ "type": "string" }));
-    properties.insert(
-        "connector_id".to_string(),
-        json!({ "type": "string" }),
-    );
+    properties.insert("connector_id".to_string(), json!({ "type": "string" }));
     properties.insert(
         "count".to_string(),
         json!({ "type": "integer", "minimum": 1, "maximum": MAX_RESULT_COUNT }),
@@ -128,10 +125,7 @@ fn common_search_schema(include_extra_snippets: bool, include_image_flags: bool)
     properties.insert("search_lang".to_string(), json!({ "type": "string" }));
     properties.insert("freshness".to_string(), json!({ "type": "string" }));
     if include_extra_snippets {
-        properties.insert(
-            "extra_snippets".to_string(),
-            json!({ "type": "boolean" }),
-        );
+        properties.insert("extra_snippets".to_string(), json!({ "type": "boolean" }));
     }
     if include_image_flags {
         properties.insert("safesearch".to_string(), json!({ "type": "string" }));
@@ -189,7 +183,12 @@ async fn run_brave_search_tool(
             .get("web")
             .and_then(|value| value.get("more_results_available"))
             .and_then(Value::as_bool)
-            .or_else(|| response.body.get("more_results_available").and_then(Value::as_bool)),
+            .or_else(|| {
+                response
+                    .body
+                    .get("more_results_available")
+                    .and_then(Value::as_bool)
+            }),
         results: normalize_results(kind, &response.body),
     };
     serde_json::to_string_pretty(&output).context("failed to serialize brave search result")
@@ -216,24 +215,39 @@ async fn search_brave(
         .query(&[("q", query)])
         .query(&[("count", count.to_string())]);
 
-    if let Some(country) = optional_string(args, "country").map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(country) = optional_string(args, "country")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         request = request.query(&[("country", country)]);
     }
-    if let Some(search_lang) = optional_string(args, "search_lang").map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(search_lang) = optional_string(args, "search_lang")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         request = request.query(&[("search_lang", search_lang)]);
     }
-    if let Some(freshness) = optional_string(args, "freshness").map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(freshness) = optional_string(args, "freshness")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         if matches!(kind, BraveSearchKind::Web | BraveSearchKind::News) {
             request = request.query(&[("freshness", freshness)]);
         }
     }
     if matches!(kind, BraveSearchKind::Web | BraveSearchKind::News) {
         if let Some(extra_snippets) = optional_bool(args, "extra_snippets") {
-            request = request.query(&[("extra_snippets", if extra_snippets { "true" } else { "false" })]);
+            request = request.query(&[(
+                "extra_snippets",
+                if extra_snippets { "true" } else { "false" },
+            )]);
         }
     }
     if matches!(kind, BraveSearchKind::Images) {
-        if let Some(safesearch) = optional_string(args, "safesearch").map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(safesearch) = optional_string(args, "safesearch")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             request = request.query(&[("safesearch", safesearch)]);
         }
         if let Some(spellcheck) = optional_bool(args, "spellcheck") {
@@ -241,16 +255,23 @@ async fn search_brave(
         }
     }
 
-    let response = request.send().await.context("brave search request failed")?;
+    let response = request
+        .send()
+        .await
+        .context("brave search request failed")?;
     let status = response.status();
     let body = response
         .text()
         .await
         .context("failed to read brave search response")?;
     if !status.is_success() {
-        bail!("brave search failed: {status} {}", truncate(body.trim(), 400));
+        bail!(
+            "brave search failed: {status} {}",
+            truncate(body.trim(), 400)
+        );
     }
-    let body = serde_json::from_str::<Value>(&body).context("failed to parse brave search response")?;
+    let body =
+        serde_json::from_str::<Value>(&body).context("failed to parse brave search response")?;
     Ok(BraveApiResponse { body })
 }
 
@@ -290,9 +311,18 @@ fn load_brave_api_key(connector: &BraveConnectorConfig) -> Result<String> {
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("brave connector '{}' has no API key configured", connector.id))?;
-    load_api_key(account)
-        .with_context(|| format!("failed to load brave API key for connector '{}'", connector.id))
+        .ok_or_else(|| {
+            anyhow!(
+                "brave connector '{}' has no API key configured",
+                connector.id
+            )
+        })?;
+    load_api_key(account).with_context(|| {
+        format!(
+            "failed to load brave API key for connector '{}'",
+            connector.id
+        )
+    })
 }
 
 fn has_connector_secret(account: Option<&str>) -> bool {
@@ -359,20 +389,24 @@ fn normalize_generic_result(value: &Value) -> BraveResultItem {
             &[&["title"], &["name"], &["meta_url", "hostname"], &["url"]],
         )
         .unwrap_or_else(|| "Untitled result".to_string()),
-        url: first_string(value, &[&["url"], &["profile", "url"], &["meta_url", "url"]]),
+        url: first_string(
+            value,
+            &[&["url"], &["profile", "url"], &["meta_url", "url"]],
+        ),
         snippet: first_string(
             value,
             &[&["description"], &["snippet"], &["extra_snippets", "0"]],
         )
         .map(|text| truncate(&text, 280)),
-        source: first_string(value, &[&["meta_url", "hostname"], &["profile", "name"]])
-            .or_else(|| {
+        source: first_string(value, &[&["meta_url", "hostname"], &["profile", "name"]]).or_else(
+            || {
                 first_string(value, &[&["url"]]).and_then(|url| {
                     Url::parse(&url)
                         .ok()
                         .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
                 })
-            }),
+            },
+        ),
         address: None,
         thumbnail_url: None,
     }
@@ -382,7 +416,11 @@ fn normalize_image_result(value: &Value) -> BraveResultItem {
     BraveResultItem {
         thumbnail_url: first_string(
             value,
-            &[&["thumbnail", "src"], &["thumbnail", "url"], &["properties", "url"]],
+            &[
+                &["thumbnail", "src"],
+                &["thumbnail", "url"],
+                &["properties", "url"],
+            ],
         ),
         ..normalize_generic_result(value)
     }
@@ -394,11 +432,8 @@ fn normalize_local_result(value: &Value) -> BraveResultItem {
             .get("id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        title: first_string(
-            value,
-            &[&["title"], &["name"], &["address"], &["url"]],
-        )
-        .unwrap_or_else(|| "Untitled place".to_string()),
+        title: first_string(value, &[&["title"], &["name"], &["address"], &["url"]])
+            .unwrap_or_else(|| "Untitled place".to_string()),
         url: first_string(value, &[&["url"]]),
         snippet: first_string(value, &[&["description"], &["snippet"]])
             .map(|text| truncate(&text, 280)),
@@ -407,10 +442,7 @@ fn normalize_local_result(value: &Value) -> BraveResultItem {
             value,
             &[&["address"], &["postal_address"], &["location", "address"]],
         ),
-        thumbnail_url: first_string(
-            value,
-            &[&["thumbnail", "src"], &["thumbnail", "url"]],
-        ),
+        thumbnail_url: first_string(value, &[&["thumbnail", "src"], &["thumbnail", "url"]]),
     }
 }
 
@@ -422,7 +454,11 @@ fn first_string(value: &Value, paths: &[&[&str]]) -> Option<String> {
                 (!trimmed.is_empty()).then(|| trimmed.to_string())
             }
             Value::Array(values) => values.iter().find_map(|entry| {
-                entry.as_str().map(str::trim).filter(|text| !text.is_empty()).map(ToOwned::to_owned)
+                entry
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(ToOwned::to_owned)
             }),
             _ => None,
         })
@@ -452,10 +488,7 @@ mod tests {
     use axum::{routing::get, Json, Router};
     use std::{
         net::{Ipv4Addr, SocketAddr},
-        sync::{
-            atomic::AtomicBool,
-            Arc,
-        },
+        sync::{atomic::AtomicBool, Arc},
     };
     use tokio::{
         net::TcpListener,
@@ -464,7 +497,9 @@ mod tests {
 
     use agent_core::{AppConfig, AutonomyProfile, PermissionPreset, TrustPolicy};
 
-    use crate::{new_browser_auth_store, new_dashboard_session_store, AppState, ProviderRateLimiter};
+    use crate::{
+        new_browser_auth_store, new_dashboard_session_store, AppState, ProviderRateLimiter,
+    };
 
     fn test_state_with_brave(connectors: Vec<BraveConnectorConfig>) -> AppState {
         let storage = agent_storage::Storage::open_at(
@@ -508,9 +543,11 @@ mod tests {
             http_client: Client::new(),
             mcp_servers: Vec::new(),
             app_connectors: Vec::new(),
+            plugin_tools: Vec::new(),
             brave_connectors: connectors,
             current_alias: Some("main".to_string()),
             default_thinking_level: None,
+            task_mode: None,
             delegation: agent_core::DelegationConfig::default(),
             delegation_targets: Vec::new(),
             delegation_depth: 0,

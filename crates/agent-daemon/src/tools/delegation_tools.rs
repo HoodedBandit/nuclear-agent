@@ -19,6 +19,7 @@ pub(super) async fn spawn_subagents(context: &ToolContext, args: &Value) -> Resu
         ),
         thinking_level: optional_thinking_level(args, "thinking_level")?
             .or(context.default_thinking_level),
+        task_mode: optional_task_mode(args, "task_mode")?.or(context.task_mode),
         strategy: optional_subagent_strategy(args, "strategy")?,
         parent_alias: context.current_alias.clone(),
     };
@@ -40,6 +41,7 @@ pub(super) fn spawn_subagents_description(context: &ToolContext) -> String {
     let mut description = String::from(
         "Delegate one or more prompts to subagents. Use 'target' for a provider name, model family, host family, or explicit alias like claude, codex, chatgpt, kimi, sonnet, moonshot, or a custom alias. If target/alias/provider is omitted, use the current alias first and then other logged-in providers from the configured pool.",
     );
+    description.push_str(" Optionally set task_mode to 'build' or 'daily' when the delegated work should use a specific task preset.");
     if !context.delegation_targets.is_empty() {
         let targets = context
             .delegation_targets
@@ -118,6 +120,7 @@ pub(super) fn parse_subagent_task(value: &Value) -> Result<agent_core::SubAgentT
             .filter(|value| !value.is_empty())
             .map(PathBuf::from),
         thinking_level: value_thinking_level(object.get("thinking_level"), "thinking_level")?,
+        task_mode: value_task_mode(object.get("task_mode"), "task_mode")?,
         output_schema_json: object
             .get("output_schema_json")
             .and_then(Value::as_str)
@@ -130,6 +133,10 @@ pub(super) fn parse_subagent_task(value: &Value) -> Result<agent_core::SubAgentT
 
 fn optional_thinking_level(args: &Value, key: &str) -> Result<Option<ThinkingLevel>> {
     value_thinking_level(args.get(key), key)
+}
+
+fn optional_task_mode(args: &Value, key: &str) -> Result<Option<agent_core::TaskMode>> {
+    value_task_mode(args.get(key), key)
 }
 
 fn value_thinking_level(value: Option<&Value>, key: &str) -> Result<Option<ThinkingLevel>> {
@@ -146,6 +153,21 @@ fn value_thinking_level(value: Option<&Value>, key: &str) -> Result<Option<Think
         "medium" => ThinkingLevel::Medium,
         "high" => ThinkingLevel::High,
         "xhigh" => ThinkingLevel::XHigh,
+        other => bail!("unsupported {key} '{other}'"),
+    };
+    Ok(Some(parsed))
+}
+
+fn value_task_mode(value: Option<&Value>, key: &str) -> Result<Option<agent_core::TaskMode>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let raw = value
+        .as_str()
+        .ok_or_else(|| anyhow!("'{key}' must be a string"))?;
+    let parsed = match raw.trim().to_ascii_lowercase().as_str() {
+        "build" => agent_core::TaskMode::Build,
+        "daily" => agent_core::TaskMode::Daily,
         other => bail!("unsupported {key} '{other}'"),
     };
     Ok(Some(parsed))

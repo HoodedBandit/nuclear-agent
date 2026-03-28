@@ -8,19 +8,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod auth;
 mod connectors;
 mod control;
+mod control_socket;
 mod dashboard;
 mod delegation;
-mod auth;
 mod memory;
 mod missions;
 mod patch;
 mod patterns;
+mod plugins;
 mod routes;
 mod runtime;
 mod sessions;
 mod tools;
+mod workspace;
 
 #[cfg(test)]
 use crate::delegation::{
@@ -33,13 +36,17 @@ use agent_core::{
 #[cfg(test)]
 use agent_core::{
     AuthMode, BatchTaskRequest, DelegationLimit, ProviderSuggestionRequest, SubAgentStrategy,
-    SubAgentTask, ThinkingLevel,
+    SubAgentTask, TaskMode, ThinkingLevel,
 };
 use agent_storage::Storage;
 use anyhow::{Context, Result};
-use axum::{http::StatusCode, response::IntoResponse, Json};
+pub(crate) use auth::{
+    get_provider_browser_auth_status, new_browser_auth_store, provider_browser_auth_callback,
+    provider_browser_auth_complete, start_provider_browser_auth,
+};
 #[cfg(test)]
 use axum::extract::State;
+use axum::{http::StatusCode, response::IntoResponse, Json};
 use chrono::{DateTime, Utc};
 pub(crate) use connectors::{
     approve_connector_approval, call_home_assistant_service_route, delete_app_connector,
@@ -62,19 +69,15 @@ pub(crate) use connectors::{
     upsert_inbox_connector, upsert_signal_connector, upsert_slack_connector,
     upsert_telegram_connector, upsert_webhook_connector,
 };
-pub(crate) use auth::{
-    get_provider_browser_auth_status, new_browser_auth_store, provider_browser_auth_callback,
-    provider_browser_auth_complete, start_provider_browser_auth,
-};
 pub(crate) use control::{
     autonomy_status, autopilot_status, clear_provider_credentials, dashboard_bootstrap,
-    delegation_status, delete_alias, delete_mcp_server, delete_provider, doctor,
-    enable_autonomy, get_permission_preset, get_trust, list_aliases,
+    delegation_status, delete_alias, delete_mcp_server, delete_provider, doctor, enable_autonomy,
+    export_config, get_permission_preset, get_trust, import_config, list_aliases,
     list_delegation_targets, list_enabled_skills, list_events, list_logs, list_mcp_servers,
-    list_provider_models, list_providers, pause_autonomy, resume_autonomy, shutdown, status,
-    suggest_provider_defaults, update_autopilot, update_daemon_config, update_main_alias,
-    update_delegation_config, update_enabled_skills, update_permission_preset, update_trust,
-    upsert_alias, upsert_mcp_server, upsert_provider,
+    list_provider_models, list_providers, pause_autonomy, reset_onboarding, resume_autonomy,
+    shutdown, status, suggest_provider_defaults, update_autopilot, update_daemon_config,
+    update_delegation_config, update_enabled_skills, update_main_alias, update_permission_preset,
+    update_trust, upsert_alias, upsert_mcp_server, upsert_provider,
 };
 pub(crate) use delegation::{
     delegation_targets_from_config, normalize_delegation_limit,
@@ -83,10 +86,9 @@ pub(crate) use delegation::{
 pub(crate) use memory::{
     approve_memory, build_memory_context, forget_memory, get_skill_draft, learn_from_interaction,
     list_memories, list_memory_review_queue, list_profile_memories, list_skill_drafts,
-    load_enabled_skill_guidance, normalize_memory_sentence, publish_skill_draft, reject_memory,
-    reject_skill_draft, search_memory, sync_system_profile_memories, upsert_memory,
+    load_enabled_skill_guidance, normalize_memory_sentence, publish_skill_draft, rebuild_memory,
+    reject_memory, reject_skill_draft, search_memory, sync_system_profile_memories, upsert_memory,
 };
-pub(crate) use patterns::{detect_patterns, load_pattern_guidance, record_patterns};
 pub(crate) use missions::{
     add_mission, autopilot_loop, cancel_mission, evolve_status, get_mission,
     list_mission_checkpoints, list_missions, pause_evolve_mode, pause_mission, resume_evolve_mode,
@@ -94,11 +96,17 @@ pub(crate) use missions::{
 };
 #[cfg(test)]
 pub(crate) use missions::{build_mission_prompt, file_change_ready, parse_mission_directive};
+pub(crate) use patterns::{detect_patterns, load_pattern_guidance, record_patterns};
+pub(crate) use plugins::{
+    collect_hosted_plugin_tools, collect_plugin_doctor_reports, delete_plugin, get_plugin,
+    get_plugin_doctor_report, install_plugin, list_plugin_doctor_reports, list_plugins,
+    update_plugin, update_plugin_state, HostedPluginTool,
+};
 use reqwest::Client;
 pub(crate) use runtime::{
     execute_batch_request, execute_task_request, execute_task_request_with_events,
-    resolve_request_cwd, summarize_tool_output, DelegationExecutionOptions,
-    ResolvedSubAgentTask, TaskRequestInput,
+    resolve_request_cwd, summarize_tool_output, DelegationExecutionOptions, ResolvedSubAgentTask,
+    TaskRequestInput,
 };
 #[cfg(test)]
 pub(crate) use runtime::{
@@ -106,7 +114,10 @@ pub(crate) use runtime::{
     ToolLoopResolution,
 };
 use serde::Deserialize;
-pub(crate) use sessions::{get_session, list_sessions, rename_session};
+pub(crate) use sessions::{
+    compact_session, fork_session, get_session, get_session_resume_packet, list_sessions,
+    rename_session,
+};
 #[cfg(test)]
 use std::path::PathBuf;
 use tokio::{
@@ -116,6 +127,11 @@ use tokio::{
 use tracing::{error, info};
 #[cfg(test)]
 use uuid::Uuid;
+pub use workspace::inspect_workspace_path;
+pub(crate) use workspace::{
+    inspect_workspace_route, workspace_diff_route, workspace_init_agents_route,
+    workspace_shell_route,
+};
 
 const MAX_SUBAGENT_TASKS_PER_REQUEST: usize = 8;
 const MAX_RESOLVED_SUBAGENT_RUNS: usize = 16;
@@ -208,7 +224,8 @@ impl ProviderRateLimiter {
                 // Refill based on elapsed time.
                 let now = Instant::now();
                 let elapsed = now.duration_since(bucket.last_refill).as_secs_f64();
-                bucket.tokens = (bucket.tokens + elapsed * bucket.refill_rate).min(bucket.max_tokens);
+                bucket.tokens =
+                    (bucket.tokens + elapsed * bucket.refill_rate).min(bucket.max_tokens);
                 bucket.last_refill = now;
 
                 if bucket.tokens >= 1.0 {
@@ -434,8 +451,8 @@ pub(crate) fn append_log(
 
 #[derive(Debug)]
 struct ApiError {
-    status: StatusCode,
-    message: String,
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
 }
 
 impl ApiError {
@@ -477,7 +494,8 @@ mod tests {
     use super::*;
     use agent_core::{
         AutonomyMode, AutonomyState, EvolveStartRequest, EvolveState, MainAliasUpdateRequest,
-        Mission, MissionControlRequest, MissionStatus, ProviderKind, ProviderUpsertRequest,
+        MemoryEvidenceRef, MemoryKind, MemoryRebuildRequest, MemoryRecord, MessageRole, Mission,
+        MissionControlRequest, MissionStatus, ProviderKind, ProviderUpsertRequest, SessionMessage,
         TrustPolicy, WakeTrigger,
     };
     use std::sync::Arc;
@@ -560,7 +578,10 @@ mod tests {
         queued.updated_at = Utc::now();
         state.storage.upsert_mission(&queued).unwrap();
 
-        let mut waiting = Mission::new("Waiting mission".to_string(), "Wait for a timer".to_string());
+        let mut waiting = Mission::new(
+            "Waiting mission".to_string(),
+            "Wait for a timer".to_string(),
+        );
         waiting.status = MissionStatus::Waiting;
         waiting.updated_at = queued.updated_at + chrono::Duration::seconds(1);
         state.storage.upsert_mission(&waiting).unwrap();
@@ -591,7 +612,7 @@ mod tests {
         let state = test_state_with_config(config.clone());
         state
             .storage
-            .ensure_session("session-1", &main_alias, "openai", "gpt-5.4")
+            .ensure_session("session-1", &main_alias, "openai", "gpt-5.4", None)
             .unwrap();
         state
             .storage
@@ -617,6 +638,191 @@ mod tests {
         );
         assert_eq!(response.status.providers, config.providers.len());
         assert_eq!(response.status.aliases, config.aliases.len());
+    }
+
+    #[tokio::test]
+    async fn rebuild_memory_route_creates_evidence_backed_memories_from_session_transcript() {
+        let config = config_with_aliases();
+        let main_alias = config
+            .aliases
+            .iter()
+            .find(|alias| alias.alias == "main")
+            .cloned()
+            .unwrap();
+        let state = test_state_with_config(config);
+
+        state
+            .storage
+            .ensure_session(
+                "session-1",
+                &main_alias,
+                "openai",
+                "gpt-5.4",
+                Some(TaskMode::Daily),
+            )
+            .unwrap();
+
+        let user_preference = SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::User,
+            "I prefer concise output.".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-5.4".to_string()),
+        );
+        let user_project = SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::User,
+            "Our project uses Rust and tokio.".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-5.4".to_string()),
+        );
+        let tool_observation = SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::Tool,
+            "Project uses Rust and tokio.".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-5.4".to_string()),
+        )
+        .with_tool_metadata(Some("call-1".to_string()), Some("run_shell".to_string()));
+
+        state.storage.append_message(&user_preference).unwrap();
+        state.storage.append_message(&user_project).unwrap();
+        state.storage.append_message(&tool_observation).unwrap();
+
+        let Json(response) = rebuild_memory(
+            State(state.clone()),
+            Json(MemoryRebuildRequest {
+                session_id: Some("session-1".to_string()),
+                recompute_embeddings: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.sessions_scanned, 1);
+        assert!(response.observations_scanned >= 3);
+        assert!(response.memories_upserted >= 2);
+
+        let accepted = state.storage.list_memories(10).unwrap();
+        let preference = accepted
+            .iter()
+            .find(|memory| matches!(memory.kind, MemoryKind::Preference))
+            .unwrap();
+        assert_eq!(preference.source_session_id.as_deref(), Some("session-1"));
+        assert!(preference.evidence_refs.iter().any(|evidence| {
+            evidence.message_id.as_deref() == Some(user_preference.id.as_str())
+                && evidence.role == Some(MessageRole::User)
+        }));
+
+        let project = accepted
+            .iter()
+            .find(|memory| matches!(memory.kind, MemoryKind::ProjectFact))
+            .unwrap();
+        assert!(project.evidence_refs.iter().any(|evidence| {
+            evidence.message_id.as_deref() == Some(user_project.id.as_str())
+                && evidence.role == Some(MessageRole::User)
+        }));
+        assert!(project.evidence_refs.iter().any(|evidence| {
+            evidence.tool_call_id.as_deref() == Some("call-1")
+                && evidence.tool_name.as_deref() == Some("run_shell")
+        }));
+    }
+
+    #[tokio::test]
+    async fn session_resume_packet_includes_recent_messages_memories_and_related_hits() {
+        let config = config_with_aliases();
+        let main_alias = config
+            .aliases
+            .iter()
+            .find(|alias| alias.alias == "main")
+            .cloned()
+            .unwrap();
+        let state = test_state_with_config(config);
+
+        state
+            .storage
+            .ensure_session(
+                "session-1",
+                &main_alias,
+                "openai",
+                "gpt-5.4",
+                Some(TaskMode::Daily),
+            )
+            .unwrap();
+        let session_one_user = SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::User,
+            "Summarize the migration plan for the daemon.".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-5.4".to_string()),
+        );
+        let session_one_assistant = SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::Assistant,
+            "The migration plan covers storage, daemon, and UI work.".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-5.4".to_string()),
+        );
+        state.storage.append_message(&session_one_user).unwrap();
+        state
+            .storage
+            .append_message(&session_one_assistant)
+            .unwrap();
+
+        let mut linked_memory = MemoryRecord::new(
+            MemoryKind::Workflow,
+            agent_core::MemoryScope::Workspace,
+            "workflow:migration-plan".to_string(),
+            "Migration plan tracks storage, daemon, and UI follow-through.".to_string(),
+        );
+        linked_memory.source_session_id = Some("session-1".to_string());
+        linked_memory.evidence_refs = vec![MemoryEvidenceRef {
+            session_id: "session-1".to_string(),
+            message_id: Some(session_one_user.id.clone()),
+            role: Some(MessageRole::User),
+            tool_call_id: None,
+            tool_name: None,
+            created_at: Utc::now(),
+        }];
+        state.storage.upsert_memory(&linked_memory).unwrap();
+
+        state
+            .storage
+            .ensure_session(
+                "session-2",
+                &main_alias,
+                "openai",
+                "gpt-5.4",
+                Some(TaskMode::Daily),
+            )
+            .unwrap();
+        state
+            .storage
+            .append_message(&SessionMessage::new(
+                "session-2".to_string(),
+                MessageRole::User,
+                "Summarize the migration plan for the daemon rollout.".to_string(),
+                Some("openai".to_string()),
+                Some("gpt-5.4".to_string()),
+            ))
+            .unwrap();
+
+        let Json(packet) = get_session_resume_packet(
+            State(state.clone()),
+            axum::extract::Path("session-1".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(packet.session.id, "session-1");
+        assert_eq!(packet.recent_messages.len(), 2);
+        assert!(packet
+            .linked_memories
+            .iter()
+            .any(|memory| memory.id == linked_memory.id));
+        assert!(packet
+            .related_transcript_hits
+            .iter()
+            .any(|hit| hit.session_id == "session-2"));
     }
 
     #[tokio::test]
@@ -687,13 +893,18 @@ mod tests {
         let state = test_state_with_config(config);
         state.storage.upsert_mission(&mission).unwrap();
 
-        let Json(cancelled) =
-            cancel_mission(State(state.clone()), axum::extract::Path(mission.id.clone()))
-                .await
-                .unwrap();
+        let Json(cancelled) = cancel_mission(
+            State(state.clone()),
+            axum::extract::Path(mission.id.clone()),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(cancelled.status, MissionStatus::Cancelled);
-        assert_eq!(cancelled.last_error.as_deref(), Some("Mission cancelled by operator"));
+        assert_eq!(
+            cancelled.last_error.as_deref(),
+            Some("Mission cancelled by operator")
+        );
 
         let saved = state.config.read().await.clone();
         assert_eq!(saved.evolve.state, EvolveState::Completed);
@@ -768,7 +979,10 @@ mod tests {
         assert_eq!(paused.status, MissionStatus::Blocked);
         let saved = state.config.read().await.clone();
         assert_eq!(saved.evolve.state, EvolveState::Paused);
-        assert_eq!(saved.evolve.current_mission_id.as_deref(), Some(mission.id.as_str()));
+        assert_eq!(
+            saved.evolve.current_mission_id.as_deref(),
+            Some(mission.id.as_str())
+        );
         assert_eq!(saved.autonomy.state, AutonomyState::Paused);
         assert_eq!(saved.autonomy.mode, AutonomyMode::Evolve);
     }
@@ -903,7 +1117,10 @@ mod tests {
         assert!(matches!(resumed.status, MissionStatus::Queued));
         let saved = state.config.read().await.clone();
         assert_eq!(saved.evolve.state, EvolveState::Running);
-        assert_eq!(saved.evolve.current_mission_id.as_deref(), Some(mission.id.as_str()));
+        assert_eq!(
+            saved.evolve.current_mission_id.as_deref(),
+            Some(mission.id.as_str())
+        );
         assert_eq!(saved.autonomy.state, AutonomyState::Enabled);
         assert_eq!(saved.autonomy.mode, AutonomyMode::Evolve);
     }
@@ -997,11 +1214,13 @@ mod tests {
                 requested_model: None,
                 cwd: None,
                 thinking_level: None,
+                task_mode: None,
                 output_schema_json: None,
                 strategy: Some(SubAgentStrategy::ParallelBestEffort),
             }],
             cwd: Some(PathBuf::from("J:\\repo")),
             thinking_level: Some(ThinkingLevel::Medium),
+            task_mode: None,
             strategy: None,
             parent_alias: Some("claude".to_string()),
         };
@@ -1021,6 +1240,34 @@ mod tests {
     }
 
     #[test]
+    fn resolve_delegation_tasks_inherits_batch_task_mode() {
+        let config = config_with_aliases();
+        let request = BatchTaskRequest {
+            tasks: vec![SubAgentTask {
+                prompt: "Plan the next sprint".to_string(),
+                target: Some("claude".to_string()),
+                alias: None,
+                provider_id: None,
+                requested_model: None,
+                cwd: None,
+                thinking_level: None,
+                task_mode: None,
+                output_schema_json: None,
+                strategy: None,
+            }],
+            cwd: None,
+            thinking_level: None,
+            task_mode: Some(TaskMode::Daily),
+            strategy: None,
+            parent_alias: Some("main".to_string()),
+        };
+
+        let resolved = resolve_delegation_tasks(&config, &request).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].task_mode, Some(TaskMode::Daily));
+    }
+
+    #[test]
     fn resolve_subagent_candidates_can_target_provider_without_hardcoding_alias() {
         let config = config_with_aliases();
         let task = SubAgentTask {
@@ -1031,6 +1278,7 @@ mod tests {
             requested_model: None,
             cwd: None,
             thinking_level: None,
+            task_mode: None,
             output_schema_json: None,
             strategy: None,
         };
@@ -1052,6 +1300,7 @@ mod tests {
             requested_model: None,
             cwd: None,
             thinking_level: None,
+            task_mode: None,
             output_schema_json: None,
             strategy: Some(SubAgentStrategy::SingleBest),
         };
@@ -1086,6 +1335,7 @@ mod tests {
             requested_model: None,
             cwd: None,
             thinking_level: None,
+            task_mode: None,
             output_schema_json: None,
             strategy: Some(SubAgentStrategy::SingleBest),
         };
@@ -1103,6 +1353,7 @@ mod tests {
             requested_model: None,
             cwd: None,
             thinking_level: None,
+            task_mode: None,
             output_schema_json: None,
             strategy: Some(SubAgentStrategy::SingleBest),
         };
@@ -1196,7 +1447,9 @@ mod tests {
 
         let pool = provider_pool_candidates(&config, Some("main")).unwrap();
         assert!(pool.iter().any(|(_, provider)| provider.id == "anthropic"));
-        assert!(pool.iter().any(|(_, provider)| provider.id == "anthropic-2"));
+        assert!(pool
+            .iter()
+            .any(|(_, provider)| provider.id == "anthropic-2"));
 
         let resolved = resolve_subagent_candidates(
             &config,
@@ -1209,6 +1462,7 @@ mod tests {
                 requested_model: None,
                 cwd: None,
                 thinking_level: None,
+                task_mode: None,
                 output_schema_json: None,
                 strategy: None,
             },
@@ -1236,11 +1490,13 @@ mod tests {
                         requested_model: None,
                         cwd: None,
                         thinking_level: None,
+                        task_mode: None,
                         output_schema_json: None,
                         strategy: None,
                     }],
                     cwd: None,
                     thinking_level: None,
+                    task_mode: None,
                     strategy: None,
                     parent_alias: Some("main".to_string()),
                 },
@@ -1272,11 +1528,13 @@ mod tests {
                         requested_model: None,
                         cwd: None,
                         thinking_level: None,
+                        task_mode: None,
                         output_schema_json: None,
                         strategy: Some(SubAgentStrategy::ParallelBestEffort),
                     }],
                     cwd: None,
                     thinking_level: None,
+                    task_mode: None,
                     strategy: None,
                     parent_alias: Some("main".to_string()),
                 },

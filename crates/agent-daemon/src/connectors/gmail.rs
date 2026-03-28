@@ -44,8 +44,8 @@ pub(super) async fn process_gmail_connector(
     for msg_stub in &messages {
         let detail = fetch_gmail_message_detail(state, &token, &msg_stub.id).await?;
         let from_address = gmail_extract_header(&detail, "From").unwrap_or_default();
-        let subject = gmail_extract_header(&detail, "Subject")
-            .unwrap_or_else(|| "(no subject)".to_string());
+        let subject =
+            gmail_extract_header(&detail, "Subject").unwrap_or_else(|| "(no subject)".to_string());
         let body_text = detail.snippet.clone().unwrap_or_default();
 
         match gmail_message_action(connector, &from_address, &subject, &body_text, &msg_stub.id) {
@@ -71,7 +71,7 @@ pub(super) async fn process_gmail_connector(
                         "warn",
                         "gmail",
                         format!(
-                            "gmail '{}' requires pairing approval for sender={} (run 'autism gmail approvals' to review)",
+                            "gmail '{}' requires pairing approval for sender={} (run 'nuclear gmail approvals' to review)",
                             connector.id,
                             approval.external_user_id.as_deref().unwrap_or("-"),
                         ),
@@ -125,9 +125,7 @@ pub(super) async fn process_gmail_connector(
     })
 }
 
-pub(super) fn load_gmail_oauth_token(
-    connector: &GmailConnectorConfig,
-) -> Result<String, ApiError> {
+pub(super) fn load_gmail_oauth_token(connector: &GmailConnectorConfig) -> Result<String, ApiError> {
     let account = connector
         .oauth_keychain_account
         .as_deref()
@@ -177,10 +175,7 @@ async fn fetch_gmail_messages(
     token: &str,
     connector: &GmailConnectorConfig,
 ) -> Result<Vec<GmailMessageStub>, ApiError> {
-    let label = connector
-        .label_filter
-        .as_deref()
-        .unwrap_or("INBOX");
+    let label = connector.label_filter.as_deref().unwrap_or("INBOX");
     let query = format!("is:unread label:{}", label);
     let url = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
     let response = state
@@ -231,7 +226,11 @@ pub(super) async fn fetch_gmail_message_detail(
         .http_client
         .get(&url)
         .bearer_auth(token)
-        .query(&[("format", "metadata"), ("metadataHeaders", "From"), ("metadataHeaders", "Subject")])
+        .query(&[
+            ("format", "metadata"),
+            ("metadataHeaders", "From"),
+            ("metadataHeaders", "Subject"),
+        ])
         .send()
         .await
         .map_err(|error| {
@@ -367,9 +366,10 @@ pub(super) fn gmail_message_action(
     let sender_email = extract_email_address(from_trimmed);
 
     if connector.require_pairing_approval {
-        let sender_allowed = connector.allowed_sender_addresses.iter().any(|allowed| {
-            allowed.eq_ignore_ascii_case(&sender_email)
-        });
+        let sender_allowed = connector
+            .allowed_sender_addresses
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(&sender_email));
         if !sender_allowed {
             return GmailMessageAction::Pending(build_gmail_pairing_approval(
                 connector,
@@ -382,9 +382,10 @@ pub(super) fn gmail_message_action(
             ));
         }
     } else if !connector.allowed_sender_addresses.is_empty() {
-        let sender_allowed = connector.allowed_sender_addresses.iter().any(|allowed| {
-            allowed.eq_ignore_ascii_case(&sender_email)
-        });
+        let sender_allowed = connector
+            .allowed_sender_addresses
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(&sender_email));
         if !sender_allowed {
             return GmailMessageAction::Ignore;
         }

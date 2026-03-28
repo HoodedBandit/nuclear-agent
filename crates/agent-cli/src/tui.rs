@@ -3,7 +3,7 @@ use crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use agent_core::{InputAttachment, PermissionPreset, ThinkingLevel};
+use agent_core::{InputAttachment, PermissionPreset, TaskMode, ThinkingLevel};
 use agent_storage::Storage;
 
 use crate::ensure_daemon;
@@ -24,6 +24,7 @@ pub(crate) async fn run_tui_session(
     session_id: Option<String>,
     initial_prompt: Option<String>,
     thinking_level: Option<ThinkingLevel>,
+    task_mode: Option<TaskMode>,
     attachments: Vec<InputAttachment>,
     permission_preset: Option<PermissionPreset>,
 ) -> Result<()> {
@@ -34,6 +35,7 @@ pub(crate) async fn run_tui_session(
         alias,
         session_id,
         thinking_level,
+        task_mode,
         attachments,
         permission_preset,
     )

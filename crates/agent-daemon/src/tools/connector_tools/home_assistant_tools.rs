@@ -1,10 +1,29 @@
-use agent_providers::load_api_key;
+use agent_providers::{delete_secret, load_api_key, store_api_key};
 use serde::Deserialize;
 
 use super::super::argument_helpers::{
     optional_bool, optional_string, optional_string_array, required_string, required_string_array,
 };
 use super::*;
+
+fn should_cleanup_upserted_secret(
+    new_account: Option<&str>,
+    previous_account: Option<&str>,
+) -> bool {
+    let new_account = new_account.map(str::trim).filter(|value| !value.is_empty());
+    let previous_account = previous_account
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    new_account.is_some() && new_account != previous_account
+}
+
+fn cleanup_upserted_secret(new_account: Option<&str>, previous_account: Option<&str>) {
+    if should_cleanup_upserted_secret(new_account, previous_account) {
+        if let Some(account) = new_account.map(str::trim).filter(|value| !value.is_empty()) {
+            let _ = delete_secret(account);
+        }
+    }
+}
 
 pub(super) fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
@@ -380,10 +399,19 @@ async fn configure_home_assistant_connector(context: &ToolContext, args: &Value)
             .map(PathBuf::from)
             .or_else(|| existing.as_ref().and_then(|entry| entry.cwd.clone())),
     };
-    {
+    let save_error = {
         let mut config = context.state.config.write().await;
         config.upsert_home_assistant_connector(connector.clone());
-        context.state.storage.save_config(&config)?;
+        context.state.storage.save_config(&config).err()
+    };
+    if let Some(error) = save_error {
+        cleanup_upserted_secret(
+            connector.access_token_keychain_account.as_deref(),
+            existing
+                .as_ref()
+                .and_then(|entry| entry.access_token_keychain_account.as_deref()),
+        );
+        return Err(error);
     }
     append_log(
         &context.state,

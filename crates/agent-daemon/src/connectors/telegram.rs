@@ -74,7 +74,7 @@ pub(super) async fn process_telegram_connector(
                         "warn",
                         "telegram",
                         format!(
-                            "telegram '{}' requires pairing approval for chat={} user={} (run 'autism telegram approvals' to review)",
+                            "telegram '{}' requires pairing approval for chat={} user={} (run 'nuclear telegram approvals' to review)",
                             connector.id,
                             approval.external_chat_id.as_deref().unwrap_or("-"),
                             approval.external_user_id.as_deref().unwrap_or("-")

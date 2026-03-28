@@ -1,201 +1,39 @@
+use agent_core::{
+    AppConfig, ConnectorApprovalRecord, ConnectorApprovalStatus, ConnectorKind, LogEntry,
+    MemoryRecord, MemoryReviewStatus, MemoryScope, Mission, MissionCheckpoint, MissionStatus,
+    ModelAlias, PatternType, SessionMessage, SessionSearchHit, SessionSummary, SkillDraft,
+    SkillDraftStatus, TaskMode, UsagePattern, APP_NAME, APP_SLUG,
+};
+use anyhow::{anyhow, Context, Result};
+use auto_launch::AutoLaunchBuilder;
+use chrono::{DateTime, Utc};
+use directories::ProjectDirs;
+use rusqlite::{params, types::Type, Connection, OptionalExtension};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     time::Duration,
 };
-
-use agent_core::{
-    AppConfig, ConnectorApprovalRecord, ConnectorApprovalStatus, ConnectorKind, LogEntry,
-    MemoryRecord, MemoryReviewStatus, MemoryScope, Mission, MissionCheckpoint, MissionStatus,
-    ModelAlias, PatternType, SessionMessage, SessionSearchHit, SessionSummary, SkillDraft,
-    SkillDraftStatus, UsagePattern, APP_NAME, APP_SLUG,
-};
-use anyhow::{anyhow, Context, Result};
-use auto_launch::AutoLaunchBuilder;
-use chrono::{DateTime, Utc};
-use directories::ProjectDirs;
-use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
-pub struct AppPaths {
-    pub root_dir: PathBuf,
-    pub config_dir: PathBuf,
-    pub data_dir: PathBuf,
-    pub log_dir: PathBuf,
-    pub config_path: PathBuf,
-    pub db_path: PathBuf,
-}
-
-impl AppPaths {
-    pub fn discover() -> Result<Self> {
-        let dirs = ProjectDirs::from("com", "NuclearAI", APP_NAME)
-            .ok_or_else(|| anyhow!("failed to resolve application directories"))?;
-
-        let config_dir = dirs.config_dir().to_path_buf();
-        let data_dir = dirs.data_dir().to_path_buf();
-        let log_dir = dirs.data_local_dir().join("logs");
-        let root_dir = dirs.data_local_dir().to_path_buf();
-
-        Ok(Self {
-            config_path: config_dir.join("config.json"),
-            db_path: data_dir.join("agent.db"),
-            root_dir,
-            config_dir,
-            data_dir,
-            log_dir,
-        })
-    }
-
-    pub fn under_root(root_dir: impl AsRef<Path>) -> Self {
-        let root_dir = root_dir.as_ref().to_path_buf();
-        let config_dir = root_dir.join("config");
-        let data_dir = root_dir.join("data");
-        let log_dir = root_dir.join("logs");
-        Self {
-            config_path: config_dir.join("config.json"),
-            db_path: data_dir.join("agent.db"),
-            root_dir,
-            config_dir,
-            data_dir,
-            log_dir,
-        }
-    }
-
-    pub fn ensure(&self) -> Result<()> {
-        fs::create_dir_all(&self.root_dir).context("failed to create root dir")?;
-        fs::create_dir_all(&self.config_dir).context("failed to create config dir")?;
-        fs::create_dir_all(&self.data_dir).context("failed to create data dir")?;
-        fs::create_dir_all(&self.log_dir).context("failed to create log dir")?;
-        Ok(())
-    }
-}
+mod helpers;
+mod logs;
+mod paths;
+pub mod plugins;
+mod session_input;
+mod session_summary;
+use helpers::*;
+pub use paths::AppPaths;
+pub use session_input::PersistSessionTurnInput;
+use session_summary::row_to_session_summary;
 
 #[derive(Debug, Clone)]
 pub struct Storage {
     paths: AppPaths,
 }
 
-pub struct PersistSessionTurnInput<'a> {
-    pub session_id: &'a str,
-    pub title: Option<&'a str>,
-    pub alias: &'a ModelAlias,
-    pub provider_id: &'a str,
-    pub model: &'a str,
-    pub cwd: Option<&'a Path>,
-    pub messages: &'a [SessionMessage],
-}
-
 impl Storage {
-    pub fn open() -> Result<Self> {
-        Self::open_with_paths(AppPaths::discover()?)
-    }
-
-    pub fn open_at(root_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_paths(AppPaths::under_root(root_dir))
-    }
-
-    pub fn open_with_paths(paths: AppPaths) -> Result<Self> {
-        paths.ensure()?;
-        let storage = Self { paths };
-        storage.init_schema()?;
-        if !storage.paths.config_path.exists() {
-            storage.save_config(&AppConfig::default())?;
-        }
-        Ok(storage)
-    }
-
-    pub fn paths(&self) -> &AppPaths {
-        &self.paths
-    }
-
-    pub fn load_config(&self) -> Result<AppConfig> {
-        let content = fs::read_to_string(&self.paths.config_path)
-            .with_context(|| format!("failed to read {}", self.paths.config_path.display()))?;
-        let config =
-            serde_json::from_str::<AppConfig>(&content).context("failed to parse config")?;
-        Ok(config)
-    }
-
-    pub fn save_config(&self, config: &AppConfig) -> Result<()> {
-        let content = serde_json::to_string_pretty(config).context("failed to serialize config")?;
-        write_atomic(&self.paths.config_path, content.as_bytes())?;
-        Ok(())
-    }
-
-    pub fn reset_all(&self) -> Result<()> {
-        if self.paths.config_dir.exists() {
-            fs::remove_dir_all(&self.paths.config_dir).with_context(|| {
-                format!(
-                    "failed to remove config directory {}",
-                    self.paths.config_dir.display()
-                )
-            })?;
-        }
-        if self.paths.data_dir.exists() {
-            fs::remove_dir_all(&self.paths.data_dir).with_context(|| {
-                format!(
-                    "failed to remove data directory {}",
-                    self.paths.data_dir.display()
-                )
-            })?;
-        }
-        if self.paths.log_dir.exists() {
-            fs::remove_dir_all(&self.paths.log_dir).with_context(|| {
-                format!(
-                    "failed to remove log directory {}",
-                    self.paths.log_dir.display()
-                )
-            })?;
-        }
-
-        self.paths.ensure()?;
-        self.init_schema()?;
-        self.save_config(&AppConfig::default())?;
-        Ok(())
-    }
-
-    pub fn sync_autostart(&self, daemon_path: &Path, args: &[&str], enabled: bool) -> Result<()> {
-        let daemon = daemon_path
-            .to_str()
-            .ok_or_else(|| anyhow!("daemon path contains non-utf8 characters"))?;
-        let mut builder = AutoLaunchBuilder::new();
-        builder.set_app_name(APP_SLUG).set_app_path(daemon);
-        if !args.is_empty() {
-            builder.set_args(args);
-        }
-        let launcher = builder
-            .build()
-            .context("failed to construct auto-launch configuration")?;
-
-        if enabled {
-            launcher.enable().context("failed to enable auto-start")?;
-        } else if launcher.is_enabled().unwrap_or(false) {
-            launcher.disable().context("failed to disable auto-start")?;
-        }
-
-        Ok(())
-    }
-
-    pub fn autostart_enabled(&self, daemon_path: &Path, args: &[&str]) -> Result<bool> {
-        let daemon = daemon_path
-            .to_str()
-            .ok_or_else(|| anyhow!("daemon path contains non-utf8 characters"))?;
-        let mut builder = AutoLaunchBuilder::new();
-        builder.set_app_name(APP_SLUG).set_app_path(daemon);
-        if !args.is_empty() {
-            builder.set_args(args);
-        }
-        let launcher = builder
-            .build()
-            .context("failed to construct auto-launch configuration")?;
-
-        launcher
-            .is_enabled()
-            .context("failed to query auto-start state")
-    }
-
     fn init_schema(&self) -> Result<()> {
         let connection = self.connection()?;
         connection.execute_batch(
@@ -206,6 +44,7 @@ impl Storage {
                 alias TEXT NOT NULL,
                 provider_id TEXT NOT NULL,
                 model TEXT NOT NULL,
+                task_mode TEXT,
                 cwd TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -281,7 +120,8 @@ impl Storage {
                 review_status_json TEXT,
                 review_note TEXT,
                 reviewed_at TEXT,
-                supersedes TEXT
+                supersedes TEXT,
+                evidence_refs_json TEXT
             );
             CREATE TABLE IF NOT EXISTS skill_drafts (
                 id TEXT PRIMARY KEY,
@@ -341,6 +181,7 @@ impl Storage {
             ",
         )?;
         ensure_column(&connection, "sessions", "title", "TEXT")?;
+        ensure_column(&connection, "sessions", "task_mode", "TEXT")?;
         ensure_column(&connection, "sessions", "cwd", "TEXT")?;
         ensure_column(&connection, "messages", "attachments_json", "TEXT")?;
         ensure_column(&connection, "messages", "tool_call_id", "TEXT")?;
@@ -399,6 +240,7 @@ impl Storage {
         ensure_column(&connection, "memory_records", "review_note", "TEXT")?;
         ensure_column(&connection, "memory_records", "reviewed_at", "TEXT")?;
         ensure_column(&connection, "memory_records", "supersedes", "TEXT")?;
+        ensure_column(&connection, "memory_records", "evidence_refs_json", "TEXT")?;
         ensure_column(&connection, "skill_drafts", "trigger_hint", "TEXT")?;
         ensure_column(&connection, "skill_drafts", "workspace_key", "TEXT")?;
         ensure_column(&connection, "skill_drafts", "provider_id", "TEXT")?;
@@ -511,72 +353,6 @@ impl Storage {
         rebuild_messages_fts(&connection)?;
         rebuild_memory_fts(&connection)?;
         Ok(())
-    }
-
-    fn connection(&self) -> Result<Connection> {
-        let connection = Connection::open(&self.paths.db_path)
-            .with_context(|| format!("failed to open database {}", self.paths.db_path.display()))?;
-        configure_connection(&connection)?;
-        Ok(connection)
-    }
-
-    pub fn append_log(&self, entry: &LogEntry) -> Result<()> {
-        let connection = self.connection()?;
-        connection.execute(
-            "INSERT INTO logs (id, level, scope, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                entry.id,
-                entry.level,
-                entry.scope,
-                entry.message,
-                entry.created_at.to_rfc3339(),
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn list_logs(&self, limit: usize) -> Result<Vec<LogEntry>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id, level, scope, message, created_at FROM logs ORDER BY created_at DESC LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit as i64], |row| {
-            let created_at: String = row.get(4)?;
-            Ok(LogEntry {
-                id: row.get(0)?,
-                level: row.get(1)?,
-                scope: row.get(2)?,
-                message: row.get(3)?,
-                created_at: parse_datetime(&created_at)?,
-            })
-        })?;
-
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
-    }
-
-    pub fn list_logs_after(&self, after: DateTime<Utc>, limit: usize) -> Result<Vec<LogEntry>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id, level, scope, message, created_at
-             FROM logs
-             WHERE created_at >= ?1
-             ORDER BY created_at ASC
-             LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![after.to_rfc3339(), limit as i64], |row| {
-            let created_at: String = row.get(4)?;
-            Ok(LogEntry {
-                id: row.get(0)?,
-                level: row.get(1)?,
-                scope: row.get(2)?,
-                message: row.get(3)?,
-                created_at: parse_datetime(&created_at)?,
-            })
-        })?;
-
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
     }
 
     pub fn upsert_connector_approval(&self, approval: &ConnectorApprovalRecord) -> Result<()> {
@@ -741,8 +517,9 @@ impl Storage {
         alias: &ModelAlias,
         provider_id: &str,
         model: &str,
+        task_mode: Option<TaskMode>,
     ) -> Result<()> {
-        self.ensure_session_with_title(session_id, None, alias, provider_id, model, None)
+        self.ensure_session_with_title(session_id, None, alias, provider_id, model, task_mode, None)
     }
 
     pub fn ensure_session_with_title(
@@ -752,19 +529,21 @@ impl Storage {
         alias: &ModelAlias,
         provider_id: &str,
         model: &str,
+        task_mode: Option<TaskMode>,
         cwd: Option<&Path>,
     ) -> Result<()> {
         let connection = self.connection()?;
         let now = Utc::now().to_rfc3339();
         connection.execute(
             "
-            INSERT INTO sessions (id, title, alias, provider_id, model, cwd, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+            INSERT INTO sessions (id, title, alias, provider_id, model, task_mode, cwd, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
             ON CONFLICT(id) DO UPDATE SET
                 title = COALESCE(excluded.title, sessions.title),
                 alias = excluded.alias,
                 provider_id = excluded.provider_id,
                 model = excluded.model,
+                task_mode = COALESCE(excluded.task_mode, sessions.task_mode),
                 cwd = COALESCE(excluded.cwd, sessions.cwd),
                 updated_at = excluded.updated_at
             ",
@@ -774,6 +553,7 @@ impl Storage {
                 alias.alias,
                 provider_id,
                 model,
+                task_mode.map(TaskMode::as_str),
                 cwd.map(|path| path.display().to_string()),
                 now
             ],
@@ -832,6 +612,7 @@ impl Storage {
             alias,
             provider_id,
             model,
+            task_mode,
             cwd,
             messages,
         } = input;
@@ -844,13 +625,14 @@ impl Storage {
             .to_rfc3339();
         transaction.execute(
             "
-            INSERT INTO sessions (id, title, alias, provider_id, model, cwd, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+            INSERT INTO sessions (id, title, alias, provider_id, model, task_mode, cwd, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
             ON CONFLICT(id) DO UPDATE SET
                 title = COALESCE(excluded.title, sessions.title),
                 alias = excluded.alias,
                 provider_id = excluded.provider_id,
                 model = excluded.model,
+                task_mode = COALESCE(excluded.task_mode, sessions.task_mode),
                 cwd = COALESCE(excluded.cwd, sessions.cwd),
                 updated_at = excluded.updated_at
             ",
@@ -860,6 +642,7 @@ impl Storage {
                 alias.alias,
                 provider_id,
                 model,
+                task_mode.map(TaskMode::as_str),
                 cwd.map(|path| path.display().to_string()),
                 updated_at,
             ],
@@ -955,33 +738,19 @@ impl Storage {
                 sessions.alias,
                 sessions.provider_id,
                 sessions.model,
+                sessions.task_mode,
                 sessions.cwd,
                 sessions.created_at,
                 sessions.updated_at,
                 COUNT(messages.id) AS message_count
             FROM sessions
             LEFT JOIN messages ON messages.session_id = sessions.id
-            GROUP BY sessions.id, sessions.title, sessions.alias, sessions.provider_id, sessions.model, sessions.cwd, sessions.created_at, sessions.updated_at
+            GROUP BY sessions.id, sessions.title, sessions.alias, sessions.provider_id, sessions.model, sessions.task_mode, sessions.cwd, sessions.created_at, sessions.updated_at
             ORDER BY updated_at DESC
             LIMIT ?1
             ",
         )?;
-        let rows = statement.query_map([limit as i64], |row| {
-            let created_at: String = row.get(6)?;
-            let updated_at: String = row.get(7)?;
-            let cwd: Option<String> = row.get(5)?;
-            Ok(SessionSummary {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                alias: row.get(2)?,
-                provider_id: row.get(3)?,
-                model: row.get(4)?,
-                message_count: row.get(8)?,
-                cwd: cwd.map(PathBuf::from),
-                created_at: parse_datetime(&created_at)?,
-                updated_at: parse_datetime(&updated_at)?,
-            })
-        })?;
+        let rows = statement.query_map([limit as i64], row_to_session_summary)?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
@@ -997,6 +766,7 @@ impl Storage {
                 sessions.alias,
                 sessions.provider_id,
                 sessions.model,
+                sessions.task_mode,
                 sessions.cwd,
                 sessions.created_at,
                 sessions.updated_at,
@@ -1004,26 +774,11 @@ impl Storage {
             FROM sessions
             LEFT JOIN messages ON messages.session_id = sessions.id
             WHERE sessions.id = ?1
-            GROUP BY sessions.id, sessions.title, sessions.alias, sessions.provider_id, sessions.model, sessions.cwd, sessions.created_at, sessions.updated_at
+            GROUP BY sessions.id, sessions.title, sessions.alias, sessions.provider_id, sessions.model, sessions.task_mode, sessions.cwd, sessions.created_at, sessions.updated_at
             ",
         )?;
         let session = statement
-            .query_row([session_id], |row| {
-                let created_at: String = row.get(6)?;
-                let updated_at: String = row.get(7)?;
-                let cwd: Option<String> = row.get(5)?;
-                Ok(SessionSummary {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    alias: row.get(2)?,
-                    provider_id: row.get(3)?,
-                    model: row.get(4)?,
-                    message_count: row.get(8)?,
-                    cwd: cwd.map(PathBuf::from),
-                    created_at: parse_datetime(&created_at)?,
-                    updated_at: parse_datetime(&updated_at)?,
-                })
-            })
+            .query_row([session_id], row_to_session_summary)
             .optional()?;
         Ok(session)
     }
@@ -1283,6 +1038,7 @@ impl Storage {
     pub fn upsert_memory(&self, memory: &MemoryRecord) -> Result<()> {
         let connection = self.connection()?;
         let tags_json = serde_json::to_string(&memory.tags)?;
+        let evidence_refs_json = serde_json::to_string(&memory.evidence_refs)?;
         let tags_text = memory.tags.join(" ");
         connection.execute(
             "
@@ -1290,9 +1046,9 @@ impl Storage {
                 id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
                 last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
                 tags_json, tags_text, identity_key, observation_source, superseded_by,
-                review_status_json, review_note, reviewed_at, supersedes
+                review_status_json, review_note, reviewed_at, supersedes, evidence_refs_json
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
             ON CONFLICT(id) DO UPDATE SET
                 kind_json = excluded.kind_json,
                 scope_json = excluded.scope_json,
@@ -1313,7 +1069,8 @@ impl Storage {
                 review_status_json = excluded.review_status_json,
                 review_note = excluded.review_note,
                 reviewed_at = excluded.reviewed_at,
-                supersedes = excluded.supersedes
+                supersedes = excluded.supersedes,
+                evidence_refs_json = excluded.evidence_refs_json
             ",
             params![
                 memory.id,
@@ -1338,6 +1095,7 @@ impl Storage {
                 memory.review_note,
                 memory.reviewed_at.map(|value| value.to_rfc3339()),
                 memory.supersedes,
+                evidence_refs_json,
             ],
         )?;
         Ok(())
@@ -1395,7 +1153,8 @@ impl Storage {
                 mr.created_at, mr.updated_at, mr.last_used_at, mr.source_session_id,
                 mr.source_message_id, mr.provider_id, mr.workspace_key, mr.tags_json,
                 mr.identity_key, mr.observation_source, mr.superseded_by,
-                mr.review_status_json, mr.review_note, mr.reviewed_at, mr.supersedes
+                mr.review_status_json, mr.review_note, mr.reviewed_at, mr.supersedes,
+                mr.evidence_refs_json
             FROM memory_embeddings me
             JOIN memory_records mr ON mr.id = me.memory_id
             WHERE mr.superseded_by IS NULL
@@ -1460,7 +1219,7 @@ impl Storage {
             SELECT
                 id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
                 last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
-                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes
+                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes, evidence_refs_json
             FROM memory_records
             WHERE id = ?1
             ",
@@ -1478,7 +1237,7 @@ impl Storage {
             SELECT
                 id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
                 last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
-                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes
+                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes, evidence_refs_json
             FROM memory_records
             WHERE superseded_by IS NULL
               AND review_status_json = ?2
@@ -1508,7 +1267,7 @@ impl Storage {
             SELECT
                 id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
                 last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
-                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes
+                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes, evidence_refs_json
             FROM memory_records
             WHERE superseded_by IS NULL
               AND review_status_json = ?1
@@ -1557,7 +1316,7 @@ impl Storage {
             SELECT
                 id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
                 last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
-                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes
+                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes, evidence_refs_json
             FROM memory_records
             WHERE superseded_by IS NULL
               AND review_status_json = ?3
@@ -1580,6 +1339,38 @@ impl Storage {
             .filter(|memory| memory_matches_scope(memory, workspace_key, provider_id))
             .collect::<Vec<_>>();
         Ok(memories)
+    }
+
+    pub fn list_memories_by_source_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "
+            SELECT
+                id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
+                last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
+                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes, evidence_refs_json
+            FROM memory_records
+            WHERE superseded_by IS NULL
+              AND review_status_json = ?1
+              AND source_session_id = ?2
+            ORDER BY updated_at DESC
+            LIMIT ?3
+            ",
+        )?;
+        let rows = statement.query_map(
+            params![
+                serde_json::to_string(&MemoryReviewStatus::Accepted)?,
+                session_id,
+                limit as i64
+            ],
+            row_to_memory,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn forget_memory(&self, memory_id: &str) -> Result<bool> {
@@ -1643,7 +1434,7 @@ impl Storage {
             SELECT
                 id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
                 last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
-                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes
+                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes, evidence_refs_json
             FROM memory_records
             WHERE lower(subject) = lower(?1)
               AND superseded_by IS NULL
@@ -1684,7 +1475,7 @@ impl Storage {
             SELECT
                 id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
                 last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
-                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes
+                tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes, evidence_refs_json
             FROM memory_records
             WHERE lower(identity_key) = lower(?1)
               AND superseded_by IS NULL
@@ -1710,6 +1501,8 @@ impl Storage {
         query: &str,
         workspace_key: Option<&str>,
         provider_id: Option<&str>,
+        review_statuses: &[MemoryReviewStatus],
+        include_superseded: bool,
         limit: usize,
     ) -> Result<(Vec<MemoryRecord>, Vec<SessionSearchHit>)> {
         let connection = self.connection()?;
@@ -1732,12 +1525,11 @@ impl Storage {
                     mr.id, mr.kind_json, mr.scope_json, mr.subject, mr.content, mr.confidence,
                     mr.created_at, mr.updated_at, mr.last_used_at, mr.source_session_id,
                     mr.source_message_id, mr.provider_id, mr.workspace_key, mr.tags_json,
-                    mr.identity_key, mr.observation_source, mr.superseded_by, mr.review_status_json, mr.review_note, mr.reviewed_at, mr.supersedes
+                    mr.identity_key, mr.observation_source, mr.superseded_by, mr.review_status_json, mr.review_note, mr.reviewed_at, mr.supersedes, mr.evidence_refs_json
                 FROM memory_records_fts
                 JOIN memory_records mr ON mr.id = memory_records_fts.memory_id
                 WHERE memory_records_fts MATCH ?1
-                  AND mr.superseded_by IS NULL
-                  AND mr.review_status_json = ?3
+                  AND (?3 = 1 OR mr.superseded_by IS NULL)
                 ORDER BY bm25(memory_records_fts), mr.updated_at DESC
                 LIMIT ?2
                 ",
@@ -1746,13 +1538,16 @@ impl Storage {
                 params![
                     effective_fts_query,
                     limit as i64,
-                    serde_json::to_string(&MemoryReviewStatus::Accepted)?
+                    if include_superseded { 1 } else { 0 }
                 ],
                 row_to_memory,
             )?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
                 .into_iter()
                 .filter(|memory| memory_matches_scope(memory, workspace_key, provider_id))
+                .filter(|memory| {
+                    memory_matches_query_filters(memory, review_statuses, include_superseded)
+                })
                 .take(limit)
                 .collect()
         };
@@ -1766,6 +1561,8 @@ impl Storage {
                 query,
                 workspace_key,
                 provider_id,
+                review_statuses,
+                include_superseded,
                 remaining,
                 &exclude_ids,
             )?;
@@ -1957,7 +1754,7 @@ impl Storage {
         Ok(())
     }
 
-    // ── Usage patterns ────────────────────────────────────────────────
+    // Usage patterns
 
     pub fn upsert_pattern(&self, pattern: &UsagePattern) -> Result<()> {
         let connection = self.connection()?;
@@ -2039,698 +1836,13 @@ impl Storage {
     }
 }
 
-fn row_to_pattern(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsagePattern> {
-    let pattern_type_json: String = row.get(1)?;
-    let last_seen_at: String = row.get(6)?;
-    let created_at: String = row.get(7)?;
-    Ok(UsagePattern {
-        id: row.get(0)?,
-        pattern_type: serde_json::from_str(&pattern_type_json).unwrap_or(PatternType::ToolSequence),
-        description: row.get(2)?,
-        trigger_hint: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-        frequency: row.get::<_, i64>(4).unwrap_or(1) as u32,
-        confidence: row.get::<_, i64>(5).unwrap_or(50) as u8,
-        last_seen_at: parse_datetime(&last_seen_at).unwrap_or_else(|_| Utc::now()),
-        created_at: parse_datetime(&created_at).unwrap_or_else(|_| Utc::now()),
-        workspace_key: row.get(8)?,
-        provider_id: row.get(9)?,
-    })
-}
-
-fn configure_connection(connection: &Connection) -> Result<()> {
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .context("failed to configure SQLite busy timeout")?;
-    connection
-        .pragma_update(None, "journal_mode", "WAL")
-        .context("failed to enable SQLite WAL mode")?;
-    connection
-        .pragma_update(None, "synchronous", "NORMAL")
-        .context("failed to configure SQLite synchronous mode")?;
-    connection
-        .pragma_update(None, "foreign_keys", "ON")
-        .context("failed to enable SQLite foreign keys")?;
-    Ok(())
-}
-
-fn row_to_mission(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mission> {
-    let created_at: String = row.get(4)?;
-    let updated_at: Option<String> = row.get(5)?;
-    let phase_json: Option<String> = row.get(9)?;
-    let watch_path: Option<String> = row.get(12)?;
-    let watch_recursive: Option<i64> = row.get(13)?;
-    let watch_fingerprint: Option<String> = row.get(14)?;
-    let wake_trigger_json: Option<String> = row.get(15)?;
-    let wake_at: Option<String> = row.get(16)?;
-    let scheduled_for_at: Option<String> = row.get(17)?;
-    let repeat_interval_seconds: Option<i64> = row.get(18)?;
-    let repeat_anchor_at: Option<String> = row.get(19)?;
-    let evolve: Option<i64> = row.get(23)?;
-    let status_json: String = row.get(3)?;
-    let created_at = parse_datetime(&created_at)?;
-    Ok(Mission {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        details: row.get(2)?,
-        status: serde_json::from_str(&status_json).map_err(json_decode_error)?,
-        created_at,
-        updated_at: updated_at
-            .as_deref()
-            .map(parse_datetime)
-            .transpose()?
-            .unwrap_or(created_at),
-        alias: row.get(6)?,
-        requested_model: row.get(7)?,
-        session_id: row.get(8)?,
-        phase: phase_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(json_decode_error)?,
-        handoff_summary: row.get(10)?,
-        workspace_key: row.get(11)?,
-        watch_path: watch_path.map(PathBuf::from),
-        watch_recursive: watch_recursive.unwrap_or_default() != 0,
-        watch_fingerprint,
-        wake_trigger: wake_trigger_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(json_decode_error)?,
-        wake_at: wake_at.as_deref().map(parse_datetime).transpose()?,
-        scheduled_for_at: scheduled_for_at
-            .as_deref()
-            .map(parse_datetime)
-            .transpose()?,
-        repeat_interval_seconds: repeat_interval_seconds.map(|value| value as u64),
-        repeat_anchor_at: repeat_anchor_at
-            .as_deref()
-            .map(parse_datetime)
-            .transpose()?,
-        last_error: row.get(20)?,
-        retries: row.get::<_, Option<i64>>(21)?.unwrap_or_default() as u32,
-        max_retries: row.get::<_, Option<i64>>(22)?.unwrap_or(3) as u32,
-        evolve: evolve.unwrap_or_default() != 0,
-    })
-}
-
-fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
-    let kind_json: String = row.get(1)?;
-    let scope_json: String = row.get(2)?;
-    let created_at: String = row.get(6)?;
-    let updated_at: String = row.get(7)?;
-    let last_used_at: Option<String> = row.get(8)?;
-    let tags_json: Option<String> = row.get(13)?;
-    let review_status_json: Option<String> = row.get(17)?;
-    let reviewed_at: Option<String> = row.get(19)?;
-    let tags = tags_json
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(json_decode_error)?
-        .unwrap_or_default();
-    Ok(MemoryRecord {
-        id: row.get(0)?,
-        kind: serde_json::from_str(&kind_json).map_err(json_decode_error)?,
-        scope: serde_json::from_str(&scope_json).map_err(json_decode_error)?,
-        subject: row.get(3)?,
-        content: row.get(4)?,
-        confidence: row.get::<_, i64>(5)?.clamp(0, 100) as u8,
-        created_at: parse_datetime(&created_at)?,
-        updated_at: parse_datetime(&updated_at)?,
-        last_used_at: last_used_at.as_deref().map(parse_datetime).transpose()?,
-        source_session_id: row.get(9)?,
-        source_message_id: row.get(10)?,
-        provider_id: row.get(11)?,
-        workspace_key: row.get(12)?,
-        tags,
-        identity_key: row.get(14)?,
-        observation_source: row.get(15)?,
-        superseded_by: row.get(16)?,
-        review_status: review_status_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(json_decode_error)?
-            .unwrap_or_default(),
-        review_note: row.get(18)?,
-        reviewed_at: reviewed_at.as_deref().map(parse_datetime).transpose()?,
-        supersedes: row.get(20)?,
-    })
-}
-
-fn row_to_connector_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConnectorApprovalRecord> {
-    let connector_kind_json: String = row.get(1)?;
-    let status_json: String = row.get(4)?;
-    let created_at: String = row.get(15)?;
-    let updated_at: String = row.get(16)?;
-    let reviewed_at: Option<String> = row.get(17)?;
-    Ok(ConnectorApprovalRecord {
-        id: row.get(0)?,
-        connector_kind: serde_json::from_str(&connector_kind_json).map_err(json_decode_error)?,
-        connector_id: row.get(2)?,
-        connector_name: row.get(3)?,
-        status: serde_json::from_str(&status_json).map_err(json_decode_error)?,
-        title: row.get(5)?,
-        details: row.get(6)?,
-        source_key: row.get(7)?,
-        source_event_id: row.get(8)?,
-        external_chat_id: row.get(9)?,
-        external_chat_display: row.get(10)?,
-        external_user_id: row.get(11)?,
-        external_user_display: row.get(12)?,
-        message_preview: row.get(13)?,
-        queued_mission_id: row.get(14)?,
-        created_at: parse_datetime(&created_at)?,
-        updated_at: parse_datetime(&updated_at)?,
-        reviewed_at: reviewed_at.as_deref().map(parse_datetime).transpose()?,
-        review_note: row.get(18)?,
-    })
-}
-
-fn row_to_skill_draft(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillDraft> {
-    let source_message_ids_json: Option<String> = row.get(8)?;
-    let status_json: String = row.get(10)?;
-    let created_at: String = row.get(11)?;
-    let updated_at: String = row.get(12)?;
-    let last_used_at: Option<String> = row.get(13)?;
-    Ok(SkillDraft {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        summary: row.get(2)?,
-        instructions: row.get(3)?,
-        trigger_hint: row.get(4)?,
-        workspace_key: row.get(5)?,
-        provider_id: row.get(6)?,
-        source_session_id: row.get(7)?,
-        source_message_ids: source_message_ids_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(json_decode_error)?
-            .unwrap_or_default(),
-        usage_count: row.get::<_, i64>(9)?.max(0) as u32,
-        status: serde_json::from_str(&status_json).map_err(json_decode_error)?,
-        created_at: parse_datetime(&created_at)?,
-        updated_at: parse_datetime(&updated_at)?,
-        last_used_at: last_used_at.as_deref().map(parse_datetime).transpose()?,
-    })
-}
-
-fn memory_review_status_rank(status: MemoryReviewStatus) -> u8 {
-    match status {
-        MemoryReviewStatus::Accepted => 0,
-        MemoryReviewStatus::Candidate => 1,
-        MemoryReviewStatus::Rejected => 2,
-    }
-}
-
-fn memory_matches_scope(
-    memory: &MemoryRecord,
-    workspace_key: Option<&str>,
-    provider_id: Option<&str>,
-) -> bool {
-    let workspace_ok = workspace_key.is_none()
-        || memory.scope == MemoryScope::Global
-        || memory.workspace_key.as_deref() == workspace_key;
-    let provider_ok = provider_id.is_none()
-        || memory.provider_id.is_none()
-        || memory.provider_id.as_deref() == provider_id;
-    workspace_ok && provider_ok
-}
-
-fn skill_draft_matches_scope(
-    draft: &SkillDraft,
-    workspace_key: Option<&str>,
-    provider_id: Option<&str>,
-) -> bool {
-    let workspace_ok = workspace_key.is_none()
-        || draft.workspace_key.is_none()
-        || draft.workspace_key.as_deref() == workspace_key;
-    let provider_ok = provider_id.is_none()
-        || draft.provider_id.is_none()
-        || draft.provider_id.as_deref() == provider_id;
-    workspace_ok && provider_ok
-}
-
-fn summarize_preview(content: &str, max_chars: usize) -> String {
-    let trimmed = content.trim();
-    if trimmed.chars().count() <= max_chars {
-        return trimmed.to_string();
-    }
-    let mut preview = trimmed.chars().take(max_chars).collect::<String>();
-    preview.push_str("...");
-    preview
-}
-
-fn normalize_fts_query(query: &str) -> String {
-    let mut normalized = String::with_capacity(query.len());
-    for ch in query.chars() {
-        if ch.is_alphanumeric() {
-            normalized.push(ch);
-        } else {
-            normalized.push(' ');
-        }
-    }
-
-    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Build an expanded FTS query that includes stemmed variants using OR.
-/// Example: "running tests quickly" → "running OR run OR tests OR test OR quickly OR quick"
-fn build_expanded_fts_query(query: &str) -> String {
-    let base = normalize_fts_query(query);
-    if base.is_empty() {
-        return base;
-    }
-
-    let mut terms: Vec<String> = Vec::new();
-    for word in base.split_whitespace() {
-        let lower = word.to_ascii_lowercase();
-        terms.push(lower.clone());
-        let stemmed = stem_english(&lower);
-        if stemmed != lower {
-            terms.push(stemmed);
-        }
-    }
-
-    terms.dedup();
-    terms.join(" OR ")
-}
-
-/// Minimal English suffix-stripping stemmer covering common inflections.
-fn stem_english(word: &str) -> String {
-    if word.len() < 4 {
-        return word.to_string();
-    }
-    // Order matters: check longer suffixes first.
-    let suffixes: &[(&str, &str)] = &[
-        ("iness", "y"),
-        ("ation", ""),
-        ("ement", ""),
-        ("ments", ""),
-        ("ness", ""),
-        ("ting", "t"),
-        ("ling", "l"),
-        ("ning", "n"),
-        ("ally", ""),
-        ("ying", "y"),
-        ("ries", "ry"),
-        ("ings", ""),
-        ("ment", ""),
-        ("ably", ""),
-        ("ibly", ""),
-        ("ious", ""),
-        ("eous", ""),
-        ("ful", ""),
-        ("ing", ""),
-        ("ies", "y"),
-        ("ied", "y"),
-        ("ion", ""),
-        ("ers", ""),
-        ("est", ""),
-        ("ous", ""),
-        ("ble", ""),
-        ("ly", ""),
-        ("ed", ""),
-        ("er", ""),
-        ("es", ""),
-        ("'s", ""),
-        ("s", ""),
-    ];
-
-    for (suffix, replacement) in suffixes {
-        if let Some(stem) = word.strip_suffix(suffix) {
-            if stem.len() >= 2 {
-                return format!("{stem}{replacement}");
-            }
-        }
-    }
-    word.to_string()
-}
-
-/// Fuzzy LIKE-based fallback search for when FTS returns too few results.
-/// Uses substring matching on subject and content columns.
-fn fuzzy_memory_search(
-    connection: &Connection,
-    query: &str,
-    workspace_key: Option<&str>,
-    provider_id: Option<&str>,
-    limit: usize,
-    exclude_ids: &[String],
-) -> Result<Vec<MemoryRecord>> {
-    let base = normalize_fts_query(query);
-    if base.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let words: Vec<String> = base
-        .split_whitespace()
-        .map(|w| format!("%{}%", w.to_ascii_lowercase()))
-        .collect();
-
-    if words.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Build a query that matches any word against subject or content.
-    let mut conditions = Vec::new();
-    let mut param_values: Vec<String> = Vec::new();
-    for word in &words {
-        let idx = param_values.len();
-        conditions.push(format!(
-            "(lower(subject) LIKE ?{} OR lower(content) LIKE ?{})",
-            idx + 1,
-            idx + 1
-        ));
-        param_values.push(word.clone());
-    }
-
-    let where_clause = conditions.join(" OR ");
-    let sql = format!(
-        "
-        SELECT
-            id, kind_json, scope_json, subject, content, confidence, created_at, updated_at,
-            last_used_at, source_session_id, source_message_id, provider_id, workspace_key,
-            tags_json, identity_key, observation_source, superseded_by, review_status_json, review_note, reviewed_at, supersedes
-        FROM memory_records
-        WHERE ({where_clause})
-          AND superseded_by IS NULL
-          AND review_status_json = ?{}
-        ORDER BY updated_at DESC
-        LIMIT ?{}
-        ",
-        param_values.len() + 1,
-        param_values.len() + 2,
-    );
-
-    let mut statement = connection.prepare(&sql)?;
-    let accepted_json = serde_json::to_string(&MemoryReviewStatus::Accepted)
-        .unwrap_or_else(|_| "\"accepted\"".to_string());
-
-    let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = param_values
-        .iter()
-        .map(|v| Box::new(v.clone()) as Box<dyn rusqlite::types::ToSql>)
-        .collect();
-    all_params.push(Box::new(accepted_json));
-    all_params.push(Box::new(limit as i64));
-
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
-    let rows = statement.query_map(param_refs.as_slice(), row_to_memory)?;
-
-    Ok(rows
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|m| memory_matches_scope(m, workspace_key, provider_id))
-        .filter(|m| !exclude_ids.contains(&m.id))
-        .take(limit)
-        .collect())
-}
-
-fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
-    embedding
-        .iter()
-        .flat_map(|v| v.to_le_bytes())
-        .collect()
-}
-
-fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect()
-}
-
-fn vector_norm(v: &[f32]) -> f32 {
-    v.iter().map(|x| x * x).sum::<f32>().sqrt()
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32], a_norm: f32) -> f32 {
-    if a.len() != b.len() || a_norm == 0.0 {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let b_norm = vector_norm(b);
-    if b_norm == 0.0 {
-        return 0.0;
-    }
-    dot / (a_norm * b_norm)
-}
-
-/// Like `row_to_memory` but reads columns starting at a given offset.
-fn row_to_memory_at_offset(
-    row: &rusqlite::Row,
-    offset: usize,
-) -> rusqlite::Result<MemoryRecord> {
-    let kind_json: String = row.get(offset + 1)?;
-    let scope_json: String = row.get(offset + 2)?;
-    let created_at: String = row.get(offset + 6)?;
-    let updated_at: String = row.get(offset + 7)?;
-    let last_used_at: Option<String> = row.get(offset + 8)?;
-    let tags_json: Option<String> = row.get(offset + 13)?;
-    let review_status_json: Option<String> = row.get(offset + 17)?;
-    let reviewed_at: Option<String> = row.get(offset + 19)?;
-
-    Ok(MemoryRecord {
-        id: row.get(offset)?,
-        kind: serde_json::from_str(&kind_json).map_err(json_decode_error)?,
-        scope: serde_json::from_str(&scope_json).map_err(json_decode_error)?,
-        subject: row.get(offset + 3)?,
-        content: row.get(offset + 4)?,
-        confidence: row.get::<_, i64>(offset + 5)? as u8,
-        created_at: parse_datetime(&created_at)?,
-        updated_at: parse_datetime(&updated_at)?,
-        last_used_at: last_used_at
-            .as_deref()
-            .map(parse_datetime)
-            .transpose()?,
-        source_session_id: row.get(offset + 9)?,
-        source_message_id: row.get(offset + 10)?,
-        provider_id: row.get(offset + 11)?,
-        workspace_key: row.get(offset + 12)?,
-        tags: tags_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str(json).ok())
-            .unwrap_or_default(),
-        identity_key: row.get(offset + 14)?,
-        observation_source: row.get(offset + 15)?,
-        superseded_by: row.get(offset + 16)?,
-        review_status: review_status_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str(json).ok())
-            .unwrap_or(MemoryReviewStatus::Accepted),
-        review_note: row.get(offset + 18)?,
-        reviewed_at: reviewed_at
-            .as_deref()
-            .map(parse_datetime)
-            .transpose()?,
-        supersedes: row.get(offset + 20)?,
-    })
-}
-
-fn rebuild_messages_fts(connection: &Connection) -> Result<()> {
-    connection.execute("DELETE FROM messages_fts", [])?;
-    connection.execute(
-        "
-        INSERT INTO messages_fts(message_id, session_id, content)
-        SELECT id, session_id, content FROM messages
-        ",
-        [],
-    )?;
-    Ok(())
-}
-
-fn rebuild_memory_fts(connection: &Connection) -> Result<()> {
-    connection.execute("DELETE FROM memory_records_fts", [])?;
-    connection.execute(
-        "
-        INSERT INTO memory_records_fts(memory_id, subject, content, tags_text)
-        SELECT id, subject, content, COALESCE(tags_text, '') FROM memory_records
-        ",
-        [],
-    )?;
-    Ok(())
-}
-
-fn parse_datetime(value: &str) -> rusqlite::Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|value| value.with_timezone(&Utc))
-        .map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })
-}
-
-fn json_decode_error(error: serde_json::Error) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
-}
-
-fn ensure_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    column_definition: &str,
-) -> Result<()> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-    let columns = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-    if columns.iter().any(|existing| existing == column) {
-        return Ok(());
-    }
-
-    connection
-        .execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {column} {column_definition}"),
-            [],
-        )
-        .or_else(|error| {
-            let duplicate = matches!(
-                &error,
-                rusqlite::Error::SqliteFailure(_, Some(message))
-                    if message.contains("duplicate column name")
-            );
-            if duplicate {
-                Ok(0)
-            } else {
-                Err(error)
-            }
-        })
-        .with_context(|| format!("failed to add column '{column}' to '{table}'"))?;
-    Ok(())
-}
-
-fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
-    let temp_path = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("config"),
-        Uuid::new_v4()
-    ));
-
-    {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .with_context(|| format!("failed to create {}", temp_path.display()))?;
-        file.write_all(content)
-            .with_context(|| format!("failed to write {}", temp_path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("failed to flush {}", temp_path.display()))?;
-    }
-
-    if let Err(error) = replace_file(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(error);
-    }
-    sync_directory(parent)?;
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn replace_file(source: &Path, target: &Path) -> Result<()> {
-    fs::rename(source, target).with_context(|| {
-        format!(
-            "failed to replace {} with {}",
-            target.display(),
-            source.display()
-        )
-    })
-}
-
-#[cfg(windows)]
-fn replace_file(source: &Path, target: &Path) -> Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let source_wide = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let target_wide = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-
-    // Retry with exponential backoff for ERROR_SHARING_VIOLATION (32) and
-    // ERROR_LOCK_VIOLATION (33) which can occur when antivirus or other
-    // processes briefly hold file handles.
-    const MAX_RETRIES: u32 = 5;
-    const SHARING_VIOLATION: u32 = 32;
-    const LOCK_VIOLATION: u32 = 33;
-    let mut last_error = None;
-
-    for attempt in 0..=MAX_RETRIES {
-        let replaced = unsafe {
-            MoveFileExW(
-                source_wide.as_ptr(),
-                target_wide.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if replaced != 0 {
-            return Ok(());
-        }
-
-        let error = std::io::Error::last_os_error();
-        let raw_os_error = error.raw_os_error().unwrap_or(0) as u32;
-
-        if attempt < MAX_RETRIES
-            && (raw_os_error == SHARING_VIOLATION || raw_os_error == LOCK_VIOLATION)
-        {
-            std::thread::sleep(std::time::Duration::from_millis(50 << attempt));
-            last_error = Some(error);
-            continue;
-        }
-
-        return Err(error).with_context(|| {
-            format!(
-                "failed to replace {} with {}",
-                target.display(),
-                source.display()
-            )
-        });
-    }
-
-    Err(last_error.unwrap()).with_context(|| {
-        format!(
-            "failed to replace {} with {} after {} retries",
-            target.display(),
-            source.display(),
-            MAX_RETRIES
-        )
-    })
-}
-
-#[cfg(not(windows))]
-fn sync_directory(path: &Path) -> Result<()> {
-    std::fs::File::open(path)
-        .with_context(|| format!("failed to open directory {}", path.display()))?
-        .sync_all()
-        .with_context(|| format!("failed to sync directory {}", path.display()))
-}
-
-#[cfg(windows)]
-fn sync_directory(_: &Path) -> Result<()> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use agent_core::{
-        ConnectorApprovalRecord, ConnectorApprovalStatus, ConnectorKind, MemoryKind, Mission,
-        MissionStatus, MemoryReviewStatus, MemoryScope, MessageRole, SkillDraftStatus, ToolCall,
+        ConnectorApprovalRecord, ConnectorApprovalStatus, ConnectorKind, MemoryEvidenceRef,
+        MemoryKind, MemoryReviewStatus, MemoryScope, MessageRole, Mission, MissionStatus,
+        SkillDraftStatus, TaskMode, ToolCall,
     };
 
     fn temp_storage() -> Storage {
@@ -2793,6 +1905,7 @@ mod tests {
                 alias: &alias,
                 provider_id: "openai",
                 model: "gpt-4.1",
+                task_mode: Some(TaskMode::Build),
                 cwd: None,
                 messages: &messages,
             })
@@ -2811,6 +1924,93 @@ mod tests {
         let session = storage.get_session("session-1").unwrap().unwrap();
         assert_eq!(session.title.as_deref(), Some("Test Session"));
         assert_eq!(session.alias, "main");
+        assert_eq!(session.task_mode, Some(TaskMode::Build));
+    }
+
+    #[test]
+    fn persist_session_turn_preserves_existing_task_mode_when_unspecified() {
+        let storage = temp_storage();
+        let alias = ModelAlias {
+            alias: "main".to_string(),
+            provider_id: "openai".to_string(),
+            model: "gpt-4.1".to_string(),
+            description: None,
+        };
+        storage
+            .ensure_session(
+                "session-1",
+                &alias,
+                "openai",
+                "gpt-4.1",
+                Some(TaskMode::Daily),
+            )
+            .unwrap();
+        let messages = vec![SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::User,
+            "continue".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-4.1".to_string()),
+        )];
+
+        storage
+            .persist_session_turn(PersistSessionTurnInput {
+                session_id: "session-1",
+                title: None,
+                alias: &alias,
+                provider_id: "openai",
+                model: "gpt-4.1",
+                task_mode: None,
+                cwd: None,
+                messages: &messages,
+            })
+            .unwrap();
+
+        let session = storage.get_session("session-1").unwrap().unwrap();
+        assert_eq!(session.task_mode, Some(TaskMode::Daily));
+    }
+
+    #[test]
+    fn persist_session_turn_updates_existing_task_mode_when_explicit() {
+        let storage = temp_storage();
+        let alias = ModelAlias {
+            alias: "main".to_string(),
+            provider_id: "openai".to_string(),
+            model: "gpt-4.1".to_string(),
+            description: None,
+        };
+        storage
+            .ensure_session(
+                "session-1",
+                &alias,
+                "openai",
+                "gpt-4.1",
+                Some(TaskMode::Daily),
+            )
+            .unwrap();
+        let messages = vec![SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::Assistant,
+            "switched".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-4.1".to_string()),
+        )];
+
+        storage
+            .persist_session_turn(PersistSessionTurnInput {
+                session_id: "session-1",
+                title: None,
+                alias: &alias,
+                provider_id: "openai",
+                model: "gpt-4.1",
+                task_mode: Some(TaskMode::Build),
+                cwd: None,
+                messages: &messages,
+            })
+            .unwrap();
+
+        let session = storage.get_session("session-1").unwrap().unwrap();
+        assert_eq!(session.task_mode, Some(TaskMode::Build));
     }
 
     #[test]
@@ -2838,7 +2038,7 @@ mod tests {
             description: None,
         };
         storage
-            .ensure_session("session-1", &alias, "openai", "gpt-4.1")
+            .ensure_session("session-1", &alias, "openai", "gpt-4.1", None)
             .unwrap();
 
         storage.reset_all().unwrap();
@@ -2907,6 +2107,43 @@ mod tests {
     }
 
     #[test]
+    fn list_logs_after_cursor_skips_duplicate_entry_and_keeps_same_timestamp_peers() {
+        let storage = temp_storage();
+        let created_at = Utc::now();
+        let first = LogEntry {
+            id: "log-a".to_string(),
+            level: "info".to_string(),
+            scope: "test".to_string(),
+            message: "first".to_string(),
+            created_at,
+        };
+        let second = LogEntry {
+            id: "log-b".to_string(),
+            level: "info".to_string(),
+            scope: "test".to_string(),
+            message: "second".to_string(),
+            created_at,
+        };
+        let third = LogEntry {
+            id: "log-c".to_string(),
+            level: "warn".to_string(),
+            scope: "test".to_string(),
+            message: "third".to_string(),
+            created_at: created_at + chrono::Duration::seconds(1),
+        };
+
+        storage.append_log(&first).unwrap();
+        storage.append_log(&second).unwrap();
+        storage.append_log(&third).unwrap();
+
+        let logs = storage
+            .list_logs_after_cursor(created_at, Some("log-a"), 10)
+            .unwrap();
+        let ids = logs.into_iter().map(|entry| entry.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["log-b".to_string(), "log-c".to_string()]);
+    }
+
+    #[test]
     fn mission_counts_and_limited_listing_round_trip() {
         let storage = temp_storage();
 
@@ -2929,7 +2166,10 @@ mod tests {
         assert_eq!(storage.count_active_missions().unwrap(), 2);
 
         let limited = storage.list_missions_limited(Some(2)).unwrap();
-        let ids = limited.into_iter().map(|mission| mission.id).collect::<Vec<_>>();
+        let ids = limited
+            .into_iter()
+            .map(|mission| mission.id)
+            .collect::<Vec<_>>();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&completed.id));
         assert!(ids.contains(&waiting.id));
@@ -2952,7 +2192,10 @@ mod tests {
         storage.upsert_mission(&queued).unwrap();
 
         let runnable = storage.list_runnable_missions(now, 10).unwrap();
-        let ids = runnable.into_iter().map(|mission| mission.id).collect::<Vec<_>>();
+        let ids = runnable
+            .into_iter()
+            .map(|mission| mission.id)
+            .collect::<Vec<_>>();
         assert!(ids.contains(&queued.id));
         assert!(!ids.contains(&blocked.id));
     }
@@ -3082,6 +2325,43 @@ mod tests {
     }
 
     #[test]
+    fn memory_evidence_refs_round_trip_through_storage() {
+        let storage = temp_storage();
+        let mut memory = MemoryRecord::new(
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            "preference:verbosity".to_string(),
+            "User prefers concise output.".to_string(),
+        );
+        memory.source_session_id = Some("session-1".to_string());
+        memory.evidence_refs = vec![MemoryEvidenceRef {
+            session_id: "session-1".to_string(),
+            message_id: Some("message-1".to_string()),
+            role: Some(MessageRole::User),
+            tool_call_id: None,
+            tool_name: None,
+            created_at: Utc::now(),
+        }];
+        storage.upsert_memory(&memory).unwrap();
+
+        let stored = storage.get_memory(&memory.id).unwrap().unwrap();
+        assert_eq!(stored.evidence_refs, memory.evidence_refs);
+
+        let from_session = storage
+            .list_memories_by_source_session("session-1", 10)
+            .unwrap();
+        assert_eq!(from_session.len(), 1);
+        assert_eq!(from_session[0].evidence_refs, memory.evidence_refs);
+
+        let (searched, transcript_hits) = storage
+            .search_memories("concise output", None, None, &[], false, 10)
+            .unwrap();
+        assert!(transcript_hits.is_empty());
+        assert_eq!(searched.len(), 1);
+        assert_eq!(searched[0].evidence_refs, memory.evidence_refs);
+    }
+
+    #[test]
     fn list_active_memories_by_identity_key_prefers_accepted_and_skips_superseded() {
         let storage = temp_storage();
         let identity_key = "preference:global:output";
@@ -3204,7 +2484,14 @@ mod tests {
         storage.upsert_memory(&memory).unwrap();
 
         let (memories, transcript_hits) = storage
-            .search_memories("weather in chicago. api.openai.com?", None, None, 10)
+            .search_memories(
+                "weather in chicago. api.openai.com?",
+                None,
+                None,
+                &[],
+                false,
+                10,
+            )
             .unwrap();
 
         assert_eq!(transcript_hits.len(), 0);
@@ -3224,11 +2511,92 @@ mod tests {
         storage.upsert_memory(&memory).unwrap();
 
         let (memories, transcript_hits) = storage
-            .search_memories("!@#$%^&*()_-+=[]{}|;:'\",.<>/?`~", None, None, 10)
+            .search_memories(
+                "!@#$%^&*()_-+=[]{}|;:'\",.<>/?`~",
+                None,
+                None,
+                &[],
+                false,
+                10,
+            )
             .unwrap();
 
         assert!(memories.is_empty());
         assert!(transcript_hits.is_empty());
+    }
+
+    #[test]
+    fn search_memories_honors_review_status_and_superseded_filters() {
+        let storage = temp_storage();
+
+        let accepted = MemoryRecord::new(
+            MemoryKind::Note,
+            MemoryScope::Global,
+            "memory:accepted".to_string(),
+            "alpha accepted memory".to_string(),
+        );
+        storage.upsert_memory(&accepted).unwrap();
+
+        let mut candidate = MemoryRecord::new(
+            MemoryKind::Note,
+            MemoryScope::Global,
+            "memory:candidate".to_string(),
+            "alpha candidate memory".to_string(),
+        );
+        candidate.review_status = MemoryReviewStatus::Candidate;
+        storage.upsert_memory(&candidate).unwrap();
+
+        let mut superseded = MemoryRecord::new(
+            MemoryKind::Note,
+            MemoryScope::Global,
+            "memory:superseded".to_string(),
+            "alpha superseded memory".to_string(),
+        );
+        superseded.superseded_by = Some(accepted.id.clone());
+        storage.upsert_memory(&superseded).unwrap();
+
+        let (default_memories, _) = storage
+            .search_memories("alpha", None, None, &[], false, 10)
+            .unwrap();
+        let default_ids = default_memories
+            .into_iter()
+            .map(|memory| memory.id)
+            .collect::<Vec<_>>();
+        assert_eq!(default_ids, vec![accepted.id.clone()]);
+
+        let (candidate_memories, _) = storage
+            .search_memories(
+                "alpha",
+                None,
+                None,
+                &[MemoryReviewStatus::Candidate],
+                false,
+                10,
+            )
+            .unwrap();
+        let candidate_ids = candidate_memories
+            .into_iter()
+            .map(|memory| memory.id)
+            .collect::<Vec<_>>();
+        assert_eq!(candidate_ids, vec![candidate.id.clone()]);
+
+        let (all_memories, _) = storage
+            .search_memories(
+                "alpha",
+                None,
+                None,
+                &[MemoryReviewStatus::Accepted, MemoryReviewStatus::Candidate],
+                true,
+                10,
+            )
+            .unwrap();
+        let all_ids = all_memories
+            .into_iter()
+            .map(|memory| memory.id)
+            .collect::<Vec<_>>();
+        assert!(all_ids.contains(&accepted.id));
+        assert!(all_ids.contains(&candidate.id));
+        assert!(all_ids.contains(&superseded.id));
     }
 
     #[test]

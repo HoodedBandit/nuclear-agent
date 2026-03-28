@@ -90,10 +90,10 @@ pub(super) async fn process_slack_connector(
                     if is_new {
                         append_log(
                             state,
-                            "warn",
-                            "slack",
-                            format!(
-                                "slack '{}' requires pairing approval for channel={} user={} (run 'autism slack approvals' to review)",
+                        "warn",
+                        "slack",
+                        format!(
+                                "slack '{}' requires pairing approval for channel={} user={} (run 'nuclear slack approvals' to review)",
                                 connector.id,
                                 approval.external_chat_id.as_deref().unwrap_or("-"),
                                 approval.external_user_id.as_deref().unwrap_or("-")

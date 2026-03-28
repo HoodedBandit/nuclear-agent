@@ -1,17 +1,17 @@
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use agent_core::{
-    AliasUpsertRequest, AutonomyEnableRequest, AutonomyMode, AutonomyState, AutopilotConfig,
-    AutopilotState, AutopilotUpdateRequest, DaemonConfigUpdateRequest, DaemonStatus,
-    DashboardBootstrapResponse, DelegationConfig, DelegationConfigUpdateRequest,
+    AliasUpsertRequest, AppConfig, AutonomyEnableRequest, AutonomyMode, AutonomyState,
+    AutopilotConfig, AutopilotState, AutopilotUpdateRequest, DaemonConfigUpdateRequest,
+    DaemonStatus, DashboardBootstrapResponse, DelegationConfig, DelegationConfigUpdateRequest,
     DelegationTarget, HealthReport, LogEntry, MainAliasUpdateRequest, MainTargetSummary,
     McpServerConfig, McpServerUpsertRequest, MemoryReviewStatus, ModelAlias, PermissionPreset,
-    PermissionUpdateRequest, ProviderConfig, ProviderSuggestionRequest,
-    ProviderSuggestionResponse, ProviderUpsertRequest,
-    SkillDraftStatus, SkillUpdateRequest, TrustUpdateRequest, INTERNAL_DAEMON_ARG,
+    PermissionUpdateRequest, ProviderConfig, ProviderSuggestionRequest, ProviderSuggestionResponse,
+    ProviderUpsertRequest, SkillDraftStatus, SkillUpdateRequest, TrustUpdateRequest,
+    CONFIG_VERSION, INTERNAL_DAEMON_ARG,
 };
 use agent_policy::{autonomy_warning, permission_summary};
-use agent_providers::{delete_secret, health_check, store_api_key, store_oauth_token};
+use agent_providers::{delete_secret, store_api_key, store_oauth_token};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -19,13 +19,14 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use tracing::warn;
 
 use crate::{
-    append_log, delegation_targets_from_config, normalize_delegation_limit,
-    runtime::provider_has_runnable_access, ApiError, AppState, LimitQuery,
+    append_log, collect_plugin_doctor_reports, delegation_targets_from_config,
+    normalize_delegation_limit, runtime::provider_has_runnable_access, ApiError, AppState,
+    LimitQuery,
 };
 
 fn redact_provider_secret_metadata(mut provider: ProviderConfig) -> ProviderConfig {
@@ -33,11 +34,31 @@ fn redact_provider_secret_metadata(mut provider: ProviderConfig) -> ProviderConf
     provider
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EventCursor {
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) id: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub(crate) struct EventQuery {
     pub(crate) after: Option<String>,
     pub(crate) limit: Option<usize>,
     pub(crate) wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub(crate) struct OnboardingResetRequest {
+    #[serde(default)]
+    pub(crate) confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct OnboardingResetResponse {
+    pub(crate) removed_credentials: usize,
+    #[serde(default)]
+    pub(crate) credential_warnings: Vec<String>,
+    pub(crate) daemon_token: String,
 }
 
 pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<DaemonStatus>, ApiError> {
@@ -49,16 +70,22 @@ pub(crate) async fn dashboard_bootstrap(
     State(state): State<AppState>,
 ) -> Result<Json<DashboardBootstrapResponse>, ApiError> {
     let config = state.config.read().await.clone();
-    let status = build_daemon_status(&state, &config)?;
+    Ok(Json(build_dashboard_bootstrap_response(&state, &config)?))
+}
+
+pub(crate) fn build_dashboard_bootstrap_response(
+    state: &AppState,
+    config: &agent_core::AppConfig,
+) -> Result<DashboardBootstrapResponse, ApiError> {
+    let status = build_daemon_status(state, config)?;
     let sessions = state.storage.list_sessions(25)?;
-    let events = load_events(&state, None, 40)?;
-    let delegation_targets = delegation_targets_from_config(&config, None);
-    Ok(Json(DashboardBootstrapResponse {
+    let events = load_events(state, None, 40)?;
+    let delegation_targets = delegation_targets_from_config(config, None);
+    Ok(DashboardBootstrapResponse {
         status,
         providers: config
-            .providers
-            .iter()
-            .cloned()
+            .all_providers()
+            .into_iter()
             .map(redact_provider_secret_metadata)
             .collect(),
         aliases: config.aliases.clone(),
@@ -72,15 +99,52 @@ pub(crate) async fn dashboard_bootstrap(
         inbox_connectors: config.inbox_connectors.clone(),
         gmail_connectors: config.gmail_connectors.clone(),
         brave_connectors: config.brave_connectors.clone(),
+        plugins: config.plugins.clone(),
         sessions,
         events,
         permissions: config.permission_preset,
         trust: config.trust_policy.clone(),
         delegation_config: config.delegation.clone(),
-    }))
+    })
 }
 
-fn build_daemon_status(state: &AppState, config: &agent_core::AppConfig) -> Result<DaemonStatus, ApiError> {
+pub(crate) async fn export_config(
+    State(state): State<AppState>,
+) -> Result<Json<agent_core::AppConfig>, ApiError> {
+    let config = state.config.read().await.clone();
+    Ok(Json(config))
+}
+
+pub(crate) async fn import_config(
+    State(state): State<AppState>,
+    Json(mut payload): Json<agent_core::AppConfig>,
+) -> Result<Json<agent_core::AppConfig>, ApiError> {
+    payload.version = CONFIG_VERSION;
+    payload
+        .validate_dashboard_mutation()
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
+
+    {
+        let mut config = state.config.write().await;
+        *config = payload.clone();
+        state.storage.save_config(&config)?;
+    }
+
+    if let Err(error) = sync_daemon_autostart_setting(&state, payload.daemon.auto_start) {
+        warn!(
+            "failed to update auto-start after config import: {:?}",
+            error
+        );
+    }
+
+    append_log(&state, "info", "daemon", "full dashboard config updated")?;
+    Ok(Json(payload))
+}
+
+pub(crate) fn build_daemon_status(
+    state: &AppState,
+    config: &agent_core::AppConfig,
+) -> Result<DaemonStatus, ApiError> {
     let mission_count = state.storage.count_missions()?;
     let active_missions = state.storage.count_active_missions()?;
     let delegation_targets = delegation_targets_from_config(config, None).len();
@@ -96,8 +160,9 @@ fn build_daemon_status(state: &AppState, config: &agent_core::AppConfig) -> Resu
         evolve: config.evolve.clone(),
         autopilot: config.autopilot.clone(),
         delegation: config.delegation.clone(),
-        providers: config.providers.len(),
+        providers: config.all_providers().len(),
         aliases: config.aliases.len(),
+        plugins: config.plugins.len(),
         delegation_targets,
         webhook_connectors: config.webhook_connectors.len(),
         inbox_connectors: config.inbox_connectors.len(),
@@ -126,16 +191,14 @@ fn config_has_runnable_main_alias(config: &agent_core::AppConfig) -> bool {
     config
         .main_alias()
         .ok()
-        .and_then(|alias| config.get_provider(&alias.provider_id))
-        .is_some_and(provider_has_runnable_access)
+        .and_then(|alias| config.resolve_provider(&alias.provider_id))
+        .is_some_and(|provider| provider_has_runnable_access(&provider))
 }
 
-fn runnable_main_target_summary(
-    config: &agent_core::AppConfig,
-) -> Option<MainTargetSummary> {
+fn runnable_main_target_summary(config: &agent_core::AppConfig) -> Option<MainTargetSummary> {
     let summary = config.main_target_summary()?;
-    let provider = config.get_provider(&summary.provider_id)?;
-    provider_has_runnable_access(provider).then_some(summary)
+    let provider = config.resolve_provider(&summary.provider_id)?;
+    provider_has_runnable_access(&provider).then_some(summary)
 }
 
 pub(crate) async fn shutdown(
@@ -146,15 +209,75 @@ pub(crate) async fn shutdown(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+pub(crate) async fn reset_onboarding(
+    State(state): State<AppState>,
+    Json(payload): Json<OnboardingResetRequest>,
+) -> Result<Json<OnboardingResetResponse>, ApiError> {
+    if !payload.confirmed {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "onboarding reset requires confirmed=true",
+        ));
+    }
+
+    let config_before = state.config.read().await.clone();
+    let keychain_accounts = configured_keychain_accounts(&config_before);
+    if let Err(error) = sync_daemon_autostart_setting(&state, false) {
+        warn!(
+            "failed to disable auto-start during onboarding reset: {:?}",
+            error
+        );
+    }
+
+    let mut removed_credentials = 0usize;
+    let mut credential_warnings = Vec::new();
+    for account in keychain_accounts {
+        match delete_secret(&account) {
+            Ok(()) => removed_credentials += 1,
+            Err(error) => credential_warnings.push(format!("{account}: {error}")),
+        }
+    }
+
+    state.storage.reset_all()?;
+    let reset_config = state.storage.load_config()?;
+    {
+        let mut config = state.config.write().await;
+        *config = reset_config.clone();
+    }
+    state.browser_auth_sessions.write().await.clear();
+    state.dashboard_launches.write().await.clear();
+    state
+        .mission_cancellations
+        .lock()
+        .expect("mission cancellation lock poisoned")
+        .clear();
+    state.autopilot_wake.notify_waiters();
+    state.log_wake.notify_waiters();
+
+    append_log(
+        &state,
+        "warn",
+        "daemon",
+        format!(
+            "dashboard onboarding reset completed; removed {removed_credentials} credential(s)"
+        ),
+    )?;
+
+    Ok(Json(OnboardingResetResponse {
+        removed_credentials,
+        credential_warnings,
+        daemon_token: reset_config.daemon.token,
+    }))
+}
+
 pub(crate) async fn list_providers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ProviderConfig>>, ApiError> {
     let config = state.config.read().await;
     Ok(Json(
         config
-            .providers
-            .iter()
-            .cloned()
+            .all_providers()
+            .into_iter()
             .map(redact_provider_secret_metadata)
             .collect(),
     ))
@@ -217,6 +340,12 @@ pub(crate) async fn upsert_provider(
 ) -> Result<Json<ProviderConfig>, ApiError> {
     let existing_provider = {
         let config = state.config.read().await;
+        if config.is_projected_plugin_provider(&payload.provider.id) {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "plugin-backed providers are managed by their plugin package",
+            ));
+        }
         config.get_provider(&payload.provider.id).cloned()
     };
 
@@ -233,9 +362,9 @@ pub(crate) async fn upsert_provider(
     if payload.provider.keychain_account.is_none()
         && !matches!(payload.provider.auth_mode, agent_core::AuthMode::None)
     {
-        if let Some(existing) = existing_provider.filter(|existing| {
-            existing.auth_mode == payload.provider.auth_mode
-        }) {
+        if let Some(existing) =
+            existing_provider.filter(|existing| existing.auth_mode == payload.provider.auth_mode)
+        {
             payload.provider.keychain_account = existing.keychain_account.clone();
         }
     }
@@ -302,12 +431,17 @@ pub(crate) async fn list_provider_models(
     let provider = {
         let config = state.config.read().await;
         config
-            .get_provider(&provider_id)
-            .cloned()
+            .resolve_provider(&provider_id)
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown provider"))?
     };
 
-    let models = agent_providers::list_models(&state.http_client, &provider).await?;
+    let config = state.config.read().await.clone();
+    let models =
+        if let Some(result) = crate::plugins::plugin_provider_models(&config, &provider_id).await {
+            result?
+        } else {
+            agent_providers::list_models(&state.http_client, &provider).await?
+        };
     Ok(Json(models))
 }
 
@@ -317,6 +451,12 @@ pub(crate) async fn clear_provider_credentials(
 ) -> Result<Json<ProviderConfig>, ApiError> {
     let updated = {
         let mut config = state.config.write().await;
+        if config.is_projected_plugin_provider(&provider_id) {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "plugin-backed providers are managed by their plugin package",
+            ));
+        }
         let provider = config
             .providers
             .iter_mut()
@@ -352,7 +492,10 @@ pub(crate) async fn upsert_alias(
 ) -> Result<Json<ModelAlias>, ApiError> {
     {
         let mut config = state.config.write().await;
-        if config.get_provider(&payload.alias.provider_id).is_none() {
+        if config
+            .resolve_provider(&payload.alias.provider_id)
+            .is_none()
+        {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "alias references unknown provider",
@@ -419,9 +562,12 @@ pub(crate) async fn update_main_alias(
 
     let summary = {
         let mut config = state.config.write().await;
-        let summary = config
-            .alias_target_summary(alias_name)
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "alias must reference a known provider"))?;
+        let summary = config.alias_target_summary(alias_name).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "alias must reference a known provider",
+            )
+        })?;
         config.main_agent_alias = Some(summary.alias.clone());
         state.storage.save_config(&config)?;
         summary
@@ -637,18 +783,66 @@ pub(crate) async fn update_daemon_config(
         config.daemon.clone()
     };
 
-    let daemon_path = std::env::current_exe()
-        .map_err(|error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    if let Err(error) =
-        state
-            .storage
-            .sync_autostart(&daemon_path, &[INTERNAL_DAEMON_ARG], updated.auto_start)
-    {
-        warn!("failed to update auto-start: {error}");
+    if let Err(error) = sync_daemon_autostart_setting(&state, updated.auto_start) {
+        warn!("failed to update auto-start: {:?}", error);
     }
 
     append_log(&state, "info", "daemon", "daemon config updated")?;
     Ok(Json(updated))
+}
+
+fn sync_daemon_autostart_setting(state: &AppState, auto_start: bool) -> Result<(), ApiError> {
+    let daemon_path = std::env::current_exe()
+        .map_err(|error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    state
+        .storage
+        .sync_autostart(&daemon_path, &[INTERNAL_DAEMON_ARG], auto_start)
+        .map_err(|error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+fn configured_keychain_accounts(config: &AppConfig) -> BTreeSet<String> {
+    let mut accounts = config
+        .providers
+        .iter()
+        .filter_map(|provider| provider.keychain_account.clone())
+        .collect::<BTreeSet<_>>();
+    accounts.extend(
+        config
+            .telegram_connectors
+            .iter()
+            .filter_map(|connector| connector.bot_token_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .discord_connectors
+            .iter()
+            .filter_map(|connector| connector.bot_token_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .slack_connectors
+            .iter()
+            .filter_map(|connector| connector.bot_token_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .home_assistant_connectors
+            .iter()
+            .filter_map(|connector| connector.access_token_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .brave_connectors
+            .iter()
+            .filter_map(|connector| connector.api_key_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .gmail_connectors
+            .iter()
+            .filter_map(|connector| connector.oauth_keychain_account.clone()),
+    );
+    accounts
 }
 
 pub(crate) async fn delegation_status(
@@ -674,7 +868,7 @@ pub(crate) async fn update_delegation_config(
         if let Some(disabled_provider_ids) = payload.disabled_provider_ids {
             config.delegation.disabled_provider_ids = disabled_provider_ids
                 .into_iter()
-                .filter(|provider_id| config.get_provider(provider_id).is_some())
+                .filter(|provider_id| config.resolve_provider(provider_id).is_some())
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect();
@@ -783,7 +977,7 @@ pub(crate) async fn list_events(
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let wait_seconds = query.wait_seconds.unwrap_or(0).min(30);
 
-    let mut events = load_events(&state, after, limit)?;
+    let mut events = load_events(&state, after.clone(), limit)?;
     if events.is_empty() && wait_seconds > 0 {
         let _ = timeout(Duration::from_secs(wait_seconds), state.log_wake.notified()).await;
         events = load_events(&state, after, limit)?;
@@ -796,9 +990,9 @@ pub(crate) async fn doctor(State(state): State<AppState>) -> Result<Json<HealthR
     let config = state.config.read().await.clone();
     let checks = join_all(
         config
-            .providers
+            .all_providers()
             .iter()
-            .map(|provider| health_check(&state.http_client, provider)),
+            .map(|provider| crate::plugins::provider_health(&state, provider)),
     )
     .await;
 
@@ -808,16 +1002,21 @@ pub(crate) async fn doctor(State(state): State<AppState>) -> Result<Json<HealthR
         data_path: state.storage.paths().data_dir.display().to_string(),
         keyring_ok: agent_providers::keyring_available(),
         providers: checks,
+        plugins: collect_plugin_doctor_reports(&config),
     }))
 }
 
-fn load_events(
+pub(crate) fn load_events(
     state: &AppState,
-    after: Option<DateTime<Utc>>,
+    after: Option<EventCursor>,
     limit: usize,
 ) -> Result<Vec<LogEntry>, ApiError> {
     let events = match after {
-        Some(cursor) => state.storage.list_logs_after(cursor, limit)?,
+        Some(cursor) => {
+            state
+                .storage
+                .list_logs_after_cursor(cursor.created_at, cursor.id.as_deref(), limit)?
+        }
         None => {
             let mut logs = state.storage.list_logs(limit)?;
             logs.reverse();
@@ -827,8 +1026,32 @@ fn load_events(
     Ok(events)
 }
 
-fn parse_event_cursor(value: &str) -> Result<DateTime<Utc>, ApiError> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|value| value.with_timezone(&Utc))
+pub(crate) fn next_event_cursor(entries: &[LogEntry]) -> Option<String> {
+    entries.last().map(event_cursor_from_entry)
+}
+
+pub(crate) fn format_event_cursor(cursor: &EventCursor) -> String {
+    match cursor.id.as_deref() {
+        Some(id) if !id.trim().is_empty() => format!("{}|{}", cursor.created_at.to_rfc3339(), id),
+        _ => cursor.created_at.to_rfc3339(),
+    }
+}
+
+pub(crate) fn event_cursor_from_entry(entry: &LogEntry) -> String {
+    format!("{}|{}", entry.created_at.to_rfc3339(), entry.id)
+}
+
+pub(crate) fn parse_event_cursor(value: &str) -> Result<EventCursor, ApiError> {
+    let (created_at, id) = match value.split_once('|') {
+        Some((created_at, id)) if !id.trim().is_empty() => {
+            (created_at, Some(id.trim().to_string()))
+        }
+        _ => (value, None),
+    };
+    DateTime::parse_from_rfc3339(created_at)
+        .map(|value| EventCursor {
+            created_at: value.with_timezone(&Utc),
+            id,
+        })
         .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))
 }

@@ -1,29 +1,25 @@
-use std::{
-    collections::HashSet,
-    fs,
-    path::{Path as FsPath, PathBuf},
-};
+use std::{collections::HashSet, path::Path as FsPath};
 
+use crate::{append_log, ApiError, AppState, LimitQuery, SkillDraftQuery};
 use agent_core::{
-    ConversationMessage, MemoryKind, MemoryRecord, MemoryReviewStatus, MemoryReviewUpdateRequest,
+    ConversationMessage, MemoryEvidenceRef, MemoryKind, MemoryRebuildRequest,
+    MemoryRebuildResponse, MemoryRecord, MemoryReviewStatus, MemoryReviewUpdateRequest,
     MemoryScope, MemorySearchQuery, MemorySearchResponse, MemoryUpsertRequest, MessageRole,
-    PermissionPreset, SkillDraft, SkillDraftStatus, ToolExecutionRecord,
+    PermissionPreset, SessionMessage, SessionTranscript, SkillDraft, SkillDraftStatus,
+    ToolExecutionRecord,
 };
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
-use chrono::Utc;
-
+use chrono::{DateTime, Utc};
+mod types;
 use tracing::warn;
-
-use crate::{append_log, ApiError, AppState, LimitQuery, SkillDraftQuery};
-
-#[derive(Debug, Default)]
-struct MemoryConflictResolution {
-    supersede_ids: Vec<String>,
-}
+use types::{MemoryConflictResolution, MemoryRebuildStats};
+mod guidance;
+pub(crate) use guidance::load_enabled_skill_guidance;
+use guidance::{env_value, find_git_root, workflow_instructions, workflow_title_from_prompt};
 
 pub(crate) async fn list_skill_drafts(
     State(state): State<AppState>,
@@ -152,6 +148,7 @@ pub(crate) async fn upsert_memory(
     memory.source_message_id = payload.source_message_id;
     memory.provider_id = payload.provider_id;
     memory.workspace_key = payload.workspace_key;
+    memory.evidence_refs = payload.evidence_refs;
     memory.tags = payload.tags;
     memory.identity_key = payload.identity_key;
     memory.observation_source = payload.observation_source;
@@ -166,7 +163,10 @@ pub(crate) async fn upsert_memory(
 
     // Compute embedding asynchronously if configured.
     if let Err(err) = maybe_compute_embedding(&state, &memory).await {
-        warn!("failed to compute embedding for memory '{}': {err}", memory.id);
+        warn!(
+            "failed to compute embedding for memory '{}': {err}",
+            memory.id
+        );
     }
 
     append_log(
@@ -187,11 +187,13 @@ pub(crate) async fn search_memory(
         &payload.query,
         payload.workspace_key.as_deref(),
         payload.provider_id.as_deref(),
+        &payload.review_statuses,
+        payload.include_superseded,
         limit,
     )?;
 
     // Supplement with embedding-based semantic search if configured.
-    if memories.len() < limit {
+    if memories.len() < limit && payload.review_statuses.is_empty() && !payload.include_superseded {
         if let Ok(extra) = embedding_search(
             &state,
             &payload.query,
@@ -345,6 +347,14 @@ fn merge_memory_tags(memory: &mut MemoryRecord, existing: &MemoryRecord) {
     memory.tags = tags;
 }
 
+fn merge_memory_evidence_refs(memory: &mut MemoryRecord, existing: &MemoryRecord) {
+    for evidence in &existing.evidence_refs {
+        if !memory.evidence_refs.contains(evidence) {
+            memory.evidence_refs.push(evidence.clone());
+        }
+    }
+}
+
 fn reinforce_exact_memory(memory: &mut MemoryRecord, existing: &MemoryRecord) {
     let observation_changed = memory.observation_source != existing.observation_source;
     let session_changed = memory.source_session_id != existing.source_session_id;
@@ -413,6 +423,18 @@ fn resolve_memory_conflicts(
         if memory.observation_source.is_none() {
             memory.observation_source = exact.observation_source.clone();
         }
+        if memory.source_session_id.is_none() {
+            memory.source_session_id = exact.source_session_id.clone();
+        }
+        if memory.source_message_id.is_none() {
+            memory.source_message_id = exact.source_message_id.clone();
+        }
+        if memory.provider_id.is_none() {
+            memory.provider_id = exact.provider_id.clone();
+        }
+        if memory.workspace_key.is_none() {
+            memory.workspace_key = exact.workspace_key.clone();
+        }
         if memory.review_note.is_none() {
             memory.review_note = exact.review_note.clone();
         }
@@ -428,6 +450,7 @@ fn resolve_memory_conflicts(
             memory.review_status = MemoryReviewStatus::Accepted;
         }
         merge_memory_tags(memory, exact);
+        merge_memory_evidence_refs(memory, exact);
         reinforce_exact_memory(memory, exact);
         return MemoryConflictResolution::default();
     }
@@ -523,10 +546,14 @@ pub(crate) fn build_memory_context(
         return Ok(Some(profile_lines.join("\n")));
     }
     let workspace_key = workspace_key(cwd);
-    let (memories, transcript_hits) =
-        state
-            .storage
-            .search_memories(query, workspace_key.as_deref(), provider_id, 6)?;
+    let (memories, transcript_hits) = state.storage.search_memories(
+        query,
+        workspace_key.as_deref(),
+        provider_id,
+        &[],
+        false,
+        6,
+    )?;
     if memories.is_empty() && transcript_hits.is_empty() && profile_lines.is_empty() {
         return Ok(None);
     }
@@ -676,6 +703,65 @@ pub(crate) fn learn_from_interaction(
         }
     }
 
+    Ok(())
+}
+
+pub(crate) async fn rebuild_memory(
+    State(state): State<AppState>,
+    Json(payload): Json<MemoryRebuildRequest>,
+) -> Result<Json<MemoryRebuildResponse>, ApiError> {
+    let transcripts = if let Some(session_id) = payload
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        vec![crate::sessions::get_session_transcript(&state, session_id)?]
+    } else {
+        state
+            .storage
+            .list_sessions(5_000)?
+            .into_iter()
+            .map(|session| crate::sessions::get_session_transcript(&state, &session.id))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut stats = MemoryRebuildStats::default();
+    for transcript in &transcripts {
+        let next = rebuild_memory_from_transcript(&state, transcript, payload.recompute_embeddings)
+            .await?;
+        stats.observations_scanned += next.observations_scanned;
+        stats.memories_upserted += next.memories_upserted;
+        stats.embeddings_refreshed += next.embeddings_refreshed;
+    }
+
+    append_log(
+        &state,
+        "info",
+        "memory",
+        format!(
+            "rebuilt memory from {} session(s), {} observation(s), {} memory item(s)",
+            transcripts.len(),
+            stats.observations_scanned,
+            stats.memories_upserted
+        ),
+    )?;
+
+    Ok(Json(MemoryRebuildResponse {
+        generated_at: Utc::now(),
+        session_id: payload.session_id,
+        sessions_scanned: transcripts.len(),
+        observations_scanned: stats.observations_scanned,
+        memories_upserted: stats.memories_upserted,
+        embeddings_refreshed: stats.embeddings_refreshed,
+    }))
+}
+
+pub(crate) async fn flush_memory_from_transcript(
+    state: &AppState,
+    transcript: &SessionTranscript,
+) -> Result<(), ApiError> {
+    rebuild_memory_from_transcript(state, transcript, false).await?;
     Ok(())
 }
 
@@ -878,6 +964,10 @@ struct MemoryObservation {
     source_tag: String,
     confidence_adjustment: i16,
     source_message_id: Option<String>,
+    role: Option<MessageRole>,
+    tool_call_id: Option<String>,
+    tool_name: Option<String>,
+    created_at: DateTime<Utc>,
 }
 
 impl MemoryObservation {
@@ -892,7 +982,56 @@ impl MemoryObservation {
             source_tag: source_tag.into(),
             confidence_adjustment,
             source_message_id,
+            role: None,
+            tool_call_id: None,
+            tool_name: None,
+            created_at: Utc::now(),
         }
+    }
+
+    fn with_message_evidence(
+        mut self,
+        role: MessageRole,
+        source_message_id: Option<String>,
+        created_at: DateTime<Utc>,
+    ) -> Self {
+        self.role = Some(role);
+        if source_message_id.is_some() {
+            self.source_message_id = source_message_id;
+        }
+        self.created_at = created_at;
+        self
+    }
+
+    fn with_tool_evidence(
+        mut self,
+        source_message_id: Option<String>,
+        tool_call_id: Option<String>,
+        tool_name: Option<String>,
+        created_at: DateTime<Utc>,
+    ) -> Self {
+        self = self.with_message_evidence(MessageRole::Tool, source_message_id, created_at);
+        self.tool_call_id = tool_call_id;
+        self.tool_name = tool_name;
+        self
+    }
+
+    fn evidence_refs(&self, session_id: &str) -> Vec<MemoryEvidenceRef> {
+        if self.role.is_none()
+            && self.source_message_id.is_none()
+            && self.tool_call_id.is_none()
+            && self.tool_name.is_none()
+        {
+            return Vec::new();
+        }
+        vec![MemoryEvidenceRef {
+            session_id: session_id.to_string(),
+            message_id: self.source_message_id.clone(),
+            role: self.role.clone(),
+            tool_call_id: self.tool_call_id.clone(),
+            tool_name: self.tool_name.clone(),
+            created_at: self.created_at,
+        }]
     }
 }
 
@@ -903,15 +1042,22 @@ fn learning_observations(
 ) -> Vec<MemoryObservation> {
     let mut observations = Vec::new();
     if !prompt.trim().is_empty() {
-        observations.push(MemoryObservation::new(prompt, "user_prompt", 0, None));
+        observations.push(
+            MemoryObservation::new(prompt, "user_prompt", 0, None).with_message_evidence(
+                MessageRole::User,
+                None,
+                Utc::now(),
+            ),
+        );
     }
     if !response.trim().is_empty() {
-        observations.push(MemoryObservation::new(
-            response,
-            "assistant_reply",
-            -8,
-            None,
-        ));
+        observations.push(
+            MemoryObservation::new(response, "assistant_reply", -8, None).with_message_evidence(
+                MessageRole::Assistant,
+                None,
+                Utc::now(),
+            ),
+        );
     }
     for message in transcript_messages.iter().rev().take(8).rev() {
         match message.role {
@@ -921,22 +1067,31 @@ fn learning_observations(
                         Some(name) if !name.trim().is_empty() => format!("tool:{name}"),
                         _ => "tool_output".to_string(),
                     };
-                    observations.push(MemoryObservation::new(
-                        text,
-                        source_tag,
-                        -12,
-                        message.tool_call_id.clone(),
-                    ));
+                    observations.push(
+                        MemoryObservation::new(text, source_tag, -12, None).with_tool_evidence(
+                            None,
+                            message.tool_call_id.clone(),
+                            message.tool_name.clone(),
+                            Utc::now(),
+                        ),
+                    );
                 }
             }
             MessageRole::Assistant => {
                 if !message.content.trim().is_empty() {
-                    observations.push(MemoryObservation::new(
-                        message.content.clone(),
-                        "assistant_transcript",
-                        -10,
-                        None,
-                    ));
+                    observations.push(
+                        MemoryObservation::new(
+                            message.content.clone(),
+                            "assistant_transcript",
+                            -10,
+                            None,
+                        )
+                        .with_message_evidence(
+                            MessageRole::Assistant,
+                            None,
+                            Utc::now(),
+                        ),
+                    );
                 }
             }
             _ => {}
@@ -945,8 +1100,98 @@ fn learning_observations(
     observations
 }
 
+fn learning_observations_from_session_messages(
+    messages: &[SessionMessage],
+) -> Vec<MemoryObservation> {
+    let latest_assistant_message_id = messages
+        .iter()
+        .rev()
+        .find(|message| {
+            matches!(message.role, MessageRole::Assistant) && !message.content.trim().is_empty()
+        })
+        .map(|message| message.id.clone());
+
+    let mut observations = Vec::new();
+    for message in messages {
+        match message.role {
+            MessageRole::System => {}
+            MessageRole::User => {
+                if !message.content.trim().is_empty() {
+                    observations.push(
+                        MemoryObservation::new(
+                            message.content.clone(),
+                            "user_prompt",
+                            0,
+                            Some(message.id.clone()),
+                        )
+                        .with_message_evidence(
+                            MessageRole::User,
+                            Some(message.id.clone()),
+                            message.created_at,
+                        ),
+                    );
+                }
+            }
+            MessageRole::Assistant => {
+                if !message.content.trim().is_empty() {
+                    let source_tag =
+                        if latest_assistant_message_id.as_deref() == Some(message.id.as_str()) {
+                            "assistant_reply"
+                        } else {
+                            "assistant_transcript"
+                        };
+                    let confidence_adjustment = if source_tag == "assistant_reply" {
+                        -8
+                    } else {
+                        -10
+                    };
+                    observations.push(
+                        MemoryObservation::new(
+                            message.content.clone(),
+                            source_tag,
+                            confidence_adjustment,
+                            Some(message.id.clone()),
+                        )
+                        .with_message_evidence(
+                            MessageRole::Assistant,
+                            Some(message.id.clone()),
+                            message.created_at,
+                        ),
+                    );
+                }
+            }
+            MessageRole::Tool => {
+                if let Some(text) = learning_text_from_session_tool_message(message) {
+                    let source_tag = match message.tool_name.as_deref() {
+                        Some(name) if !name.trim().is_empty() => format!("tool:{name}"),
+                        _ => "tool_output".to_string(),
+                    };
+                    observations.push(
+                        MemoryObservation::new(text, source_tag, -12, Some(message.id.clone()))
+                            .with_tool_evidence(
+                                Some(message.id.clone()),
+                                message.tool_call_id.clone(),
+                                message.tool_name.clone(),
+                                message.created_at,
+                            ),
+                    );
+                }
+            }
+        }
+    }
+    observations
+}
+
 fn learning_text_from_tool_message(message: &ConversationMessage) -> Option<String> {
-    let trimmed = message.content.trim();
+    learning_text_from_tool_content(&message.content)
+}
+
+fn learning_text_from_session_tool_message(message: &SessionMessage) -> Option<String> {
+    learning_text_from_tool_content(&message.content)
+}
+
+fn learning_text_from_tool_content(content: &str) -> Option<String> {
+    let trimmed = content.trim();
     if trimmed.is_empty() || trimmed.starts_with("ERROR:") {
         return None;
     }
@@ -1012,6 +1257,7 @@ fn extract_memory_candidates_from_source(
         memory.source_message_id = observation.source_message_id.clone();
         memory.provider_id = provider_id.map(ToOwned::to_owned);
         memory.workspace_key = workspace_key.clone();
+        memory.evidence_refs = observation.evidence_refs(session_id);
         memory.identity_key = Some(identity_key);
         memory.observation_source = Some(observation.source_tag.clone());
         memory.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
@@ -1196,6 +1442,11 @@ fn dedupe_memories(memories: Vec<MemoryRecord>) -> Vec<MemoryRecord> {
             if existing.identity_key.is_none() {
                 existing.identity_key = memory.identity_key.clone();
             }
+            for evidence in memory.evidence_refs {
+                if !existing.evidence_refs.contains(&evidence) {
+                    existing.evidence_refs.push(evidence);
+                }
+            }
             for tag in memory.tags {
                 if !existing.tags.contains(&tag) {
                     existing.tags.push(tag);
@@ -1206,6 +1457,49 @@ fn dedupe_memories(memories: Vec<MemoryRecord>) -> Vec<MemoryRecord> {
         deduped.push(memory);
     }
     deduped
+}
+
+async fn rebuild_memory_from_transcript(
+    state: &AppState,
+    transcript: &SessionTranscript,
+    recompute_embeddings: bool,
+) -> Result<MemoryRebuildStats, ApiError> {
+    let observations = learning_observations_from_session_messages(&transcript.messages);
+    let mut candidates = Vec::new();
+    for observation in &observations {
+        candidates.extend(extract_memory_candidates_from_source(
+            observation,
+            &transcript.session.id,
+            Some(transcript.session.provider_id.as_str()),
+            transcript.session.cwd.as_deref(),
+        ));
+    }
+
+    let mut stats = MemoryRebuildStats {
+        observations_scanned: observations.len(),
+        ..MemoryRebuildStats::default()
+    };
+    for mut memory in dedupe_memories(candidates) {
+        memory.review_status = classify_memory_review_status(&memory);
+        let existing = load_conflicting_memories(state, &memory)?;
+        let resolution = resolve_memory_conflicts(&mut memory, existing);
+        state.storage.upsert_memory(&memory)?;
+        mark_memory_supersessions(state, &memory, resolution.supersede_ids)?;
+        stats.memories_upserted += 1;
+
+        if recompute_embeddings {
+            if let Err(err) = maybe_compute_embedding(state, &memory).await {
+                warn!(
+                    "failed to recompute embedding for rebuilt memory '{}': {err}",
+                    memory.id
+                );
+            } else {
+                stats.embeddings_refreshed += 1;
+            }
+        }
+    }
+
+    Ok(stats)
 }
 
 fn classify_memory_review_status(memory: &MemoryRecord) -> MemoryReviewStatus {
@@ -1310,250 +1604,6 @@ fn memory_identity_key(
     format!("{kind:?}:{scope:?}:{anchor}").to_ascii_lowercase()
 }
 
-fn env_value(keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| {
-        std::env::var(key)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    })
-}
-
-fn find_git_root(start: &FsPath) -> Option<PathBuf> {
-    let mut current = Some(start);
-    while let Some(path) = current {
-        if path.join(".git").exists() {
-            return Some(path.to_path_buf());
-        }
-        current = path.parent();
-    }
-    None
-}
-
-fn workflow_title_from_prompt(prompt: &str, tool_events: &[ToolExecutionRecord]) -> String {
-    let prompt_hint = prompt
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .take(4)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let tool_hint = tool_events
-        .iter()
-        .map(|event| event.name.as_str())
-        .collect::<Vec<_>>()
-        .join(" -> ");
-    if prompt_hint.is_empty() {
-        format!("Workflow via {}", tool_hint)
-    } else {
-        format!("Workflow: {} via {}", prompt_hint, tool_hint)
-    }
-}
-
-fn workflow_instructions(
-    prompt: &str,
-    response: &str,
-    tool_events: &[ToolExecutionRecord],
-) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Trigger: {}", summarize_preview(prompt, 160)));
-    lines.push(String::new());
-    lines.push("Suggested steps:".to_string());
-    for (index, event) in tool_events.iter().enumerate() {
-        let arguments = summarize_preview(&event.arguments.replace('\n', " "), 100);
-        let output = summarize_preview(&event.output.replace('\n', " "), 120);
-        lines.push(format!(
-            "{}. Use `{}` with arguments like `{}`.",
-            index + 1,
-            event.name,
-            arguments
-        ));
-        if !output.is_empty() {
-            lines.push(format!("   Expected result: {}", output));
-        }
-    }
-    if !response.trim().is_empty() {
-        lines.push(String::new());
-        lines.push(format!(
-            "Desired outcome: {}",
-            summarize_preview(response, 180)
-        ));
-    }
-    lines.join("\n")
-}
-
-pub(crate) async fn load_enabled_skill_guidance(
-    state: &AppState,
-    query: &str,
-    cwd: Option<&FsPath>,
-    provider_id: Option<&str>,
-) -> String {
-    let enabled = {
-        let config = state.config.read().await;
-        config.enabled_skills.clone()
-    };
-    let mut blocks = Vec::new();
-    let static_skills = if enabled.is_empty() {
-        String::new()
-    } else {
-        load_skill_guidance_blocks(&enabled)
-    };
-    if !static_skills.is_empty() {
-        blocks.push(static_skills);
-    }
-    let learned = load_published_skill_draft_guidance(state, query, cwd, provider_id);
-    if !learned.is_empty() {
-        blocks.push(learned);
-    }
-    blocks.join("\n")
-}
-
-fn load_skill_guidance_blocks(enabled_skills: &[String]) -> String {
-    const MAX_TOTAL_BYTES: usize = 32_000;
-    let Some(root) = home_dir().map(|home| home.join(".codex").join("skills")) else {
-        return String::new();
-    };
-    let mut output = String::new();
-    for skill_name in enabled_skills {
-        let Some(path) = find_skill_markdown(&root, skill_name) else {
-            continue;
-        };
-        let Ok(mut content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        if content.len() > 8_000 {
-            content.truncate(8_000);
-            content.push_str("\n\n[truncated]");
-        }
-        let block = format!(
-            "--- skill:{} ({})\n{}\n",
-            skill_name,
-            path.display(),
-            content.trim()
-        );
-        if output.len() + block.len() > MAX_TOTAL_BYTES {
-            output.push_str("\n--- [additional skill content truncated]");
-            break;
-        }
-        output.push_str(&block);
-    }
-    output
-}
-
-fn load_published_skill_draft_guidance(
-    state: &AppState,
-    query: &str,
-    cwd: Option<&FsPath>,
-    provider_id: Option<&str>,
-) -> String {
-    let workspace_key = workspace_key(cwd);
-    let Ok(drafts) = state.storage.list_skill_drafts(
-        32,
-        Some(SkillDraftStatus::Published),
-        workspace_key.as_deref(),
-        provider_id,
-    ) else {
-        return String::new();
-    };
-    let query_terms = relevant_query_terms(query);
-    let mut selected = drafts
-        .into_iter()
-        .filter(|draft| skill_draft_relevant(draft, &query_terms))
-        .take(3)
-        .collect::<Vec<_>>();
-    for draft in &selected {
-        let _ = state.storage.touch_skill_draft(&draft.id);
-    }
-    if selected.is_empty() {
-        return String::new();
-    }
-    selected.sort_by(|left, right| {
-        right
-            .usage_count
-            .cmp(&left.usage_count)
-            .then_with(|| right.updated_at.cmp(&left.updated_at))
-    });
-    selected
-        .into_iter()
-        .map(|draft| {
-            format!(
-                "--- learned_workflow:{}\nsummary: {}\ntrigger: {}\ninstructions:\n{}\n",
-                draft.title,
-                draft.summary,
-                draft
-                    .trigger_hint
-                    .as_deref()
-                    .unwrap_or("apply when the task closely matches this workflow"),
-                draft.instructions.trim()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn relevant_query_terms(query: &str) -> Vec<String> {
-    query
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .map(|part| part.trim().to_ascii_lowercase())
-        .filter(|part| part.len() >= 4)
-        .take(8)
-        .collect()
-}
-
-fn skill_draft_relevant(draft: &SkillDraft, query_terms: &[String]) -> bool {
-    if query_terms.is_empty() {
-        return true;
-    }
-    let haystack = format!(
-        "{} {} {} {}",
-        draft.title,
-        draft.summary,
-        draft.instructions,
-        draft.trigger_hint.as_deref().unwrap_or_default()
-    )
-    .to_ascii_lowercase();
-    query_terms.iter().any(|term| haystack.contains(term))
-}
-
-fn find_skill_markdown(root: &FsPath, skill_name: &str) -> Option<PathBuf> {
-    if !root.is_dir() {
-        return None;
-    }
-    let entries = fs::read_dir(root).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_type().ok()?.is_dir() {
-            if path
-                .file_name()
-                .map(|name| name.to_string_lossy() == skill_name)
-                .unwrap_or(false)
-            {
-                let candidate = path.join("SKILL.md");
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-            if let Some(found) = find_skill_markdown(&path, skill_name) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-}
-
 /// Compute and store an embedding for the given memory if the embedding provider is configured.
 async fn maybe_compute_embedding(state: &AppState, memory: &MemoryRecord) -> anyhow::Result<()> {
     let config = state.config.read().await;
@@ -1617,9 +1667,7 @@ async fn embedding_search(
         .ok_or_else(|| anyhow::anyhow!("embedding provider_id not configured"))?;
     let emb_provider = config
         .get_provider(emb_provider_id)
-        .ok_or_else(|| {
-            anyhow::anyhow!("embedding provider '{}' not found", emb_provider_id)
-        })?
+        .ok_or_else(|| anyhow::anyhow!("embedding provider '{}' not found", emb_provider_id))?
         .clone();
     let model = config
         .embedding
@@ -1649,7 +1697,38 @@ async fn embedding_search(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    use agent_core::{AppConfig, ModelAlias, TaskMode};
+    use agent_storage::Storage;
+    use tokio::sync::{mpsc, Notify, RwLock};
     use uuid::Uuid;
+
+    use crate::{
+        new_browser_auth_store, new_dashboard_launch_store, new_dashboard_session_store,
+        new_mission_cancellation_store, ProviderRateLimiter,
+    };
+
+    fn test_state() -> AppState {
+        AppState {
+            storage: Storage::open_at(
+                std::env::temp_dir().join(format!("agent-daemon-memory-test-{}", Uuid::new_v4())),
+            )
+            .unwrap(),
+            config: Arc::new(RwLock::new(AppConfig::default())),
+            http_client: reqwest::Client::new(),
+            browser_auth_sessions: new_browser_auth_store(),
+            dashboard_sessions: new_dashboard_session_store(),
+            dashboard_launches: new_dashboard_launch_store(),
+            mission_cancellations: new_mission_cancellation_store(),
+            started_at: Utc::now(),
+            shutdown: mpsc::unbounded_channel().0,
+            autopilot_wake: Arc::new(Notify::new()),
+            log_wake: Arc::new(Notify::new()),
+            restart_requested: Arc::new(AtomicBool::new(false)),
+            rate_limiter: ProviderRateLimiter::new(),
+        }
+    }
 
     #[test]
     fn extract_memory_candidates_from_system_and_tool_sources() {
@@ -1692,7 +1771,7 @@ mod tests {
                 ToolExecutionRecord {
                     call_id: "call-2".to_string(),
                     name: "run_shell".to_string(),
-                    arguments: "cargo test -p autism".to_string(),
+                    arguments: "cargo test -p nuclear".to_string(),
                     outcome: agent_core::ToolExecutionOutcome::Success,
                     output: "test result: ok".to_string(),
                 },
@@ -1845,6 +1924,181 @@ mod tests {
         assert!(incoming.tags.iter().any(|tag| tag == "multi_source"));
         assert!(incoming.tags.iter().any(|tag| tag == "cross_session"));
         assert!(incoming.reviewed_at.is_some());
+    }
+
+    #[test]
+    fn resolve_memory_conflicts_merges_evidence_refs_for_exact_match() {
+        let mut candidate = MemoryRecord::new(
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            "preference:verbosity".to_string(),
+            "User prefers concise output".to_string(),
+        );
+        candidate.evidence_refs = vec![MemoryEvidenceRef {
+            session_id: "session-1".to_string(),
+            message_id: Some("message-1".to_string()),
+            role: Some(MessageRole::User),
+            tool_call_id: None,
+            tool_name: None,
+            created_at: Utc::now(),
+        }];
+
+        let mut incoming = MemoryRecord::new(
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            "preference:verbosity".to_string(),
+            "User prefers concise output".to_string(),
+        );
+        incoming.evidence_refs = vec![MemoryEvidenceRef {
+            session_id: "session-2".to_string(),
+            message_id: Some("message-2".to_string()),
+            role: Some(MessageRole::User),
+            tool_call_id: None,
+            tool_name: None,
+            created_at: Utc::now(),
+        }];
+
+        let resolution = resolve_memory_conflicts(&mut incoming, vec![candidate.clone()]);
+        assert!(resolution.supersede_ids.is_empty());
+        assert_eq!(incoming.id, candidate.id);
+        assert_eq!(incoming.evidence_refs.len(), 2);
+        assert!(incoming.evidence_refs.contains(&candidate.evidence_refs[0]));
+    }
+
+    #[test]
+    fn learning_observations_from_session_messages_preserve_exact_evidence() {
+        let created_at = Utc::now();
+        let user = SessionMessage {
+            id: "message-user".to_string(),
+            session_id: "session-1".to_string(),
+            role: MessageRole::User,
+            content: "I prefer concise output.".to_string(),
+            created_at,
+            provider_id: Some("openai".to_string()),
+            model: Some("gpt-4.1".to_string()),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: Vec::new(),
+            provider_payload_json: None,
+            attachments: Vec::new(),
+        };
+        let tool = SessionMessage {
+            id: "message-tool".to_string(),
+            session_id: "session-1".to_string(),
+            role: MessageRole::Tool,
+            content: "Project uses Rust and tokio.".to_string(),
+            created_at: created_at + chrono::Duration::seconds(1),
+            provider_id: Some("openai".to_string()),
+            model: Some("gpt-4.1".to_string()),
+            tool_call_id: Some("call-1".to_string()),
+            tool_name: Some("run_shell".to_string()),
+            tool_calls: Vec::new(),
+            provider_payload_json: None,
+            attachments: Vec::new(),
+        };
+
+        let observations = learning_observations_from_session_messages(&[user, tool]);
+        let user_observation = observations
+            .iter()
+            .find(|observation| observation.source_tag == "user_prompt")
+            .unwrap();
+        assert_eq!(
+            user_observation.source_message_id.as_deref(),
+            Some("message-user")
+        );
+        assert_eq!(
+            user_observation.evidence_refs("session-1")[0].role,
+            Some(MessageRole::User)
+        );
+
+        let tool_observation = observations
+            .iter()
+            .find(|observation| observation.source_tag == "tool:run_shell")
+            .unwrap();
+        let evidence = &tool_observation.evidence_refs("session-1")[0];
+        assert_eq!(evidence.message_id.as_deref(), Some("message-tool"));
+        assert_eq!(evidence.tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(evidence.tool_name.as_deref(), Some("run_shell"));
+    }
+
+    #[tokio::test]
+    async fn rebuild_memory_from_transcript_persists_evidence_backed_memories() {
+        let state = test_state();
+        let alias = ModelAlias {
+            alias: "main".to_string(),
+            provider_id: "openai".to_string(),
+            model: "gpt-4.1".to_string(),
+            description: None,
+        };
+        let cwd = std::env::temp_dir().join(format!("agent-memory-rebuild-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        state
+            .storage
+            .ensure_session_with_title(
+                "session-1",
+                Some("Daily memory"),
+                &alias,
+                "openai",
+                "gpt-4.1",
+                Some(TaskMode::Daily),
+                Some(cwd.as_path()),
+            )
+            .unwrap();
+
+        let user = SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::User,
+            "I prefer concise output.".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-4.1".to_string()),
+        );
+        let tool = SessionMessage::new(
+            "session-1".to_string(),
+            MessageRole::Tool,
+            "This project uses Rust and tokio.".to_string(),
+            Some("openai".to_string()),
+            Some("gpt-4.1".to_string()),
+        )
+        .with_tool_metadata(Some("call-1".to_string()), Some("run_shell".to_string()));
+        state.storage.append_message(&user).unwrap();
+        state.storage.append_message(&tool).unwrap();
+
+        let transcript = crate::sessions::get_session_transcript(&state, "session-1").unwrap();
+        let stats = rebuild_memory_from_transcript(&state, &transcript, false)
+            .await
+            .unwrap();
+        assert!(stats.observations_scanned >= 2);
+        assert!(stats.memories_upserted >= 2);
+
+        let accepted_memories = state
+            .storage
+            .list_memories_by_source_session("session-1", 10)
+            .unwrap();
+        assert!(accepted_memories.iter().any(|memory| {
+            matches!(memory.kind, MemoryKind::Preference)
+                && memory
+                    .evidence_refs
+                    .iter()
+                    .any(|evidence| evidence.message_id.as_deref() == Some(user.id.as_str()))
+        }));
+        let candidate_memories = state
+            .storage
+            .list_memories_by_review_status(MemoryReviewStatus::Candidate, 10)
+            .unwrap();
+        assert!(accepted_memories
+            .iter()
+            .chain(candidate_memories.iter())
+            .any(|memory| {
+                memory.source_session_id.as_deref() == Some("session-1")
+                    && memory.evidence_refs.iter().any(|evidence| {
+                        evidence.message_id.as_deref() == Some(tool.id.as_str())
+                            && evidence.tool_call_id.as_deref() == Some("call-1")
+                            && evidence.tool_name.as_deref() == Some("run_shell")
+                    })
+            }));
+
+        let _ = std::fs::remove_dir_all(cwd);
     }
 
     #[test]

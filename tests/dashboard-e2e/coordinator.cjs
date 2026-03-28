@@ -9,11 +9,19 @@ const targetDir = path.join(repoRoot, "target", "playwright-e2e");
 const statePath = path.join(targetDir, "state.json");
 const profileDir = path.join(targetDir, "profile");
 const inboxDir = path.join(targetDir, "fixtures", "inbox");
+const pluginFixtureDir = path.join(repoRoot, "tests", "dashboard-e2e", "fixtures", "echo-plugin");
+const pluginSourceDir = path.join(targetDir, "fixtures", "echo-plugin");
 const daemonPort = 42791;
 const providerPort = 42792;
 const daemonToken = "playwright-daemon-token";
-const windowsExe = path.join(repoRoot, "target", "debug", "autism.exe");
-const unixExe = path.join(repoRoot, "target", "debug", "autism");
+const windowsExecutables = [
+  path.join(repoRoot, "target", "debug", "nuclear.exe"),
+  path.join(repoRoot, "target", "debug", "autism.exe"),
+];
+const unixExecutables = [
+  path.join(repoRoot, "target", "debug", "nuclear"),
+  path.join(repoRoot, "target", "debug", "autism"),
+];
 const rebuildExtensions = new Set([".rs", ".html", ".css", ".js", ".cjs", ".toml", ".lock"]);
 
 let mockServer = null;
@@ -26,6 +34,19 @@ function ensureDir(dir) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function copyDirRecursive(source, target) {
+  ensureDir(target);
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    const sourcePath = path.join(source, entry.name);
+    const targetPath = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(sourcePath, targetPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  }
 }
 
 function makeEnv() {
@@ -44,7 +65,8 @@ function makeEnv() {
 }
 
 function executablePath() {
-  return process.platform === "win32" ? windowsExe : unixExe;
+  const candidates = process.platform === "win32" ? windowsExecutables : unixExecutables;
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
 }
 
 function newestMtimeMs(entryPath) {
@@ -82,12 +104,12 @@ function binaryNeedsRebuild(exe) {
 function ensureBinaryBuilt() {
   const exe = executablePath();
   if (binaryNeedsRebuild(exe)) {
-    const build = spawnSync("cargo", ["build", "-q", "-p", "autism"], {
+    const build = spawnSync("cargo", ["build", "-q", "-p", "nuclear", "--bin", "nuclear", "--bin", "autism"], {
       cwd: repoRoot,
       stdio: "inherit",
     });
     if (build.status !== 0) {
-      throw new Error("failed to build autism binary for dashboard e2e");
+      throw new Error("failed to build nuclear/autism binaries for dashboard e2e");
     }
   }
   if (!fs.existsSync(exe)) {
@@ -166,6 +188,7 @@ function writeE2EConfig(configPath) {
         baseURL: `http://127.0.0.1:${daemonPort}`,
         token: daemonToken,
         inboxPath: inboxDir,
+        pluginPath: pluginSourceDir,
       },
       null,
       2
@@ -284,6 +307,7 @@ async function cleanupAndExit(code) {
 async function main() {
   fs.rmSync(targetDir, { recursive: true, force: true });
   ensureDir(targetDir);
+  copyDirRecursive(pluginFixtureDir, pluginSourceDir);
   const env = makeEnv();
   const exe = ensureBinaryBuilt();
   const configPath = discoverConfigPath(exe, env);
