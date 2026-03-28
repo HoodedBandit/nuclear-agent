@@ -75,6 +75,7 @@ step "source LOC guard" bash "$repo_root/scripts/check-max-loc.sh"
 step "cargo check --workspace" cargo check --workspace
 step "cargo test --workspace" cargo test --workspace
 step "cargo build --release --bin nuclear --bin autism (legacy compatibility)" cargo build --release --bin nuclear --bin autism
+step "installer smoke validation" bash "$repo_root/scripts/install-smoke.sh"
 step "benchmark smoke artifact validation" run_benchmark_smoke
 step "cargo tree --workspace --duplicates" cargo tree --workspace --duplicates
 step "cargo audit" optional_cargo_tool audit

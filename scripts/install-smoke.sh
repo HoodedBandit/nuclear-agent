@@ -17,6 +17,18 @@ assert_exists() {
   fi
 }
 
+cargo_target_root() {
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    case "$CARGO_TARGET_DIR" in
+      /*) printf '%s\n' "$CARGO_TARGET_DIR" ;;
+      *) printf '%s\n' "$repo_root/$CARGO_TARGET_DIR" ;;
+    esac
+    return
+  fi
+
+  printf '%s\n' "$repo_root/target"
+}
+
 run_installer() {
   local scenario_root="$1"
   local home_root="$scenario_root/home"
@@ -29,6 +41,10 @@ step "prepare Linux installer smoke workspace"
 rm -rf "$temp_root"
 mkdir -p "$temp_root"
 
+cargo_target_root_value="$(cargo_target_root)"
+step "build release compatibility binaries"
+cargo build --release -p nuclear --bin nuclear --bin autism
+
 fresh_root="$temp_root/fresh-default"
 step "fresh install uses the default nuclear command path"
 run_installer "$fresh_root"
@@ -38,7 +54,7 @@ assert_exists "$fresh_install_dir/autism" "legacy compatibility binary"
 "$fresh_install_dir/nuclear" --version >/dev/null
 "$fresh_install_dir/autism" --version >/dev/null
 
-release_legacy_binary="$repo_root/target/release/autism"
+release_legacy_binary="$cargo_target_root_value/release/autism"
 assert_exists "$release_legacy_binary" "legacy release compatibility binary"
 
 upgrade_root="$temp_root/upgrade-legacy-default"

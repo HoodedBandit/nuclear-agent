@@ -63,7 +63,7 @@ try {
         Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } |
         ForEach-Object {
             $relativePath = Get-NormalizedRelativePath -Root $repoRoot -Path $_.FullName
-            $lineCount = (Get-Content $_.FullName | Measure-Object -Line).Lines
+            $lineCount = [System.IO.File]::ReadAllLines($_.FullName).Length
             $limit = if ($limits.ContainsKey($relativePath)) { $limits[$relativePath] } else { $MaxLines }
 
             if ($lineCount -gt $limit) {

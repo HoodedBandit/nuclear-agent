@@ -40,6 +40,19 @@ function Get-Version {
     return $output.Trim()
 }
 
+function Get-CargoTargetRoot {
+    param([string]$RepoRoot)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+        if ([System.IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) {
+            return $env:CARGO_TARGET_DIR
+        }
+        return [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $env:CARGO_TARGET_DIR))
+    }
+
+    return (Join-Path $RepoRoot "target")
+}
+
 function Invoke-IsolatedInstall {
     param(
         [Parameter(Mandatory = $true)]
@@ -89,7 +102,8 @@ function Invoke-IsolatedInstall {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $tempRoot = Join-Path $repoRoot "target\install-smoke\windows"
-$releaseLegacyBinary = Join-Path $repoRoot "target\release\autism.exe"
+$cargoTargetRoot = Get-CargoTargetRoot -RepoRoot $repoRoot
+$releaseLegacyBinary = Join-Path $cargoTargetRoot "release\autism.exe"
 
 Push-Location $repoRoot
 try {

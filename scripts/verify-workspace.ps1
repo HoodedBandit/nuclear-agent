@@ -117,6 +117,9 @@ try {
     Invoke-Step "cargo build --release --bin nuclear --bin autism (legacy compatibility)" {
         cargo build --release --bin nuclear --bin autism
     }
+    Invoke-Step "installer smoke validation" {
+        & (Join-Path $PSScriptRoot "install-smoke.ps1")
+    }
     Invoke-Step "benchmark smoke artifact validation" {
         Invoke-BenchmarkSmokeValidation -RepoRoot $repoRoot -CargoTargetDir $env:CARGO_TARGET_DIR
     }

@@ -240,6 +240,7 @@ Docs:
 - [`docs/plugins.md`](docs/plugins.md)
 - [`docs/operations.md`](docs/operations.md)
 - [`docs/benchmarks.md`](docs/benchmarks.md)
+- [`docs/release-checklist.md`](docs/release-checklist.md)
 - [`docs/reliability.md`](docs/reliability.md)
 
 Inspect and enable local skills:
