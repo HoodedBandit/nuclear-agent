@@ -114,7 +114,7 @@ try {
     Invoke-Step "source LOC guard" { & (Join-Path $PSScriptRoot "check-max-loc.ps1") }
     Invoke-Step "cargo check --workspace" { cargo check --workspace }
     Invoke-Step "cargo test --workspace" { cargo test --workspace }
-    Invoke-Step "cargo build --release --bin nuclear --bin autism" {
+    Invoke-Step "cargo build --release --bin nuclear --bin autism (legacy compatibility)" {
         cargo build --release --bin nuclear --bin autism
     }
     Invoke-Step "benchmark smoke artifact validation" {

@@ -15,13 +15,13 @@ script_dir() {
 }
 
 resolve_source_root() {
-  root="$1"
-  if [ -f "$root/source/Cargo.toml" ]; then
-    printf '%s\n' "$root/source"
+  source_probe_root="$1"
+  if [ -f "$source_probe_root/source/Cargo.toml" ]; then
+    printf '%s\n' "$source_probe_root/source"
     return
   fi
-  if [ -f "$root/Cargo.toml" ]; then
-    printf '%s\n' "$root"
+  if [ -f "$source_probe_root/Cargo.toml" ]; then
+    printf '%s\n' "$source_probe_root"
     return
   fi
   echo "Could not locate the project source directory." >&2
@@ -29,40 +29,40 @@ resolve_source_root() {
 }
 
 resolve_bundled_binary() {
-  root="$1"
-  arch="$(uname -m)"
-  case "$arch" in
+  binary_root="$1"
+  machine_arch="$(uname -m)"
+  case "$machine_arch" in
     x86_64|amd64)
-      if [ -x "$root/bin/linux-x64/nuclear" ]; then
-        printf '%s\n' "$root/bin/linux-x64/nuclear"
+      if [ -x "$binary_root/bin/linux-x64/nuclear" ]; then
+        printf '%s\n' "$binary_root/bin/linux-x64/nuclear"
         return
       fi
-      candidate="$root/bin/linux-x64/autism"
+      legacy_candidate="$binary_root/bin/linux-x64/autism"
       ;;
     aarch64|arm64)
-      if [ -x "$root/bin/linux-arm64/nuclear" ]; then
-        printf '%s\n' "$root/bin/linux-arm64/nuclear"
+      if [ -x "$binary_root/bin/linux-arm64/nuclear" ]; then
+        printf '%s\n' "$binary_root/bin/linux-arm64/nuclear"
         return
       fi
-      candidate="$root/bin/linux-arm64/autism"
+      legacy_candidate="$binary_root/bin/linux-arm64/autism"
       ;;
     *)
-      candidate=""
+      legacy_candidate=""
       ;;
   esac
 
-  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-    printf '%s\n' "$candidate"
+  if [ -n "$legacy_candidate" ] && [ -x "$legacy_candidate" ]; then
+    printf '%s\n' "$legacy_candidate"
     return
   fi
 
-  if [ -x "$root/target/release/nuclear" ]; then
-    printf '%s\n' "$root/target/release/nuclear"
+  if [ -x "$binary_root/target/release/nuclear" ]; then
+    printf '%s\n' "$binary_root/target/release/nuclear"
     return
   fi
 
-  if [ -x "$root/target/release/autism" ]; then
-    printf '%s\n' "$root/target/release/autism"
+  if [ -x "$binary_root/target/release/autism" ]; then
+    printf '%s\n' "$binary_root/target/release/autism"
     return
   fi
 
@@ -84,12 +84,37 @@ install_rustup() {
 
 ensure_cargo() {
   if command_exists cargo; then
+    initialize_rustup_env "$(command -v cargo)"
     return
   fi
   install_rustup
   if ! command_exists cargo; then
     echo "cargo is still unavailable after rustup installation." >&2
     exit 1
+  fi
+  initialize_rustup_env "$(command -v cargo)"
+}
+
+initialize_rustup_env() {
+  cargo_path="$1"
+  if [ -z "$cargo_path" ]; then
+    return
+  fi
+
+  cargo_bin_dir="$(CDPATH= cd -- "$(dirname -- "$cargo_path")" && pwd)"
+  cargo_home="$(CDPATH= cd -- "$cargo_bin_dir/.." && pwd)"
+  if [ -z "${CARGO_HOME:-}" ] && [ -x "$cargo_home/bin/cargo" ]; then
+    export CARGO_HOME="$cargo_home"
+  fi
+
+  if [ -n "${RUSTUP_HOME:-}" ]; then
+    return
+  fi
+
+  cargo_home_parent="$(CDPATH= cd -- "$cargo_home/.." && pwd)"
+  rustup_home="$cargo_home_parent/.rustup"
+  if [ -f "$rustup_home/settings.toml" ]; then
+    export RUSTUP_HOME="$rustup_home"
   fi
 }
 
@@ -128,15 +153,15 @@ choose_install_dir() {
 }
 
 add_to_path() {
-  install_dir="$1"
-  profile="$HOME/.profile"
+  path_install_dir="$1"
+  shell_profile="$HOME/.profile"
 
   case "${SHELL:-}" in
     */bash)
-      profile="$HOME/.bashrc"
+      shell_profile="$HOME/.bashrc"
       ;;
     */zsh)
-      profile="$HOME/.zshrc"
+      shell_profile="$HOME/.zshrc"
       ;;
   esac
 
@@ -145,47 +170,47 @@ add_to_path() {
     return
   fi
 
-  path_line="export PATH=\"$install_dir:\$PATH\""
-  if [ -f "$profile" ] && grep -F "$path_line" "$profile" >/dev/null 2>&1; then
-    step "PATH is already configured for future shells in $profile"
+  profile_line="export PATH=\"$path_install_dir:\$PATH\""
+  if [ -f "$shell_profile" ] && grep -F "$profile_line" "$shell_profile" >/dev/null 2>&1; then
+    step "PATH is already configured for future shells in $shell_profile"
     return
   fi
 
   case ":$PATH:" in
-    *":$install_dir:"*)
-      step "Persisting $install_dir to $profile for future shells"
+    *":$path_install_dir:"*)
+      step "Persisting $path_install_dir to $shell_profile for future shells"
       ;;
   esac
 
   {
     printf '\n# Added by Nuclear Agent installer\n'
-    printf '%s\n' "$path_line"
-  } >>"$profile"
-  step "Updated PATH for future shells in $profile"
+    printf '%s\n' "$profile_line"
+  } >>"$shell_profile"
+  step "Updated PATH for future shells in $shell_profile"
 }
 
 install_binary_atomic() {
-  source_binary="$1"
-  target_binary="$2"
-  tmp_binary="$target_binary.new"
-  cp "$source_binary" "$tmp_binary"
-  chmod 0755 "$tmp_binary"
-  mv -f "$tmp_binary" "$target_binary"
+  atomic_source_binary="$1"
+  atomic_target_binary="$2"
+  atomic_tmp_binary="$atomic_target_binary.new"
+  cp "$atomic_source_binary" "$atomic_tmp_binary"
+  chmod 0755 "$atomic_tmp_binary"
+  mv -f "$atomic_tmp_binary" "$atomic_target_binary"
 }
 
 stop_installed_processes() {
-  binary_path="$1"
+  managed_binary_path="$1"
 
-  if [ ! -x "$binary_path" ]; then
+  if [ ! -x "$managed_binary_path" ]; then
     return
   fi
 
   step "Stopping any running Nuclear Agent compatibility processes from the install directory"
-  "$binary_path" daemon stop >/dev/null 2>&1 || true
+  "$managed_binary_path" daemon stop >/dev/null 2>&1 || true
   sleep 1
 
   if command_exists pgrep; then
-    pgrep -f "$binary_path" 2>/dev/null | while IFS= read -r pid; do
+    pgrep -f "$managed_binary_path" 2>/dev/null | while IFS= read -r pid; do
       [ -n "$pid" ] || continue
       kill "$pid" 2>/dev/null || true
     done
@@ -194,24 +219,24 @@ stop_installed_processes() {
 }
 
 build_binary_from_source() {
-  source_root="$1"
-  target_binary="$2"
-  legacy_binary="$3"
+  build_source_root="$1"
+  install_target_binary="$2"
+  install_legacy_binary="$3"
   ensure_cargo
   step "Building Nuclear Agent from source"
-  cargo build --release --bin nuclear --bin autism --manifest-path "$source_root/Cargo.toml"
-  built_binary="$source_root/target/release/nuclear"
+  cargo build --release --bin nuclear --bin autism --manifest-path "$build_source_root/Cargo.toml"
+  built_binary="$build_source_root/target/release/nuclear"
   if [ ! -x "$built_binary" ]; then
     echo "Cargo reported success but $built_binary was not found." >&2
     exit 1
   fi
-  built_legacy_binary="$source_root/target/release/autism"
+  built_legacy_binary="$build_source_root/target/release/autism"
   if [ ! -x "$built_legacy_binary" ]; then
     echo "Cargo reported success but $built_legacy_binary was not found." >&2
     exit 1
   fi
-  install_binary_atomic "$built_binary" "$target_binary"
-  install_binary_atomic "$built_legacy_binary" "$legacy_binary"
+  install_binary_atomic "$built_binary" "$install_target_binary"
+  install_binary_atomic "$built_legacy_binary" "$install_legacy_binary"
 }
 
 case "$(uname -s)" in

@@ -5,7 +5,7 @@ use ratatui::{
 };
 use serde_json::Value;
 
-use agent_core::{PermissionPreset, SessionMessage, ToolCall};
+use agent_core::{PermissionPreset, SessionMessage, ToolCall, DISPLAY_APP_NAME};
 
 use crate::{permission_summary, task_mode_label, thinking_level_label};
 
@@ -835,7 +835,10 @@ fn render_empty_header(app: &TuiApp<'_>) -> Vec<Line<'static>> {
         .or_else(|| app.alias.clone())
         .unwrap_or_else(|| "main".to_string());
     vec![
-        Line::from(format!(" >_ Autism CLI (v{})", env!("CARGO_PKG_VERSION"))),
+        Line::from(format!(
+            " >_ {DISPLAY_APP_NAME} CLI (v{})",
+            env!("CARGO_PKG_VERSION")
+        )),
         Line::from(String::new()),
         Line::from(format!(
             " model:     {} {} mode={}   /model or ctrl+p to switch",
@@ -849,7 +852,9 @@ fn render_empty_header(app: &TuiApp<'_>) -> Vec<Line<'static>> {
 
 fn render_composer_lines(app: &TuiApp<'_>) -> Vec<Line<'static>> {
     if app.input.is_empty() {
-        return vec![Line::from("> Ask Autism to do anything")];
+        return vec![Line::from(format!(
+            "> Ask {DISPLAY_APP_NAME} to do anything"
+        ))];
     }
 
     let mut lines = Vec::new();

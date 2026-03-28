@@ -109,7 +109,7 @@ function ensureBinaryBuilt() {
       stdio: "inherit",
     });
     if (build.status !== 0) {
-      throw new Error("failed to build nuclear/autism binaries for dashboard e2e");
+      throw new Error("failed to build the nuclear package and legacy compatibility binary for dashboard e2e");
     }
   }
   if (!fs.existsSync(exe)) {
