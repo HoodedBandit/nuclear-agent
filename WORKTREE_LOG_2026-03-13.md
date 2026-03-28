@@ -53,14 +53,14 @@ Verified successfully on 2026-03-13 against the current worktree:
 - `cargo check --workspace`
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo build --release --bin autism`
+- `cargo build --release --bin nuclear --bin autism` (legacy compatibility binary retained)
 - `node --check crates/agent-daemon/static/dashboard.js`
 
 ### Test Package
 
 A Windows test bundle was assembled from this worktree at:
 
-- `dist-test/autism-cli-bundle-windows-x64`
+- legacy `dist-test/autism-cli-bundle-windows-x64`
 
 The packaged installer was smoke-tested into:
 

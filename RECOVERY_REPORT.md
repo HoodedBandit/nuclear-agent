@@ -10,7 +10,7 @@ Date: 2026-03-12
 
 - Primary source: recovered working tree under `J:\Nuclear AI box\Agent builder`
 - Secondary evidence: duplicate `_0` files from the recovered tree
-- Deferred evidence: unpacked `dist\autism-cli-bundle-*` source trees and `_restore_7e`
+- Deferred evidence: unpacked legacy `dist\autism-cli-bundle-*` source trees and `_restore_7e`
 - Restored reference asset: `codex-main/codex-rs/core/models.json`
 
 ## Repair Actions

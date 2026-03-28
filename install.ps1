@@ -42,6 +42,50 @@ function Resolve-ScriptRoot {
     return Split-Path -Parent $PSCommandPath
 }
 
+function Get-CanonicalProgramRoot {
+    return Join-Path $env:LOCALAPPDATA "Programs\NuclearAI\Nuclear"
+}
+
+function Get-LegacyProgramRoot {
+    return Join-Path $env:LOCALAPPDATA "Programs\NuclearAI\Autism"
+}
+
+function Get-CanonicalInstallDir {
+    return Join-Path (Get-CanonicalProgramRoot) "bin"
+}
+
+function Get-LegacyInstallDir {
+    return Join-Path (Get-LegacyProgramRoot) "bin"
+}
+
+function Test-InstallDirHasManagedBinary {
+    param([string]$InstallDir)
+
+    return (Test-Path (Join-Path $InstallDir "nuclear.exe")) -or
+        (Test-Path (Join-Path $InstallDir "autism.exe"))
+}
+
+function Should-UseLegacyProgramRoot {
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $canonicalInstallDir = Get-CanonicalInstallDir
+    $legacyInstallDir = Get-LegacyInstallDir
+
+    if (Test-InstallDirHasManagedBinary -InstallDir $canonicalInstallDir) {
+        return $false
+    }
+
+    if (Test-InstallDirHasManagedBinary -InstallDir $legacyInstallDir) {
+        return $true
+    }
+
+    if ((Path-Contains -PathValue $env:Path -Entry $legacyInstallDir) -or
+        (Path-Contains -PathValue $userPath -Entry $legacyInstallDir)) {
+        return $true
+    }
+
+    return (Test-Path (Join-Path (Get-LegacyProgramRoot) "deps"))
+}
+
 function Choose-DefaultInstallDir {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $candidates = @()
@@ -59,7 +103,11 @@ function Choose-DefaultInstallDir {
         }
     }
 
-    return Join-Path $env:LOCALAPPDATA "Programs\NuclearAI\Autism\bin"
+    if (Should-UseLegacyProgramRoot) {
+        return Get-LegacyInstallDir
+    }
+
+    return Get-CanonicalInstallDir
 }
 
 function Get-ManagedDependencyRoot {
@@ -71,7 +119,17 @@ function Get-ManagedDependencyRoot {
         return $env:AUTISM_DEPENDENCY_ROOT
     }
 
-    return Join-Path $env:LOCALAPPDATA "Programs\NuclearAI\Autism\deps"
+    $canonicalDependencyRoot = Join-Path (Get-CanonicalProgramRoot) "deps"
+    if (Test-Path $canonicalDependencyRoot) {
+        return $canonicalDependencyRoot
+    }
+
+    $legacyDependencyRoot = Join-Path (Get-LegacyProgramRoot) "deps"
+    if ((Should-UseLegacyProgramRoot) -or (Test-Path $legacyDependencyRoot)) {
+        return $legacyDependencyRoot
+    }
+
+    return $canonicalDependencyRoot
 }
 
 function Get-ManagedPlaywrightRoot {
@@ -122,6 +180,35 @@ function Get-CargoBinDir {
     }
 
     return (Join-Path $HOME ".cargo\bin")
+}
+
+function Initialize-RustupEnvironment {
+    param([string]$CargoExecutable)
+
+    if ([string]::IsNullOrWhiteSpace($CargoExecutable)) {
+        return
+    }
+
+    $cargoBinDir = Split-Path -Parent $CargoExecutable
+    $cargoHome = Split-Path -Parent $cargoBinDir
+    if ([string]::IsNullOrWhiteSpace($env:CARGO_HOME) -and
+        (Test-Path (Join-Path $cargoHome "bin\cargo.exe"))) {
+        $env:CARGO_HOME = $cargoHome
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:RUSTUP_HOME)) {
+        return
+    }
+
+    $cargoHomeParent = Split-Path -Parent $cargoHome
+    if ([string]::IsNullOrWhiteSpace($cargoHomeParent)) {
+        return
+    }
+
+    $rustupHome = Join-Path $cargoHomeParent ".rustup"
+    if (Test-Path (Join-Path $rustupHome "settings.toml")) {
+        $env:RUSTUP_HOME = $rustupHome
+    }
 }
 
 function Add-ToProcessPath {
@@ -178,6 +265,7 @@ function Install-Rustup {
 function Ensure-Cargo {
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
     if ($cargo) {
+        Initialize-RustupEnvironment -CargoExecutable $cargo.Source
         return $cargo.Source
     }
 
@@ -195,6 +283,7 @@ function Ensure-Cargo {
         throw "cargo is still unavailable after rustup installation."
     }
 
+    Initialize-RustupEnvironment -CargoExecutable $cargo.Source
     return $cargo.Source
 }
 
@@ -683,7 +772,7 @@ function Copy-FileAtomic {
     }
 }
 
-function Get-InstalledAutismProcesses {
+function Get-InstalledAgentProcesses {
     param([string]$BinaryPath)
 
     if (-not (Test-Path $BinaryPath)) {
@@ -698,7 +787,7 @@ function Get-InstalledAutismProcesses {
         }
 }
 
-function Stop-InstalledAutismProcesses {
+function Stop-InstalledAgentProcesses {
     param([string]$BinaryPath)
 
     if (-not (Test-Path $BinaryPath)) {
@@ -712,7 +801,7 @@ function Stop-InstalledAutismProcesses {
     }
 
     Start-Sleep -Milliseconds 750
-    $processes = @(Get-InstalledAutismProcesses -BinaryPath $BinaryPath)
+    $processes = @(Get-InstalledAgentProcesses -BinaryPath $BinaryPath)
     foreach ($process in $processes) {
         try {
             Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
@@ -977,8 +1066,8 @@ try {
     Write-Step "Installing Nuclear Agent CLI"
     Write-Step "Install directory: $InstallDir"
     Ensure-InstallDir -TargetDir $InstallDir
-    Stop-InstalledAutismProcesses -BinaryPath $binaryPath
-    Stop-InstalledAutismProcesses -BinaryPath $legacyBinaryPath
+    Stop-InstalledAgentProcesses -BinaryPath $binaryPath
+    Stop-InstalledAgentProcesses -BinaryPath $legacyBinaryPath
 
     $usedBundledBinary = $false
     if ($bundledBinary -and -not $PreferSourceBuild) {

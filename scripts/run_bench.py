@@ -33,7 +33,8 @@ def resolve_binary_path(repo_root: Path, provided: Optional[str]) -> Path:
             return candidate.resolve()
 
     raise SystemExit(
-        "Could not find a built nuclear/autism binary under target/debug. "
+        "Could not find a built nuclear binary under target/debug. "
+        "A legacy autism compatibility binary is also accepted. "
         "Build the workspace first or pass --binary-path."
     )
 

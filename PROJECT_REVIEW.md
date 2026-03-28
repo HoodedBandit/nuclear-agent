@@ -61,7 +61,7 @@ The workspace no longer depends on `keyring 4.0.0-rc.3` or the `db-keystore -> t
 
 The CLI/TUI also gained first-class operator surfaces for resident profile memory and learned skill drafts:
 
-- `autism memory profile`
+- `nuclear memory profile`
 - `/profile`
 - `/skills [drafts|published|rejected]`
 - `/skills publish <draft-id>`
@@ -83,8 +83,8 @@ Files:
 
 The daemon can now wake missions on workspace/file changes instead of only timers. Missions carry watch metadata (`watch_path`, `watch_recursive`, `watch_fingerprint`), the autopilot loop detects file changes before dispatch, and both CLI and TUI can create watched missions directly:
 
-- `autism mission add "Watch repo" --watch src`
-- `autism mission resume <id> --watch src`
+- `nuclear mission add "Watch repo" --watch src`
+- `nuclear mission resume <id> --watch src`
 - `/watch <path> <title>`
 
 Files:
@@ -118,7 +118,7 @@ Files:
 | Daemon unit tests | `cargo test -p agent-daemon` | Pass |
 | Workspace tests | `cargo test --workspace` | Pass |
 | Workspace compile | `cargo check --workspace` | Pass |
-| Release build | `cargo build --release --bin autism` | Pass |
+| Release build | `cargo build --release --bin nuclear --bin autism` | Pass |
 | Security advisories | `cargo audit` | Pass |
 | Dependency policy | `cargo deny check advisories licenses bans` | Pass; duplicate-crate warnings remain informational |
 | Duplicate dependency review | `cargo tree --workspace --duplicates` | Reviewed; duplicates are mostly transitive/version-split |
