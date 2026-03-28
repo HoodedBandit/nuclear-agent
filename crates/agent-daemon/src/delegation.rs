@@ -52,6 +52,7 @@ pub(crate) fn resolve_delegation_tasks(
                 requested_model: task.requested_model.clone(),
                 cwd: task.cwd.clone().or_else(|| payload.cwd.clone()),
                 thinking_level: task.thinking_level.or(payload.thinking_level),
+                task_mode: task.task_mode.or(payload.task_mode),
                 output_schema_json: task.output_schema_json.clone(),
             });
             if resolved.len() > MAX_RESOLVED_SUBAGENT_RUNS {
@@ -209,7 +210,7 @@ fn all_usable_alias_targets(config: &AppConfig) -> Vec<(ModelAlias, ProviderConf
         .aliases
         .iter()
         .filter_map(|alias| {
-            let provider = config.get_provider(&alias.provider_id)?.clone();
+            let provider = config.resolve_provider(&alias.provider_id)?;
             if !config.provider_delegation_enabled(&provider.id) {
                 return None;
             }
@@ -400,12 +401,9 @@ pub(crate) fn resolve_alias_and_provider_from_config(
             .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?
             .clone(),
     };
-    let provider = config
-        .get_provider(&alias.provider_id)
-        .cloned()
-        .ok_or_else(|| {
-            ApiError::new(StatusCode::BAD_REQUEST, "alias references unknown provider")
-        })?;
+    let provider = config.resolve_provider(&alias.provider_id).ok_or_else(|| {
+        ApiError::new(StatusCode::BAD_REQUEST, "alias references unknown provider")
+    })?;
     ensure_provider_usable(&provider)?;
     Ok((alias, provider))
 }

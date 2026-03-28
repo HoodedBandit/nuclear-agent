@@ -1,0 +1,6 @@
+# path<TAB>max_lines
+crates/agent-core/src/lib.rs	2500
+crates/agent-cli/src/main.rs	8000
+crates/agent-providers/src/lib.rs	4200
+crates/agent-storage/src/lib.rs	2500
+crates/agent-daemon/static/dashboard.js	3600

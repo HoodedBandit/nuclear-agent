@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use anyhow::anyhow;
 use agent_core::{
     InputAttachment, LogEntry, PermissionPreset, RunTaskRequest, RunTaskResponse,
-    RunTaskStreamEvent, ThinkingLevel,
+    RunTaskStreamEvent, TaskMode, ThinkingLevel,
 };
+use anyhow::anyhow;
 use chrono::{DateTime, Utc};
-use tokio::task::JoinHandle;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use url::form_urlencoded;
 
@@ -29,6 +29,7 @@ pub(super) struct PromptTask {
     pub(super) session_id: Option<String>,
     pub(super) cwd: PathBuf,
     pub(super) thinking_level: Option<ThinkingLevel>,
+    pub(super) task_mode: Option<TaskMode>,
     pub(super) attachments: Vec<InputAttachment>,
     pub(super) permission_preset: Option<PermissionPreset>,
     pub(super) output_schema_json: Option<String>,
@@ -49,6 +50,7 @@ pub(super) fn spawn_prompt_task(client: DaemonClient, task: PromptTask, sender: 
                     session_id: task.session_id,
                     cwd: Some(task.cwd),
                     thinking_level: task.thinking_level,
+                    task_mode: task.task_mode,
                     attachments: task.attachments,
                     permission_preset: task.permission_preset,
                     output_schema_json: task.output_schema_json,

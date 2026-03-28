@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agent Daemon Dashboard</title>
+  <title>Nuclear Agent Control Room</title>
   <link rel="stylesheet" href="/dashboard.css">
 </head>
 <body id="top">
@@ -12,10 +12,10 @@
     <header class="hero">
       <div class="hero__copy">
         <p class="eyebrow">Resident operator console</p>
-        <h1>Local control room</h1>
+        <h1>Nuclear Agent control room</h1>
         <p class="lede">
-          Manage missions, schedules, approvals, memory review, learned skills, delegation targets,
-          and connector activity through the live daemon.
+          Manage coding sessions, repo context, missions, approvals, memory review, learned skills,
+          and live integrations through the daemon.
         </p>
         <div class="hero__chips" id="hero-chips"></div>
       </div>
@@ -41,31 +41,22 @@
       <div class="dashboard-nav__intro">
         <p class="dashboard-nav__eyebrow">Quick start</p>
         <p class="dashboard-nav__copy">
-          Connect with the daemon token, then jump straight to providers, connectors, missions,
-          memory, delegation, or recent events.
+          Connect with the daemon token, then use guided setup for providers, connectors, and
+          safety defaults before dropping into missions, chat, and operator controls.
         </p>
       </div>
-      <div class="dashboard-nav__links">
-        <a href="#overview">Overview</a>
-        <a href="#controls">Settings & Autonomy</a>
-        <a href="#missions">Missions</a>
-        <a href="#approvals">Approvals</a>
-        <a href="#memory">Memory</a>
-        <a href="#skills">Skills</a>
-        <a href="#profile">Profile</a>
-        <a href="#connectors">Connectors</a>
-        <a href="#delegation">Delegation</a>
-        <a href="#providers">Providers</a>
-        <a href="#run-task">Run Task</a>
-        <a href="#sessions">Sessions</a>
-        <a href="#logs">Logs</a>
-        <a href="#mcp">MCP</a>
-        <a href="#events">Events</a>
+      <div class="dashboard-tabs" id="dashboard-tabs" role="tablist" aria-label="Dashboard views">
+        <button type="button" class="dashboard-tab is-active" data-dashboard-tab-trigger="overview" role="tab" aria-selected="true">Overview</button>
+        <button type="button" class="dashboard-tab" data-dashboard-tab-trigger="chat" role="tab" aria-selected="false">Chat</button>
+        <button type="button" class="dashboard-tab" data-dashboard-tab-trigger="operations" role="tab" aria-selected="false">Operations</button>
+        <button type="button" class="dashboard-tab" data-dashboard-tab-trigger="integrations" role="tab" aria-selected="false">Integrations</button>
+        <button type="button" class="dashboard-tab" data-dashboard-tab-trigger="system" role="tab" aria-selected="false">System</button>
       </div>
+      <div id="dashboard-tab-links" class="dashboard-nav__links"></div>
     </nav>
 
     <main class="layout">
-      <section id="overview" class="panel panel--status">
+      <section id="overview" class="panel panel--status" data-dashboard-tab="overview">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Overview</p>
@@ -91,7 +82,68 @@
         </div>
       </section>
 
-      <section id="controls" class="panel panel--controls">
+      <section id="workspace" class="panel panel--workspace" data-dashboard-tab="overview">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Coding workflow</p>
+            <h2>Workspace intelligence</h2>
+          </div>
+          <p id="workspace-summary" class="panel__meta">No workspace scan yet</p>
+        </div>
+        <form id="workspace-inspect-form" class="inline-form">
+          <label class="field">
+            <span>Workspace path</span>
+            <input id="workspace-path" type="text" autocomplete="off" spellcheck="false" placeholder="Leave blank for daemon cwd or paste a repo path">
+          </label>
+          <div class="auth-panel__actions">
+            <button type="submit">Inspect workspace</button>
+            <button id="workspace-use-daemon-cwd" type="button" class="button-muted">Use daemon cwd</button>
+          </div>
+        </form>
+        <div id="workspace-summary-cards" class="card-grid card-grid--compact u-mt-14"></div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Repo signals</h3>
+            </div>
+            <div id="workspace-overview" class="stacked-list"></div>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Hotspots</h3>
+            </div>
+            <div id="workspace-hotspots" class="stacked-list"></div>
+          </article>
+        </div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Language mix</h3>
+            </div>
+            <div id="workspace-languages" class="stacked-list"></div>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Recent commits</h3>
+            </div>
+            <div id="workspace-commits" class="stacked-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="setup" class="panel panel--setup" data-dashboard-tab="overview">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Guided setup</p>
+            <h2>Operator launchpad</h2>
+          </div>
+          <p id="setup-summary" class="panel__meta">No setup data yet</p>
+        </div>
+        <div id="setup-checklist" class="stacked-list"></div>
+        <div id="settings-overview-cards" class="card-grid u-mt-14"></div>
+      </section>
+
+      <section id="controls" class="panel panel--controls" data-dashboard-tab="overview">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Control</p>
@@ -147,7 +199,7 @@
         </div>
       </section>
 
-      <section id="missions" class="panel panel--missions">
+      <section id="missions" class="panel panel--missions" data-dashboard-tab="operations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Execution</p>
@@ -173,7 +225,7 @@
         </div>
       </section>
 
-      <section id="approvals" class="panel panel--approvals">
+      <section id="approvals" class="panel panel--approvals" data-dashboard-tab="operations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Human gate</p>
@@ -184,7 +236,7 @@
         <div id="approvals-list" class="stacked-list"></div>
       </section>
 
-      <section id="memory" class="panel panel--memory">
+      <section id="memory" class="panel panel--memory" data-dashboard-tab="operations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Memory</p>
@@ -195,7 +247,7 @@
         <div id="memory-list" class="stacked-list"></div>
       </section>
 
-      <section id="skills" class="panel panel--skills">
+      <section id="skills" class="panel panel--skills" data-dashboard-tab="operations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Procedural memory</p>
@@ -206,7 +258,7 @@
         <div id="skills-list" class="stacked-list"></div>
       </section>
 
-      <section id="profile" class="panel panel--profile">
+      <section id="profile" class="panel panel--profile" data-dashboard-tab="operations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Profile memory</p>
@@ -217,33 +269,129 @@
         <div id="profile-list" class="stacked-list"></div>
       </section>
 
-      <section id="connectors" class="panel panel--connectors">
+      <section id="connectors" class="panel panel--connectors" data-dashboard-tab="integrations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Integrations</p>
-            <h2>Connector roster</h2>
+            <h2>Guided connector setup</h2>
           </div>
           <p id="connector-summary" class="panel__meta">No connector data yet</p>
         </div>
         <div id="connector-cards" class="card-grid card-grid--compact"></div>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Type</th>
-                <th>Name</th>
-                <th>Enabled</th>
-                <th>Target</th>
-                <th>Detail</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="connectors-body"></tbody>
-          </table>
+        <div class="split-grid split-grid--connector-workspace">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <div>
+                <h3>Connector catalog</h3>
+                <p class="panel__meta panel__meta--inline">Pick a connector type and the workbench will load the right steps, docs, and fields.</p>
+              </div>
+            </div>
+            <div id="connector-guide-grid" class="connector-guide-grid"></div>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <div>
+                <h3 id="connector-workbench-title">Quick setup</h3>
+                <p id="connector-workbench-status" class="panel__meta panel__meta--inline">Choose a connector type to begin.</p>
+              </div>
+              <div id="connector-workbench-links" class="inline-actions"></div>
+            </div>
+            <p id="connector-workbench-intro" class="card-copy">
+              This workbench keeps the initial setup short, preserves existing secrets when you edit a connector,
+              and leaves advanced policy fields tucked away until you actually need them.
+            </p>
+            <ol id="connector-workbench-steps" class="setup-steps"></ol>
+            <form id="connector-quick-form" class="inline-form">
+              <div id="connector-basic-fields" class="field-grid"></div>
+              <details class="advanced-details">
+                <summary>Advanced controls</summary>
+                <div id="connector-advanced-fields" class="field-grid u-mt-14"></div>
+              </details>
+              <div class="auth-panel__actions">
+                <button id="connector-open-portal" type="button" class="button-muted">Open setup portal</button>
+                <button id="connector-open-docs" type="button" class="button-ghost">Open docs</button>
+                <button id="connector-save" type="submit">Save connector</button>
+                <button id="connector-reset" type="button" class="button-ghost">Reset</button>
+              </div>
+            </form>
+          </article>
+        </div>
+        <div class="subpanel u-mt-22">
+          <div class="subpanel__header">
+            <div>
+              <h3>Installed connectors</h3>
+              <p class="panel__meta panel__meta--inline">Operational state, saved policy, and quick actions for every configured connector.</p>
+            </div>
+          </div>
+          <div id="connector-roster" class="stacked-list"></div>
         </div>
       </section>
 
-      <section id="delegation" class="panel panel--delegation">
+      <section id="plugins" class="panel panel--plugins" data-dashboard-tab="integrations">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Extensibility</p>
+            <h2>Managed plugins</h2>
+          </div>
+          <p id="plugins-summary" class="panel__meta">No plugin data yet</p>
+        </div>
+        <div class="split-grid">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Install a plugin source</h3>
+            </div>
+            <form id="plugin-install-form" class="inline-form">
+              <label class="field">
+                <span>Source</span>
+                <input id="plugin-install-path" type="text" autocomplete="off" spellcheck="false" placeholder="C:\plugins\echo-toolkit or git+https://repo.git">
+              </label>
+              <div class="field-grid">
+                <label class="toggle">
+                  <input id="plugin-install-enabled" type="checkbox" checked>
+                  <span>Enable after install</span>
+                </label>
+                <label class="toggle">
+                  <input id="plugin-install-trusted" type="checkbox">
+                  <span>Trust runtime projection</span>
+                </label>
+                <label class="toggle">
+                  <input id="plugin-install-pinned" type="checkbox">
+                  <span>Pin version</span>
+                </label>
+              </div>
+              <div class="field-grid">
+                <label class="toggle">
+                  <input id="plugin-install-grant-shell" type="checkbox">
+                  <span>Grant shell</span>
+                </label>
+                <label class="toggle">
+                  <input id="plugin-install-grant-network" type="checkbox">
+                  <span>Grant network</span>
+                </label>
+                <label class="toggle">
+                  <input id="plugin-install-grant-full-disk" type="checkbox">
+                  <span>Grant full-disk</span>
+                </label>
+              </div>
+              <p class="panel__meta panel__meta--inline">
+                Trust review is tied to the installed package hash. Updates require a fresh review before runtime projection resumes.
+              </p>
+              <div class="auth-panel__actions">
+                <button type="submit">Install plugin</button>
+              </div>
+            </form>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Doctor reports</h3>
+            </div>
+            <div id="plugins-health" class="stacked-list"></div>
+          </article>
+        </div>
+        <div id="plugins-list" class="stacked-list"></div>
+      </section>
+
+      <section id="delegation" class="panel panel--delegation" data-dashboard-tab="integrations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Provider mesh</p>
@@ -254,22 +402,40 @@
         <div id="delegation-list" class="card-grid card-grid--compact"></div>
       </section>
 
-      <section id="providers" class="panel panel--providers">
+      <section id="providers" class="panel panel--providers" data-dashboard-tab="integrations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Infrastructure</p>
-            <h2>Providers &amp; Aliases</h2>
+            <h2>Guided provider setup</h2>
           </div>
           <p id="providers-summary" class="panel__meta">No provider data yet</p>
         </div>
-        <div class="split-grid">
+        <div id="provider-overview-cards" class="card-grid card-grid--compact"></div>
+        <div class="split-grid split-grid--provider-workspace">
           <article class="subpanel">
             <div class="subpanel__header">
-              <h3>Provider setup</h3>
+              <div>
+                <h3>Provider catalog</h3>
+                <p class="panel__meta panel__meta--inline">Choose a provider and the workbench will load the recommended sign-in path, defaults, and docs.</p>
+              </div>
             </div>
-            <p id="provider-form-mode" class="panel__meta">Create or update a provider, then optionally create an alias.</p>
+            <div id="provider-preset-grid" class="provider-preset-grid"></div>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <div>
+                <h3 id="provider-workbench-title">Quick provider setup</h3>
+                <p id="provider-workbench-status" class="panel__meta panel__meta--inline">Choose a provider preset to begin.</p>
+              </div>
+              <div id="provider-workbench-links" class="inline-actions"></div>
+            </div>
+            <p id="provider-workbench-intro" class="card-copy">
+              Start with a preset instead of wiring every provider field by hand. The workbench keeps common setup in front and hides low-frequency configuration in the advanced drawer.
+            </p>
+            <ol id="provider-workbench-steps" class="setup-steps"></ol>
+            <p id="provider-form-mode" class="panel__meta panel__meta--inline">Create or update a provider, then optionally create an alias.</p>
             <form id="provider-form" class="inline-form">
-              <div class="field-grid">
+              <div class="field-grid field-grid--two">
                 <label class="field">
                   <span>Preset</span>
                   <select id="provider-preset">
@@ -284,70 +450,37 @@
                   </select>
                 </label>
                 <label class="field">
-                  <span>Provider ID</span>
-                  <input id="provider-id" type="text" autocomplete="off" placeholder="openai">
-                </label>
-                <label class="field">
                   <span>Display name</span>
                   <input id="provider-name" type="text" autocomplete="off" placeholder="OpenAI">
                 </label>
               </div>
-              <div class="field-grid">
-                <label class="field">
-                  <span>Kind</span>
-                  <select id="provider-kind">
-                    <option value="open_ai_compatible">open_ai_compatible</option>
-                    <option value="chat_gpt_codex">chat_gpt_codex</option>
-                    <option value="anthropic">anthropic</option>
-                    <option value="ollama">ollama</option>
-                  </select>
-                </label>
+              <div class="field-grid field-grid--two">
                 <label class="field">
                   <span>Base URL</span>
                   <input id="provider-base-url" type="text" autocomplete="off" placeholder="https://api.openai.com/v1">
                 </label>
-                <label class="field">
-                  <span>Auth mode</span>
-                  <select id="provider-auth-mode">
-                    <option value="api_key">api_key</option>
-                    <option value="oauth">oauth</option>
-                    <option value="none">none</option>
-                  </select>
+                <label id="provider-api-key-row" class="field">
+                  <span>API key / secret</span>
+                  <input id="provider-api-key" type="password" autocomplete="new-password" placeholder="Optional for api_key mode">
                 </label>
               </div>
-              <div class="field-grid">
-                <label class="field">
-                  <span>Default model</span>
-                  <input id="provider-default-model" type="text" autocomplete="off" placeholder="gpt-4.1">
-                </label>
-                <label class="toggle">
-                  <input id="provider-local" type="checkbox">
-                  <span>Local provider</span>
-                </label>
-              </div>
-              <label class="field">
-                <span>API key / secret</span>
-                <input id="provider-api-key" type="password" autocomplete="new-password" placeholder="Optional for api_key mode">
-              </label>
-              <div class="provider-auth-toolbar">
+              <div id="provider-browser-auth-toolbar" class="provider-auth-toolbar">
                 <button id="provider-browser-auth" type="button" class="button-muted">Sign in with browser</button>
                 <p id="provider-browser-auth-status" class="provider-auth-status">
                   Browser sign-in is available for ChatGPT Codex and Claude.
                 </p>
               </div>
-              <label class="field">
-                <span>OAuth config JSON (advanced)</span>
-                <textarea id="provider-oauth-config" rows="4" autocomplete="off" spellcheck="false" placeholder='{"client_id":"...","authorization_url":"...","token_url":"...","scopes":[]}'></textarea>
-              </label>
-              <label class="field">
-                <span>OAuth token JSON (advanced)</span>
-                <textarea id="provider-oauth-token" rows="4" autocomplete="off" spellcheck="false" placeholder='{"access_token":"...","refresh_token":"..."}'></textarea>
-              </label>
-              <div class="field-grid">
+              <div class="field-grid field-grid--two">
+                <label class="field">
+                  <span>Default model</span>
+                  <input id="provider-default-model" type="text" autocomplete="off" placeholder="gpt-5">
+                </label>
                 <label class="field">
                   <span>Alias name</span>
                   <input id="provider-alias-name" type="text" autocomplete="off" placeholder="main">
                 </label>
+              </div>
+              <div class="field-grid field-grid--two">
                 <label class="field">
                   <span>Alias model</span>
                   <input id="provider-alias-model" type="text" autocomplete="off" placeholder="Uses default model if blank">
@@ -358,61 +491,111 @@
                 </label>
               </div>
               <label id="provider-set-main-row" class="toggle">
-                <input id="provider-set-main" type="checkbox" checked>
-                <span>Set alias as main</span>
+                <input id="provider-set-main" type="checkbox">
+                <span>Make this alias the default main target</span>
               </label>
+              <details id="provider-advanced-details" class="advanced-details">
+                <summary>Advanced provider settings</summary>
+                <div class="field-grid field-grid--two u-mt-14">
+                  <label class="field">
+                    <span>Provider ID</span>
+                    <input id="provider-id" type="text" autocomplete="off" placeholder="openai">
+                  </label>
+                  <label id="provider-kind-row" class="field">
+                    <span>Kind</span>
+                    <select id="provider-kind">
+                      <option value="open_ai_compatible">open_ai_compatible</option>
+                      <option value="chat_gpt_codex">chat_gpt_codex</option>
+                      <option value="anthropic">anthropic</option>
+                      <option value="ollama">ollama</option>
+                    </select>
+                  </label>
+                  <label id="provider-auth-mode-row" class="field">
+                    <span>Auth mode</span>
+                    <select id="provider-auth-mode">
+                      <option value="api_key">api_key</option>
+                      <option value="oauth">oauth</option>
+                      <option value="none">none</option>
+                    </select>
+                  </label>
+                  <label id="provider-local-row" class="toggle">
+                    <input id="provider-local" type="checkbox">
+                    <span>Local provider</span>
+                  </label>
+                  <label id="provider-oauth-config-row" class="field">
+                    <span>OAuth config JSON</span>
+                    <textarea id="provider-oauth-config" rows="4" autocomplete="off" spellcheck="false" placeholder='{"client_id":"...","authorization_url":"...","token_url":"...","scopes":[]}'></textarea>
+                  </label>
+                  <label id="provider-oauth-token-row" class="field">
+                    <span>OAuth token JSON</span>
+                    <textarea id="provider-oauth-token" rows="4" autocomplete="off" spellcheck="false" placeholder='{"access_token":"...","refresh_token":"..."}'></textarea>
+                  </label>
+                </div>
+              </details>
               <div class="auth-panel__actions">
-                <button id="provider-save" type="submit">Save provider</button>
+                <button id="provider-open-portal" type="button" class="button-muted">Open setup portal</button>
+                <button id="provider-open-docs" type="button" class="button-ghost">Open docs</button>
                 <button id="provider-discover-models" type="button" class="button-muted">Discover models</button>
+                <button id="provider-save" type="submit">Save provider</button>
                 <button id="provider-reset" type="button" class="button-ghost">Reset</button>
               </div>
             </form>
             <div id="provider-model-results" class="stacked-list u-mt-14"></div>
-            <div id="providers-list" class="stacked-list u-mt-14"></div>
+          </article>
+        </div>
+        <div class="split-grid split-grid--providers-lists u-mt-14">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <h3>Saved providers</h3>
+            </div>
+            <div id="providers-list" class="stacked-list"></div>
           </article>
           <article class="subpanel">
             <div class="subpanel__header">
               <h3>Aliases</h3>
             </div>
             <div id="aliases-list" class="stacked-list"></div>
-            <form id="alias-form" class="inline-form u-mt-14">
-              <div class="field-grid">
-                <label class="field">
-                  <span>Alias name</span>
-                  <input id="alias-name" type="text" autocomplete="off" placeholder="main">
-                </label>
-                <label class="field">
-                  <span>Provider ID</span>
-                  <input id="alias-provider" type="text" autocomplete="off" placeholder="anthropic">
-                </label>
-                <label class="field">
-                  <span>Model</span>
-                  <input id="alias-model" type="text" autocomplete="off" placeholder="claude-sonnet-4-20250514">
-                </label>
-              </div>
-              <div class="field-grid">
-                <label class="field">
-                  <span>Description</span>
-                  <input id="alias-description" type="text" autocomplete="off" placeholder="optional">
-                </label>
+            <details class="advanced-details u-mt-14">
+              <summary>Create or edit an extra alias</summary>
+              <form id="alias-form" class="inline-form u-mt-14">
+                <div class="field-grid field-grid--two">
+                  <label class="field">
+                    <span>Alias name</span>
+                    <input id="alias-name" type="text" autocomplete="off" placeholder="main">
+                  </label>
+                  <label class="field">
+                    <span>Provider</span>
+                    <select id="alias-provider"></select>
+                  </label>
+                </div>
+                <div class="field-grid field-grid--two">
+                  <label class="field">
+                    <span>Model</span>
+                    <input id="alias-model" type="text" autocomplete="off" placeholder="gpt-5">
+                  </label>
+                  <label class="field">
+                    <span>Description</span>
+                    <input id="alias-description" type="text" autocomplete="off" placeholder="optional">
+                  </label>
+                </div>
                 <label class="toggle">
                   <input id="alias-main" type="checkbox">
                   <span>Set as main alias</span>
                 </label>
-              </div>
-              <div class="auth-panel__actions">
-                <button id="alias-submit" type="submit">Save alias</button>
-              </div>
-            </form>
+                <div class="auth-panel__actions">
+                  <button id="alias-submit" type="submit">Save alias</button>
+                </div>
+              </form>
+            </details>
           </article>
         </div>
       </section>
 
-      <section id="memory-tools" class="panel panel--memory-tools">
+      <section id="memory-tools" class="panel panel--memory-tools" data-dashboard-tab="operations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Memory tools</p>
-            <h2>Search, create &amp; delete</h2>
+            <h2>Search, create, rebuild &amp; delete</h2>
           </div>
         </div>
         <div class="split-grid">
@@ -469,9 +652,32 @@
             </form>
           </article>
         </div>
+        <article class="subpanel u-mt-14">
+          <div class="subpanel__header">
+            <div>
+              <h3>Rebuild memory from ledger</h3>
+              <p class="panel__meta panel__meta--inline">Re-scan persisted transcripts to refresh derived memory. Leave session blank to rebuild all sessions.</p>
+            </div>
+          </div>
+          <form id="memory-rebuild-form" class="inline-form">
+            <div class="field-grid field-grid--two">
+              <label class="field">
+                <span>Session ID</span>
+                <input id="memory-rebuild-session-id" type="text" autocomplete="off" spellcheck="false" placeholder="Optional session id">
+              </label>
+              <label class="toggle">
+                <input id="memory-rebuild-embeddings" type="checkbox">
+                <span>Recompute embeddings</span>
+              </label>
+            </div>
+            <div class="auth-panel__actions">
+              <button type="submit">Rebuild memory</button>
+            </div>
+          </form>
+        </article>
       </section>
 
-      <section id="permissions" class="panel panel--permissions">
+      <section id="permissions" class="panel panel--permissions" data-dashboard-tab="system">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Security</p>
@@ -528,74 +734,13 @@
         </div>
       </section>
 
-      <section id="connector-add" class="panel panel--connector-add">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Integrations</p>
-            <h2>Add / Delete Connector</h2>
-          </div>
-        </div>
-        <form id="connector-add-form" class="inline-form">
-          <div class="field-grid">
-            <label class="field">
-              <span>Connector type</span>
-              <select id="connector-add-type">
-                <option value="telegram">telegram</option>
-                <option value="discord">discord</option>
-                <option value="slack">slack</option>
-                <option value="signal">signal</option>
-                <option value="home-assistant">home-assistant</option>
-                <option value="webhook">webhook</option>
-                <option value="inbox">inbox</option>
-                <option value="gmail">gmail</option>
-                <option value="brave">brave</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Name</span>
-              <input id="connector-add-name" type="text" autocomplete="off" placeholder="my-bot">
-            </label>
-            <label class="field">
-              <span>ID</span>
-              <input id="connector-add-id" type="text" autocomplete="off" placeholder="auto-generated if empty">
-            </label>
-          </div>
-          <div class="field-grid">
-            <label class="field">
-              <span>Description</span>
-              <input id="connector-add-description" type="text" autocomplete="off" placeholder="Optional description">
-            </label>
-            <label class="field">
-              <span>Alias</span>
-              <input id="connector-add-alias" type="text" autocomplete="off" placeholder="main">
-            </label>
-            <label class="field">
-              <span>Model override</span>
-              <input id="connector-add-model" type="text" autocomplete="off" placeholder="optional">
-            </label>
-            <label class="field">
-              <span>Working directory</span>
-              <input id="connector-add-cwd" type="text" autocomplete="off" placeholder="optional">
-            </label>
-          </div>
-          <label class="toggle">
-            <input id="connector-add-enabled" type="checkbox" checked>
-            <span>Enabled</span>
-          </label>
-          <div id="connector-add-fields" class="field-grid"></div>
-          <div class="auth-panel__actions">
-            <button id="connector-submit" type="submit">Save connector</button>
-            <button id="connector-reset" type="button" class="button-ghost">Reset</button>
-          </div>
-        </form>
-      </section>
-
-      <section id="run-task" class="panel panel--run-task">
+      <section id="run-task" class="panel panel--run-task" data-dashboard-tab="chat">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Execution</p>
-            <h2>Chat Workspace</h2>
+            <h2>Operator Chat</h2>
           </div>
+          <p class="panel__meta">Chat, slash commands, workspace shell, and session control in one console.</p>
         </div>
         <div class="chat-toolbar">
           <div>
@@ -604,16 +749,31 @@
           </div>
           <div class="auth-panel__actions">
             <button id="chat-make-main-button" type="button" class="button-ghost">Make selected alias main</button>
+            <button id="chat-fork-button" type="button" class="button-ghost">Fork current chat</button>
+            <button id="chat-compact-button" type="button" class="button-ghost">Compact current chat</button>
             <button id="chat-new-session" type="button" class="button-muted">New chat</button>
           </div>
         </div>
-        <div id="chat-transcript" class="stacked-list chat-transcript"></div>
-        <form id="run-task-form" class="inline-form">
-          <label class="field">
-            <span>Prompt</span>
-            <textarea id="run-task-prompt" rows="4" placeholder="Send a message to the agent..."></textarea>
-          </label>
-          <div class="field-grid">
+        <div class="chat-command-note">
+          <div>
+            <p class="chat-command-note__title">CLI-style operator console</p>
+            <p class="chat-command-note__copy">
+              Use normal prompts, slash commands like <code>/missions</code> or <code>/review</code>,
+              and shell commands like <code>!git status</code> without leaving the dashboard.
+            </p>
+          </div>
+          <div class="inline-actions">
+            <button id="chat-status-shortcut" type="button" class="button-ghost">Status</button>
+            <button id="chat-diff-shortcut" type="button" class="button-ghost">Diff</button>
+            <button id="chat-review-shortcut" type="button" class="button-ghost">Review</button>
+            <button id="chat-copy-shortcut" type="button" class="button-ghost">Copy latest reply</button>
+          </div>
+        </div>
+        <div class="chat-transcript-frame">
+          <div id="chat-transcript" class="stacked-list chat-transcript"></div>
+        </div>
+        <form id="run-task-form" class="inline-form chat-form">
+          <div class="field-grid chat-form__controls">
             <label class="field">
               <span>Current chat alias</span>
               <select id="run-task-alias">
@@ -637,6 +797,14 @@
               </select>
             </label>
             <label class="field">
+              <span>Task mode</span>
+              <select id="run-task-mode">
+                <option value="">default</option>
+                <option value="build">build</option>
+                <option value="daily">daily</option>
+              </select>
+            </label>
+            <label class="field">
               <span>Permission preset</span>
               <select id="run-task-permission">
                 <option value="">default</option>
@@ -645,22 +813,64 @@
                 <option value="full_auto">full_auto</option>
               </select>
             </label>
+            <label class="field">
+              <span>Current workspace cwd</span>
+              <input id="chat-cwd" type="text" autocomplete="off" spellcheck="false" placeholder="Leave blank for daemon cwd">
+            </label>
           </div>
+          <div class="auth-panel__actions">
+            <button id="chat-use-daemon-cwd" type="button" class="button-ghost">Use daemon cwd</button>
+            <button id="chat-use-session-cwd" type="button" class="button-ghost">Use session cwd</button>
+            <button id="chat-use-workspace-cwd" type="button" class="button-ghost">Use inspected workspace</button>
+          </div>
+          <div class="split-grid split-grid--chat-tools u-mt-14">
+            <article class="subpanel">
+              <div class="subpanel__header">
+                <div>
+                  <h3>Attachments</h3>
+                  <p class="panel__meta panel__meta--inline">Image paths use the same path-based workflow as the CLI <code>/attach</code> command.</p>
+                </div>
+                <div class="inline-actions">
+                  <button id="chat-attachments-clear" type="button" class="button-ghost">Clear attachments</button>
+                </div>
+              </div>
+              <label class="field">
+                <span>Add image path</span>
+                <input id="chat-attachment-path" type="text" autocomplete="off" spellcheck="false" placeholder="C:\screens\bug.png">
+              </label>
+              <div class="auth-panel__actions">
+                <button id="chat-attachment-add" type="button">Add attachment</button>
+              </div>
+              <div id="chat-attachments" class="stacked-list u-mt-14"></div>
+            </article>
+            <article class="subpanel">
+              <div class="subpanel__header">
+                <div>
+                  <h3>Console output</h3>
+                  <p class="panel__meta panel__meta--inline">Slash commands and shell output land here.</p>
+                </div>
+              </div>
+              <div id="run-task-result" class="stacked-list"></div>
+            </article>
+          </div>
+          <label class="field u-mt-14">
+            <span>Prompt</span>
+            <textarea id="run-task-prompt" rows="5" placeholder="Send a message, a slash command, or a shell command..."></textarea>
+          </label>
           <div class="auth-panel__actions">
             <button type="submit">Send</button>
             <button id="chat-rename-button" type="button" class="button-ghost">Rename current chat</button>
           </div>
         </form>
-        <div id="run-task-result" class="stacked-list u-mt-14"></div>
       </section>
 
-      <section id="sessions" class="panel panel--sessions">
+      <section id="sessions" class="panel panel--sessions" data-dashboard-tab="chat">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">History</p>
             <h2>Sessions</h2>
           </div>
-          <p id="sessions-summary" class="panel__meta">No session data yet</p>
+          <p id="sessions-summary" class="panel__meta">Resume, inspect, rename, or fork a previous run.</p>
         </div>
         <div class="table-wrap">
           <table class="data-table">
@@ -668,6 +878,7 @@
               <tr>
                 <th>Title</th>
                 <th>Alias</th>
+                <th>Mode</th>
                 <th>Model</th>
                 <th>Messages</th>
                 <th>Created</th>
@@ -681,7 +892,7 @@
         <div id="session-detail" class="stacked-list u-mt-14"></div>
       </section>
 
-      <section id="logs" class="panel panel--logs">
+      <section id="logs" class="panel panel--logs" data-dashboard-tab="system">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Diagnostics</p>
@@ -692,7 +903,7 @@
         <div id="logs-list" class="event-feed"></div>
       </section>
 
-      <section id="mcp" class="panel panel--mcp">
+      <section id="mcp" class="panel panel--mcp" data-dashboard-tab="integrations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Tools</p>
@@ -732,7 +943,7 @@
         </form>
       </section>
 
-      <section id="daemon-config" class="panel panel--daemon-config">
+      <section id="daemon-config" class="panel panel--daemon-config" data-dashboard-tab="system">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">System</p>
@@ -756,7 +967,46 @@
         </div>
       </section>
 
-      <section id="events" class="panel panel--events">
+      <section id="advanced" class="panel panel--advanced" data-dashboard-tab="system">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Coverage</p>
+            <h2>Advanced settings</h2>
+          </div>
+          <p id="advanced-config-summary" class="panel__meta">No advanced config loaded yet</p>
+        </div>
+        <div class="split-grid split-grid--advanced">
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <div>
+                <h3>Full config editor</h3>
+                <p class="panel__meta panel__meta--inline">Load the live daemon config, edit any unsupported or low-frequency setting, then save it back through validated import.</p>
+              </div>
+            </div>
+            <div class="inline-actions">
+              <button id="advanced-config-load" type="button">Load current config</button>
+              <button id="advanced-config-format" type="button" class="button-muted">Format JSON</button>
+              <button id="advanced-config-save" type="button" class="button-muted">Save full config</button>
+              <button id="advanced-config-reset" type="button" class="button-ghost">Reset editor</button>
+            </div>
+            <label class="field u-mt-14">
+              <span>AppConfig JSON</span>
+              <textarea id="advanced-config-editor" rows="24" autocomplete="off" spellcheck="false" placeholder='{"version":2,"daemon":{...}}'></textarea>
+            </label>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel__header">
+              <div>
+                <h3>Coverage map</h3>
+                <p class="panel__meta panel__meta--inline">What the guided UI already covers and what still lives in the raw editor.</p>
+              </div>
+            </div>
+            <div id="advanced-settings-coverage" class="stacked-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="events" class="panel panel--events" data-dashboard-tab="operations">
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Activity</p>
@@ -769,6 +1019,13 @@
     </main>
   </div>
 
+  <script src="/dashboard-control.js" defer></script>
+  <script src="/dashboard-connectors.js" defer></script>
+  <script src="/dashboard-providers.js" defer></script>
+  <script src="/dashboard-plugins.js" defer></script>
+  <script src="/dashboard-workspace.js" defer></script>
+  <script src="/dashboard-settings.js" defer></script>
   <script src="/dashboard.js" defer></script>
+  <script src="/dashboard-chat.js" defer></script>
 </body>
 </html>

@@ -8,7 +8,8 @@ use agent_core::{
     AuthMode, AutonomyMode, AutonomyState, BatchTaskRequest, BatchTaskResponse,
     ConversationMessage, InputAttachment, MessageRole, ModelAlias, PermissionPreset,
     ProviderConfig, ProviderReply, RunTaskResponse, RunTaskStreamEvent, SessionMessage,
-    SubAgentResult, ThinkingLevel, ToolCall, ToolExecutionOutcome, ToolExecutionRecord,
+    SessionSummary, SubAgentResult, TaskMode, ThinkingLevel, ToolCall, ToolExecutionOutcome,
+    ToolExecutionRecord,
 };
 use agent_policy::permission_summary;
 use agent_providers::{load_api_key, load_oauth_token, run_prompt};
@@ -20,18 +21,17 @@ use jsonschema::JSONSchema;
 use uuid::Uuid;
 
 use crate::{
-    append_log, build_memory_context,
+    append_log, build_memory_context, collect_hosted_plugin_tools,
     delegation::{
         delegation_targets_from_config, resolve_delegation_tasks, summarize_batch_results,
     },
     learn_from_interaction, load_enabled_skill_guidance, load_pattern_guidance,
     sync_system_profile_memories,
     tools::{
-        effective_tool_definitions, execute_tool_call, sanitize_tool_arguments,
-        sanitize_tool_call, tool_call_has_sensitive_arguments, ToolContext,
+        effective_tool_definitions, execute_tool_call, sanitize_tool_arguments, sanitize_tool_call,
+        tool_call_has_sensitive_arguments, ToolContext,
     },
-    ApiError, AppState, ExecutionCancellation, MAX_TOOL_LOOP_ITERATIONS,
-    REPEATED_TOOL_BATCH_LIMIT,
+    ApiError, AppState, ExecutionCancellation, MAX_TOOL_LOOP_ITERATIONS, REPEATED_TOOL_BATCH_LIMIT,
 };
 
 pub(crate) struct TaskRequestInput {
@@ -42,6 +42,7 @@ pub(crate) struct TaskRequestInput {
     pub(crate) thinking_level: Option<ThinkingLevel>,
     pub(crate) attachments: Vec<InputAttachment>,
     pub(crate) permission_preset: Option<PermissionPreset>,
+    pub(crate) task_mode: Option<TaskMode>,
     pub(crate) output_schema_json: Option<String>,
     pub(crate) persist: bool,
     pub(crate) background: bool,
@@ -64,6 +65,7 @@ pub(crate) struct ResolvedSubAgentTask {
     pub(crate) requested_model: Option<String>,
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) thinking_level: Option<ThinkingLevel>,
+    pub(crate) task_mode: Option<TaskMode>,
     pub(crate) output_schema_json: Option<String>,
 }
 
@@ -97,6 +99,7 @@ struct PersistExecutionInput<'a> {
     reply: &'a ProviderReply,
     transcript_messages: &'a [ConversationMessage],
     is_new_session: bool,
+    task_mode: Option<TaskMode>,
     cwd: &'a PathBuf,
 }
 
@@ -130,6 +133,7 @@ where
         thinking_level,
         attachments,
         permission_preset,
+        task_mode,
         output_schema_json,
         persist,
         background,
@@ -139,7 +143,13 @@ where
     ensure_execution_active(cancellation.as_ref())?;
     let is_new_session = session_id.is_none();
     let session_id = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let cwd = resolve_request_cwd(cwd)?;
+    let existing_session = if persist {
+        state.storage.get_session(&session_id)?
+    } else {
+        None
+    };
+    let task_mode = effective_task_mode(task_mode, existing_session.as_ref());
+    let cwd = resolve_request_cwd(effective_session_cwd(cwd, existing_session.as_ref()))?;
     let mut messages =
         load_history_messages(state, if persist { Some(&session_id) } else { None })?;
     let permission_preset = resolve_permission_preset(state, permission_preset).await;
@@ -159,6 +169,7 @@ where
         cwd.clone(),
         permission_preset,
         thinking_level,
+        task_mode,
         background,
         delegation_depth,
     )
@@ -170,6 +181,7 @@ where
             &cwd,
             thinking_level,
             permission_preset,
+            task_mode,
             output_schema_json.as_deref(),
             &skill_guidance,
             &delegation_hint,
@@ -223,12 +235,12 @@ where
     emit_stream_event(
         emit,
         RunTaskStreamEvent::SessionStarted {
-        session_id: session_id.clone(),
-        alias: alias.alias.clone(),
-        provider_id: provider.id.clone(),
-        model: requested_model
-            .clone()
-            .unwrap_or_else(|| alias.model.clone()),
+            session_id: session_id.clone(),
+            alias: alias.alias.clone(),
+            provider_id: provider.id.clone(),
+            model: requested_model
+                .clone()
+                .unwrap_or_else(|| alias.model.clone()),
         },
     )
     .await?;
@@ -258,6 +270,7 @@ where
                 reply: &execution.reply,
                 transcript_messages: &execution.transcript_messages,
                 is_new_session,
+                task_mode,
                 cwd: &cwd,
             },
         )?;
@@ -352,6 +365,7 @@ pub(crate) async fn execute_batch_request(
                     thinking_level: task.thinking_level,
                     attachments: Vec::new(),
                     permission_preset: options.permission_preset,
+                    task_mode: task.task_mode,
                     output_schema_json: task.output_schema_json,
                     persist: false,
                     background: options.background,
@@ -470,7 +484,7 @@ where
         wait_for_rate_limit(state, &provider.id, cancellation).await?;
         ensure_execution_active(cancellation)?;
         let reply = run_prompt_with_cancellation(
-            &state.http_client,
+            state,
             provider,
             &messages,
             Some(model),
@@ -649,7 +663,7 @@ async fn wait_for_rate_limit(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_prompt_with_cancellation(
-    client: &reqwest::Client,
+    state: &AppState,
     provider: &ProviderConfig,
     messages: &[ConversationMessage],
     requested_model: Option<&str>,
@@ -661,13 +675,57 @@ async fn run_prompt_with_cancellation(
     if let Some(cancellation) = cancellation.cloned() {
         tokio::select! {
             _ = cancellation.cancelled() => Err(execution_cancelled_error()),
-            reply = run_prompt(client, provider, messages, requested_model, session_id, thinking_level, tools) => reply.map_err(ApiError::from),
+            reply = execute_provider_prompt(state, provider, messages, requested_model, session_id, thinking_level, tools) => reply,
         }
     } else {
-        run_prompt(client, provider, messages, requested_model, session_id, thinking_level, tools)
-            .await
-            .map_err(ApiError::from)
+        execute_provider_prompt(
+            state,
+            provider,
+            messages,
+            requested_model,
+            session_id,
+            thinking_level,
+            tools,
+        )
+        .await
     }
+}
+
+async fn execute_provider_prompt(
+    state: &AppState,
+    provider: &ProviderConfig,
+    messages: &[ConversationMessage],
+    requested_model: Option<&str>,
+    session_id: Option<&str>,
+    thinking_level: Option<ThinkingLevel>,
+    tools: &[agent_core::ToolDefinition],
+) -> Result<ProviderReply, ApiError> {
+    let config = state.config.read().await.clone();
+    if let Some(result) = crate::plugins::plugin_provider_prompt(
+        &config,
+        &provider.id,
+        messages,
+        requested_model,
+        session_id,
+        thinking_level,
+        tools,
+    )
+    .await
+    {
+        return result;
+    }
+
+    run_prompt(
+        &state.http_client,
+        provider,
+        messages,
+        requested_model,
+        session_id,
+        thinking_level,
+        tools,
+    )
+    .await
+    .map_err(ApiError::from)
 }
 
 async fn execute_tool_call_with_cancellation(
@@ -686,10 +744,7 @@ async fn execute_tool_call_with_cancellation(
     }
 }
 
-async fn emit_stream_event<F, Fut>(
-    emit: &mut F,
-    event: RunTaskStreamEvent,
-) -> Result<(), ApiError>
+async fn emit_stream_event<F, Fut>(emit: &mut F, event: RunTaskStreamEvent) -> Result<(), ApiError>
 where
     F: FnMut(RunTaskStreamEvent) -> Fut,
     Fut: Future<Output = bool>,
@@ -802,6 +857,7 @@ fn persist_execution(state: &AppState, input: PersistExecutionInput<'_>) -> Resu
         reply,
         transcript_messages,
         is_new_session,
+        task_mode,
         cwd,
     } = input;
     let initial_title = is_new_session.then(|| derive_session_title(prompt));
@@ -851,6 +907,7 @@ fn persist_execution(state: &AppState, input: PersistExecutionInput<'_>) -> Resu
             alias,
             provider_id: &provider.id,
             model: &reply.model,
+            task_mode,
             cwd: Some(cwd.as_path()),
             messages: &persisted_messages,
         })?;
@@ -896,12 +953,27 @@ fn load_history_messages(
         .collect())
 }
 
+fn effective_task_mode(
+    requested: Option<TaskMode>,
+    session: Option<&SessionSummary>,
+) -> Option<TaskMode> {
+    requested.or_else(|| session.and_then(|summary| summary.task_mode))
+}
+
+fn effective_session_cwd(
+    requested: Option<PathBuf>,
+    session: Option<&SessionSummary>,
+) -> Option<PathBuf> {
+    requested.or_else(|| session.and_then(|summary| summary.cwd.clone()))
+}
+
 async fn tool_context(
     state: &AppState,
     alias: &ModelAlias,
     cwd: PathBuf,
     permission_preset: PermissionPreset,
     thinking_level: Option<ThinkingLevel>,
+    task_mode: Option<TaskMode>,
     background: bool,
     delegation_depth: u8,
 ) -> ToolContext {
@@ -922,6 +994,7 @@ async fn tool_context(
     } else {
         config.delegation.clone()
     };
+    let plugin_tools = collect_hosted_plugin_tools(&config);
     ToolContext {
         state: state.clone(),
         cwd,
@@ -931,9 +1004,11 @@ async fn tool_context(
         http_client: state.http_client.clone(),
         mcp_servers: config.mcp_servers.clone(),
         app_connectors: config.app_connectors.clone(),
+        plugin_tools,
         brave_connectors: config.brave_connectors.clone(),
         current_alias: Some(alias.alias.clone()),
         default_thinking_level: thinking_level,
+        task_mode,
         delegation,
         delegation_targets,
         delegation_depth,
@@ -1021,6 +1096,7 @@ fn system_message(
     cwd: &FsPath,
     thinking_level: Option<ThinkingLevel>,
     permission_preset: PermissionPreset,
+    task_mode: Option<TaskMode>,
     output_schema_json: Option<&str>,
     skill_guidance: &str,
     delegation_hint: &str,
@@ -1036,6 +1112,20 @@ fn system_message(
         " Current permission preset: {}.",
         permission_summary(permission_preset)
     );
+    let task_mode_hint = task_mode.map(|task_mode| {
+        format!(
+            " Current task mode: {}. {}",
+            task_mode.as_str(),
+            match task_mode {
+                TaskMode::Build => {
+                    "Prioritize repo inspection, precise edits, verification, and concise engineering summaries."
+                }
+                TaskMode::Daily => {
+                    "Prioritize research, planning, writing, follow-through, and practical next steps."
+                }
+            }
+        )
+    });
     let structured_output_hint = output_schema_json.map(|schema| {
         format!(
             " When you produce the final answer, emit valid JSON only and ensure it matches this schema: {}",
@@ -1066,10 +1156,11 @@ fn system_message(
     ConversationMessage {
         role: MessageRole::System,
         content: format!(
-            "You are a local coding agent running in {}. Use the available tools when you need filesystem, git, environment, shell, or network access. Prefer apply_patch for precise edits and write_file only for full rewrites or new files. Prefer accurate tool use over guessing. Do not repeat an identical successful tool call batch; after a successful change, summarize completion instead of calling the same tool again.{}{}{}{}{}{}",
+            "You are a local work agent running in {}. Handle coding and repo tasks with rigorous engineering discipline, and handle everyday tasks such as research, planning, writing, and operational follow-up with concise, practical help. Use the available tools when you need filesystem, git, environment, shell, or network access. For code changes, prefer apply_patch for precise edits and write_file only for full rewrites or new files. Prefer accurate tool use over guessing. Do not repeat an identical successful tool call batch; after a successful change, summarize completion instead of calling the same tool again.{}{}{}{}{}{}{}",
             cwd.display(),
             thinking_hint.unwrap_or_default(),
             permission_hint,
+            task_mode_hint.unwrap_or_default(),
             structured_output_hint.unwrap_or_default(),
             agents_hint,
             skills_hint,
@@ -1201,9 +1292,29 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitized_provider_payload, sanitized_tool_calls};
-    use agent_core::ToolCall;
+    use super::{
+        effective_session_cwd, effective_task_mode, sanitized_provider_payload,
+        sanitized_tool_calls, system_message,
+    };
+    use agent_core::{PermissionPreset, SessionSummary, TaskMode, ToolCall};
+    use chrono::Utc;
     use serde_json::Value;
+    use std::path::{Path, PathBuf};
+
+    fn session_summary(task_mode: Option<TaskMode>, cwd: Option<&str>) -> SessionSummary {
+        SessionSummary {
+            id: "session-1".to_string(),
+            title: Some("Test".to_string()),
+            alias: "main".to_string(),
+            provider_id: "openai".to_string(),
+            model: "gpt-5.4".to_string(),
+            task_mode,
+            message_count: 0,
+            cwd: cwd.map(PathBuf::from),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
 
     #[test]
     fn sanitized_tool_calls_redacts_secret_fields() {
@@ -1245,6 +1356,88 @@ mod tests {
         assert_eq!(
             sanitized_provider_payload(&tool_calls, Some("{\"raw\":true}".to_string())),
             Some("{\"raw\":true}".to_string())
+        );
+    }
+
+    #[test]
+    fn system_message_frames_everyday_tasks_as_first_class() {
+        let message = system_message(
+            Path::new("."),
+            None,
+            PermissionPreset::AutoEdit,
+            None,
+            None,
+            "",
+            "",
+        );
+
+        assert!(message.content.contains("local work agent"));
+        assert!(message.content.contains("coding and repo tasks"));
+        assert!(message
+            .content
+            .contains("research, planning, writing, and operational follow-up"));
+    }
+
+    #[test]
+    fn system_message_includes_build_mode_hint() {
+        let message = system_message(
+            Path::new("."),
+            None,
+            PermissionPreset::AutoEdit,
+            Some(TaskMode::Build),
+            None,
+            "",
+            "",
+        );
+
+        assert!(message.content.contains("Current task mode: build."));
+        assert!(message
+            .content
+            .contains("Prioritize repo inspection, precise edits, verification"));
+    }
+
+    #[test]
+    fn system_message_includes_daily_mode_hint() {
+        let message = system_message(
+            Path::new("."),
+            None,
+            PermissionPreset::AutoEdit,
+            Some(TaskMode::Daily),
+            None,
+            "",
+            "",
+        );
+
+        assert!(message.content.contains("Current task mode: daily."));
+        assert!(message
+            .content
+            .contains("Prioritize research, planning, writing, follow-through"));
+    }
+
+    #[test]
+    fn effective_task_mode_prefers_explicit_request_over_session() {
+        let session = session_summary(Some(TaskMode::Daily), Some("J:/repo"));
+        assert_eq!(
+            effective_task_mode(Some(TaskMode::Build), Some(&session)),
+            Some(TaskMode::Build)
+        );
+    }
+
+    #[test]
+    fn effective_task_mode_falls_back_to_session_setting() {
+        let session = session_summary(Some(TaskMode::Daily), Some("J:/repo"));
+        assert_eq!(
+            effective_task_mode(None, Some(&session)),
+            Some(TaskMode::Daily)
+        );
+    }
+
+    #[test]
+    fn effective_session_cwd_falls_back_to_session_cwd() {
+        let session = session_summary(Some(TaskMode::Daily), Some("J:/repo"));
+        assert_eq!(
+            effective_session_cwd(None, Some(&session)),
+            Some(PathBuf::from("J:/repo"))
         );
     }
 }

@@ -240,7 +240,7 @@ mod tests {
                 .as_nanos()
         );
         let root = std::env::temp_dir()
-            .join(format!("autism-policy-test-{unique}"))
+            .join(format!("nuclear-policy-test-{unique}"))
             .join("workspace");
         std::fs::create_dir_all(&root).unwrap();
 

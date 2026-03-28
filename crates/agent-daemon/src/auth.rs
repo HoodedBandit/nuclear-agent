@@ -509,9 +509,7 @@ fn default_browser_auth_model(kind: BrowserProviderAuthKind) -> Option<&'static 
 
 async fn bind_provider_browser_listener(kind: BrowserProviderAuthKind) -> Result<TcpListener> {
     let (preferred_port, label) = match kind {
-        BrowserProviderAuthKind::Codex => {
-            (OPENAI_BROWSER_CALLBACK_PORT, "OpenAI browser callback")
-        }
+        BrowserProviderAuthKind::Codex => (OPENAI_BROWSER_CALLBACK_PORT, "OpenAI browser callback"),
         BrowserProviderAuthKind::Claude => {
             (CLAUDE_BROWSER_CALLBACK_PORT, "Claude browser callback")
         }
@@ -576,7 +574,10 @@ async fn run_provider_browser_callback_listener(
     let (mut stream, _) = match accept {
         Ok(Ok(connection)) => connection,
         Ok(Err(error)) => {
-            let message = format!("failed to accept {} connection: {error}", auth_kind_label(kind));
+            let message = format!(
+                "failed to accept {} connection: {error}",
+                auth_kind_label(kind)
+            );
             let _ = mark_browser_auth_failed(&state, &session_id, &message).await;
             let _ = append_log(&state, "warn", "providers", &message);
             return;
@@ -935,7 +936,9 @@ fn prune_expired_browser_auth_sessions(sessions: &mut HashMap<String, BrowserAut
             BrowserProviderAuthSessionStatus::Completed
             | BrowserProviderAuthSessionStatus::Failed => session
                 .terminal_at
-                .map(|timestamp| now - timestamp <= Duration::seconds(BROWSER_AUTH_TERMINAL_TTL_SECS))
+                .map(|timestamp| {
+                    now - timestamp <= Duration::seconds(BROWSER_AUTH_TERMINAL_TTL_SECS)
+                })
                 .unwrap_or(false),
         }
     });
@@ -1363,10 +1366,7 @@ fn parse_callback_request_url(request: &str, label: &str) -> Result<Url> {
         .with_context(|| format!("failed to parse {label} URL"))
 }
 
-async fn write_redirect_response(
-    stream: &mut tokio::net::TcpStream,
-    location: &str,
-) -> Result<()> {
+async fn write_redirect_response(stream: &mut tokio::net::TcpStream, location: &str) -> Result<()> {
     let response = format!(
         "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
@@ -1476,12 +1476,7 @@ mod tests {
             .to_string();
         let headers = lines
             .filter_map(|line| line.split_once(':'))
-            .map(|(name, value)| {
-                (
-                    name.trim().to_ascii_lowercase(),
-                    value.trim().to_string(),
-                )
-            })
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
             .collect();
         CapturedHttpRequest {
             method,
@@ -1498,7 +1493,9 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("test server should bind");
-        let addr = listener.local_addr().expect("listener should have an address");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have an address");
         let status_line = status_line.to_string();
         let response_body = response_body.to_string();
         let (request_tx, request_rx) = oneshot::channel();
@@ -1539,8 +1536,14 @@ mod tests {
         assert_eq!(request.provider.base_url, DEFAULT_CHATGPT_CODEX_URL);
         assert_eq!(request.provider.auth_mode, AuthMode::OAuth);
         assert!(request.provider.oauth.is_some());
-        assert_eq!(request.provider.default_model.as_deref(), Some("gpt-5-codex"));
-        assert_eq!(alias.as_ref().map(|item| item.model.as_str()), Some("gpt-5-codex"));
+        assert_eq!(
+            request.provider.default_model.as_deref(),
+            Some("gpt-5-codex")
+        );
+        assert_eq!(
+            alias.as_ref().map(|item| item.model.as_str()),
+            Some("gpt-5-codex")
+        );
     }
 
     #[test]
@@ -1671,8 +1674,9 @@ mod tests {
             DEFAULT_ANTHROPIC_URL,
             claude_browser_oauth_config(),
         );
-        let redirect_uri =
-            format!("http://localhost:{CLAUDE_BROWSER_CALLBACK_PORT}{CLAUDE_BROWSER_CALLBACK_PATH}");
+        let redirect_uri = format!(
+            "http://localhost:{CLAUDE_BROWSER_CALLBACK_PORT}{CLAUDE_BROWSER_CALLBACK_PATH}"
+        );
         let authorization_url = build_oauth_authorization_url(
             &provider,
             &redirect_uri,
@@ -1753,11 +1757,7 @@ mod tests {
         )
         .await
         .expect("token exchange should succeed");
-        let request = parse_http_request(
-            &request_rx
-                .await
-                .expect("server should capture request"),
-        );
+        let request = parse_http_request(&request_rx.await.expect("server should capture request"));
         let body: serde_json::Value =
             serde_json::from_str(&request.body).expect("request body should be valid JSON");
 
@@ -1767,7 +1767,10 @@ mod tests {
             body.get("grant_type").and_then(serde_json::Value::as_str),
             Some("authorization_code")
         );
-        assert_eq!(body.get("code").and_then(serde_json::Value::as_str), Some("code-123"));
+        assert_eq!(
+            body.get("code").and_then(serde_json::Value::as_str),
+            Some("code-123")
+        );
         assert_eq!(
             body.get("redirect_uri").and_then(serde_json::Value::as_str),
             Some("http://localhost:45454/callback")
@@ -1777,36 +1780,33 @@ mod tests {
             Some(CLAUDE_BROWSER_CLIENT_ID)
         );
         assert_eq!(
-            body.get("code_verifier").and_then(serde_json::Value::as_str),
+            body.get("code_verifier")
+                .and_then(serde_json::Value::as_str),
             Some("verifier-123")
         );
-        assert_eq!(body.get("state").and_then(serde_json::Value::as_str), Some("state-123"));
+        assert_eq!(
+            body.get("state").and_then(serde_json::Value::as_str),
+            Some("state-123")
+        );
         assert_eq!(token.access_token, "access-token");
         assert_eq!(token.refresh_token.as_deref(), Some("refresh-token"));
-        assert!(token.scopes.iter().any(|scope| scope == "org:create_api_key"));
+        assert!(token
+            .scopes
+            .iter()
+            .any(|scope| scope == "org:create_api_key"));
     }
 
     #[tokio::test]
     async fn create_claude_browser_api_key_uses_bearer_auth() {
-        let (server_url, request_rx) = spawn_json_response_server(
-            "200 OK",
-            r#"{"raw_key":" sk-ant-managed "}"#,
-        )
-        .await;
+        let (server_url, request_rx) =
+            spawn_json_response_server("200 OK", r#"{"raw_key":" sk-ant-managed "}"#).await;
         let api_key_url = format!("{server_url}/managed-key");
         let client = Client::new();
-        let api_key = create_claude_browser_api_key_with_endpoint(
-            &client,
-            &api_key_url,
-            "access-token",
-        )
-        .await
-        .expect("managed key mint should succeed");
-        let request = parse_http_request(
-            &request_rx
+        let api_key =
+            create_claude_browser_api_key_with_endpoint(&client, &api_key_url, "access-token")
                 .await
-                .expect("server should capture request"),
-        );
+                .expect("managed key mint should succeed");
+        let request = parse_http_request(&request_rx.await.expect("server should capture request"));
 
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/managed-key");
@@ -1844,32 +1844,23 @@ mod tests {
         configure_claude_browser_provider_for_oauth(&mut provider);
 
         assert_eq!(provider.auth_mode, AuthMode::OAuth);
-        let oauth = provider.oauth.expect("Claude OAuth config should be attached");
+        let oauth = provider
+            .oauth
+            .expect("Claude OAuth config should be attached");
         assert_eq!(oauth.client_id, CLAUDE_BROWSER_CLIENT_ID);
         assert!(oauth.scopes.iter().any(|scope| scope == "user:inference"));
     }
 
     #[tokio::test]
     async fn fetch_claude_browser_roles_uses_bearer_auth() {
-        let (server_url, request_rx) = spawn_json_response_server(
-            "200 OK",
-            r#"{"organization_name":"Acme"}"#,
-        )
-        .await;
+        let (server_url, request_rx) =
+            spawn_json_response_server("200 OK", r#"{"organization_name":"Acme"}"#).await;
         let roles_url = format!("{server_url}/roles");
         let client = Client::new();
-        let roles = fetch_claude_browser_roles_with_endpoint(
-            &client,
-            &roles_url,
-            "access-token",
-        )
-        .await
-        .expect("roles request should succeed");
-        let request = parse_http_request(
-            &request_rx
-                .await
-                .expect("server should capture request"),
-        );
+        let roles = fetch_claude_browser_roles_with_endpoint(&client, &roles_url, "access-token")
+            .await
+            .expect("roles request should succeed");
+        let request = parse_http_request(&request_rx.await.expect("server should capture request"));
 
         assert_eq!(request.method, "GET");
         assert_eq!(request.path, "/roles");
@@ -1953,7 +1944,9 @@ mod tests {
                 oauth_state: None,
                 redirect_uri: None,
                 created_at: Utc::now() - Duration::seconds(BROWSER_AUTH_TERMINAL_TTL_SECS + 10),
-                terminal_at: Some(Utc::now() - Duration::seconds(BROWSER_AUTH_TERMINAL_TTL_SECS + 10)),
+                terminal_at: Some(
+                    Utc::now() - Duration::seconds(BROWSER_AUTH_TERMINAL_TTL_SECS + 10),
+                ),
                 status: BrowserProviderAuthSessionStatus::Failed,
                 error: Some("timed out".to_string()),
             },

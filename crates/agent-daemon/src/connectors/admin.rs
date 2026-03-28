@@ -3,10 +3,16 @@ use agent_providers::{delete_secret, load_api_key, store_api_key};
 use sha2::{Digest, Sha256};
 
 fn optional_trimmed(value: Option<String>) -> Option<String> {
-    value.map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
-fn store_connector_secret(scope: &str, id: &str, secret: Option<String>) -> Result<Option<String>, ApiError> {
+fn store_connector_secret(
+    scope: &str,
+    id: &str,
+    secret: Option<String>,
+) -> Result<Option<String>, ApiError> {
     let Some(secret) = optional_trimmed(secret) else {
         return Ok(None);
     };
@@ -15,7 +21,11 @@ fn store_connector_secret(scope: &str, id: &str, secret: Option<String>) -> Resu
         .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))
 }
 
-fn validate_connector_secret_account(account: Option<&str>, missing_message: &str, invalid_message: &str) -> Result<String, ApiError> {
+fn validate_connector_secret_account(
+    account: Option<&str>,
+    missing_message: &str,
+    invalid_message: &str,
+) -> Result<String, ApiError> {
     let account = account
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -29,16 +39,28 @@ fn validate_connector_secret_account(account: Option<&str>, missing_message: &st
     Ok(account.to_string())
 }
 
-fn brave_api_key_account_in_use(
-    connectors: &[BraveConnectorConfig],
-    account: &str,
+fn should_cleanup_upserted_secret(
+    new_account: Option<&str>,
+    previous_account: Option<&str>,
 ) -> bool {
+    let new_account = new_account.map(str::trim).filter(|value| !value.is_empty());
+    let previous_account = previous_account
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    new_account.is_some() && new_account != previous_account
+}
+
+fn cleanup_upserted_secret(new_account: Option<&str>, previous_account: Option<&str>) {
+    if should_cleanup_upserted_secret(new_account, previous_account) {
+        if let Some(account) = new_account.map(str::trim).filter(|value| !value.is_empty()) {
+            let _ = delete_secret(account);
+        }
+    }
+}
+
+fn brave_api_key_account_in_use(connectors: &[BraveConnectorConfig], account: &str) -> bool {
     connectors.iter().any(|connector| {
-        connector
-            .api_key_keychain_account
-            .as_deref()
-            .map(str::trim)
-            == Some(account)
+        connector.api_key_keychain_account.as_deref().map(str::trim) == Some(account)
     })
 }
 
@@ -46,6 +68,20 @@ fn hash_webhook_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn resolve_webhook_token_sha256(
+    existing_sha256: Option<&str>,
+    webhook_token: Option<&str>,
+    clear_webhook_token: bool,
+) -> Option<String> {
+    if let Some(token) = webhook_token {
+        return Some(hash_webhook_token(token));
+    }
+    if clear_webhook_token {
+        return None;
+    }
+    existing_sha256.map(ToOwned::to_owned)
 }
 
 pub(crate) async fn list_app_connectors(
@@ -132,11 +168,18 @@ pub(crate) async fn upsert_webhook_connector(
             "webhook connector prompt_template must not be empty",
         ));
     }
-    if let Some(token) = optional_trimmed(payload.webhook_token) {
-        connector.token_sha256 = Some(hash_webhook_token(&token));
-    }
     {
         let mut config = state.config.write().await;
+        let existing_sha256 = config
+            .webhook_connectors
+            .iter()
+            .find(|existing| existing.id == connector.id)
+            .and_then(|existing| existing.token_sha256.as_deref());
+        connector.token_sha256 = resolve_webhook_token_sha256(
+            existing_sha256,
+            optional_trimmed(payload.webhook_token).as_deref(),
+            payload.clear_webhook_token,
+        );
         config.upsert_webhook_connector(connector.clone());
         state.storage.save_config(&config)?;
     }
@@ -358,24 +401,48 @@ pub(crate) async fn upsert_discord_connector(
     Json(payload): Json<DiscordConnectorUpsertRequest>,
 ) -> Result<Json<DiscordConnectorConfig>, ApiError> {
     let mut connector = payload.connector;
-    if let Some(account) = store_connector_secret("discord", &connector.id, payload.bot_token)? {
-        connector.bot_token_keychain_account = Some(account);
-    }
-    validate_connector_secret_account(
-        connector.bot_token_keychain_account.as_deref(),
-        "discord connector bot_token_keychain_account must not be empty",
-        "failed to load discord bot token from keychain",
-    )?;
     if connector.monitored_channel_ids.is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "discord connector monitored_channel_ids must not be empty",
         ));
     }
-    {
+    let previous_account = {
+        let config = state.config.read().await;
+        config
+            .discord_connectors
+            .iter()
+            .find(|entry| entry.id == connector.id)
+            .and_then(|entry| entry.bot_token_keychain_account.clone())
+    };
+    if let Some(account) = store_connector_secret("discord", &connector.id, payload.bot_token)? {
+        connector.bot_token_keychain_account = Some(account);
+    }
+    if let Err(error) = validate_connector_secret_account(
+        connector.bot_token_keychain_account.as_deref(),
+        "discord connector bot_token_keychain_account must not be empty",
+        "failed to load discord bot token from keychain",
+    ) {
+        cleanup_upserted_secret(
+            connector.bot_token_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(error);
+    }
+    let save_error = {
         let mut config = state.config.write().await;
         config.upsert_discord_connector(connector.clone());
-        state.storage.save_config(&config)?;
+        state.storage.save_config(&config).err()
+    };
+    if let Some(error) = save_error {
+        cleanup_upserted_secret(
+            connector.bot_token_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error.to_string(),
+        ));
     }
     append_log(
         &state,
@@ -391,24 +458,48 @@ pub(crate) async fn upsert_slack_connector(
     Json(payload): Json<SlackConnectorUpsertRequest>,
 ) -> Result<Json<SlackConnectorConfig>, ApiError> {
     let mut connector = payload.connector;
-    if let Some(account) = store_connector_secret("slack", &connector.id, payload.bot_token)? {
-        connector.bot_token_keychain_account = Some(account);
-    }
-    validate_connector_secret_account(
-        connector.bot_token_keychain_account.as_deref(),
-        "slack connector bot_token_keychain_account must not be empty",
-        "failed to load slack bot token from keychain",
-    )?;
     if connector.monitored_channel_ids.is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "slack connector monitored_channel_ids must not be empty",
         ));
     }
-    {
+    let previous_account = {
+        let config = state.config.read().await;
+        config
+            .slack_connectors
+            .iter()
+            .find(|entry| entry.id == connector.id)
+            .and_then(|entry| entry.bot_token_keychain_account.clone())
+    };
+    if let Some(account) = store_connector_secret("slack", &connector.id, payload.bot_token)? {
+        connector.bot_token_keychain_account = Some(account);
+    }
+    if let Err(error) = validate_connector_secret_account(
+        connector.bot_token_keychain_account.as_deref(),
+        "slack connector bot_token_keychain_account must not be empty",
+        "failed to load slack bot token from keychain",
+    ) {
+        cleanup_upserted_secret(
+            connector.bot_token_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(error);
+    }
+    let save_error = {
         let mut config = state.config.write().await;
         config.upsert_slack_connector(connector.clone());
-        state.storage.save_config(&config)?;
+        state.storage.save_config(&config).err()
+    };
+    if let Some(error) = save_error {
+        cleanup_upserted_secret(
+            connector.bot_token_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error.to_string(),
+        ));
     }
     append_log(
         &state,
@@ -431,26 +522,50 @@ pub(crate) async fn upsert_home_assistant_connector(
             "Home Assistant connector base_url must not be empty",
         ));
     }
-    if let Some(account) =
-        store_connector_secret("home-assistant", &connector.id, payload.access_token)?
-    {
-        connector.access_token_keychain_account = Some(account);
-    }
-    validate_connector_secret_account(
-        connector.access_token_keychain_account.as_deref(),
-        "Home Assistant connector access_token_keychain_account must not be empty",
-        "failed to load Home Assistant token from keychain",
-    )?;
     if connector.monitored_entity_ids.is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "Home Assistant connector monitored_entity_ids must not be empty",
         ));
     }
+    let previous_account = {
+        let config = state.config.read().await;
+        config
+            .home_assistant_connectors
+            .iter()
+            .find(|entry| entry.id == connector.id)
+            .and_then(|entry| entry.access_token_keychain_account.clone())
+    };
+    if let Some(account) =
+        store_connector_secret("home-assistant", &connector.id, payload.access_token)?
     {
+        connector.access_token_keychain_account = Some(account);
+    }
+    if let Err(error) = validate_connector_secret_account(
+        connector.access_token_keychain_account.as_deref(),
+        "Home Assistant connector access_token_keychain_account must not be empty",
+        "failed to load Home Assistant token from keychain",
+    ) {
+        cleanup_upserted_secret(
+            connector.access_token_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(error);
+    }
+    let save_error = {
         let mut config = state.config.write().await;
         config.upsert_home_assistant_connector(connector.clone());
-        state.storage.save_config(&config)?;
+        state.storage.save_config(&config).err()
+    };
+    if let Some(error) = save_error {
+        cleanup_upserted_secret(
+            connector.access_token_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error.to_string(),
+        ));
     }
     append_log(
         &state,
@@ -501,18 +616,42 @@ pub(crate) async fn upsert_telegram_connector(
     Json(payload): Json<TelegramConnectorUpsertRequest>,
 ) -> Result<Json<TelegramConnectorConfig>, ApiError> {
     let mut connector = payload.connector;
+    let previous_account = {
+        let config = state.config.read().await;
+        config
+            .telegram_connectors
+            .iter()
+            .find(|entry| entry.id == connector.id)
+            .and_then(|entry| entry.bot_token_keychain_account.clone())
+    };
     if let Some(account) = store_connector_secret("telegram", &connector.id, payload.bot_token)? {
         connector.bot_token_keychain_account = Some(account);
     }
-    validate_connector_secret_account(
+    if let Err(error) = validate_connector_secret_account(
         connector.bot_token_keychain_account.as_deref(),
         "telegram connector bot_token_keychain_account must not be empty",
         "failed to load telegram bot token from keychain",
-    )?;
-    {
+    ) {
+        cleanup_upserted_secret(
+            connector.bot_token_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(error);
+    }
+    let save_error = {
         let mut config = state.config.write().await;
         config.upsert_telegram_connector(connector.clone());
-        state.storage.save_config(&config)?;
+        state.storage.save_config(&config).err()
+    };
+    if let Some(error) = save_error {
+        cleanup_upserted_secret(
+            connector.bot_token_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error.to_string(),
+        ));
     }
     append_log(
         &state,
@@ -730,18 +869,42 @@ pub(crate) async fn upsert_brave_connector(
     Json(payload): Json<BraveConnectorUpsertRequest>,
 ) -> Result<Json<BraveConnectorConfig>, ApiError> {
     let mut connector = payload.connector;
+    let previous_account = {
+        let config = state.config.read().await;
+        config
+            .brave_connectors
+            .iter()
+            .find(|entry| entry.id == connector.id)
+            .and_then(|entry| entry.api_key_keychain_account.clone())
+    };
     if let Some(account) = store_connector_secret("brave", &connector.id, payload.api_key)? {
         connector.api_key_keychain_account = Some(account);
     }
-    validate_connector_secret_account(
+    if let Err(error) = validate_connector_secret_account(
         connector.api_key_keychain_account.as_deref(),
         "brave connector api_key_keychain_account must not be empty",
         "failed to load brave api key from keychain",
-    )?;
-    {
+    ) {
+        cleanup_upserted_secret(
+            connector.api_key_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(error);
+    }
+    let save_error = {
         let mut config = state.config.write().await;
         config.upsert_brave_connector(connector.clone());
-        state.storage.save_config(&config)?;
+        state.storage.save_config(&config).err()
+    };
+    if let Some(error) = save_error {
+        cleanup_upserted_secret(
+            connector.api_key_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error.to_string(),
+        ));
     }
     append_log(
         &state,
@@ -825,18 +988,42 @@ pub(crate) async fn upsert_gmail_connector(
     Json(payload): Json<GmailConnectorUpsertRequest>,
 ) -> Result<Json<GmailConnectorConfig>, ApiError> {
     let mut connector = payload.connector;
+    let previous_account = {
+        let config = state.config.read().await;
+        config
+            .gmail_connectors
+            .iter()
+            .find(|entry| entry.id == connector.id)
+            .and_then(|entry| entry.oauth_keychain_account.clone())
+    };
     if let Some(account) = store_connector_secret("gmail", &connector.id, payload.oauth_token)? {
         connector.oauth_keychain_account = Some(account);
     }
-    validate_connector_secret_account(
+    if let Err(error) = validate_connector_secret_account(
         connector.oauth_keychain_account.as_deref(),
         "gmail connector oauth_keychain_account must not be empty",
         "failed to load gmail OAuth token from keychain",
-    )?;
-    {
+    ) {
+        cleanup_upserted_secret(
+            connector.oauth_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(error);
+    }
+    let save_error = {
         let mut config = state.config.write().await;
         config.upsert_gmail_connector(connector.clone());
-        state.storage.save_config(&config)?;
+        state.storage.save_config(&config).err()
+    };
+    if let Some(error) = save_error {
+        cleanup_upserted_secret(
+            connector.oauth_keychain_account.as_deref(),
+            previous_account.as_deref(),
+        );
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error.to_string(),
+        ));
     }
     append_log(
         &state,
@@ -845,6 +1032,44 @@ pub(crate) async fn upsert_gmail_connector(
         format!("gmail connector '{}' updated", connector.id),
     )?;
     Ok(Json(connector))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_webhook_token_sha256, should_cleanup_upserted_secret};
+
+    #[test]
+    fn cleanup_only_runs_for_new_secret_accounts() {
+        assert!(!should_cleanup_upserted_secret(
+            Some("connector:slack:ops"),
+            Some("connector:slack:ops")
+        ));
+        assert!(should_cleanup_upserted_secret(
+            Some("connector:slack:ops"),
+            None
+        ));
+        assert!(!should_cleanup_upserted_secret(None, None));
+    }
+
+    #[test]
+    fn webhook_token_hash_preserves_existing_secret_by_default() {
+        assert_eq!(
+            resolve_webhook_token_sha256(Some("existing-hash"), None, false),
+            Some("existing-hash".to_string())
+        );
+    }
+
+    #[test]
+    fn webhook_token_hash_can_rotate_or_clear_secret() {
+        assert_eq!(
+            resolve_webhook_token_sha256(Some("existing-hash"), Some("new-token"), false),
+            Some(super::hash_webhook_token("new-token"))
+        );
+        assert_eq!(
+            resolve_webhook_token_sha256(Some("existing-hash"), None, true),
+            None
+        );
+    }
 }
 
 pub(crate) async fn delete_gmail_connector(
@@ -867,9 +1092,7 @@ pub(crate) async fn delete_gmail_connector(
             .and_then(|connector| connector.oauth_keychain_account.as_deref())
             .map(str::trim)
             .filter(|account| !account.is_empty())
-            .filter(|account| {
-                !gmail::gmail_oauth_account_in_use(&config.gmail_connectors, account)
-            })
+            .filter(|account| !gmail::gmail_oauth_account_in_use(&config.gmail_connectors, account))
             .map(ToOwned::to_owned);
         (removed, delete_secret_account)
     };

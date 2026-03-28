@@ -93,11 +93,9 @@ pub(crate) async fn list_missions(
     State(state): State<AppState>,
     Query(query): Query<LimitQuery>,
 ) -> Result<Json<Vec<Mission>>, ApiError> {
-    Ok(Json(
-        state
-            .storage
-            .list_missions_limited(query.limit.map(|limit| limit.clamp(1, 200)))?,
-    ))
+    Ok(Json(state.storage.list_missions_limited(
+        query.limit.map(|limit| limit.clamp(1, 200)),
+    )?))
 }
 
 pub(crate) async fn evolve_status(
@@ -213,7 +211,10 @@ pub(crate) async fn pause_evolve_mode(
             }
         }
         state.storage.save_config(&config)?;
-        (config.evolve.clone(), config.evolve.current_mission_id.clone())
+        (
+            config.evolve.clone(),
+            config.evolve.current_mission_id.clone(),
+        )
     };
     if let Some(mission_id) = mission_id.as_deref() {
         signal_mission_cancellation(&state, mission_id);
@@ -562,7 +563,10 @@ async fn sync_controlled_mission_state(state: &AppState, mission: &mut Mission) 
     let Some(latest) = state.storage.get_mission(&mission.id)? else {
         return Ok(false);
     };
-    if !matches!(latest.status, MissionStatus::Cancelled | MissionStatus::Blocked) {
+    if !matches!(
+        latest.status,
+        MissionStatus::Cancelled | MissionStatus::Blocked
+    ) {
         return Ok(false);
     };
 
@@ -590,7 +594,10 @@ fn evolve_state_for_mission_status(status: &MissionStatus) -> EvolveState {
     }
 }
 
-fn ensure_no_other_active_evolve_mission(state: &AppState, mission: &Mission) -> Result<(), ApiError> {
+fn ensure_no_other_active_evolve_mission(
+    state: &AppState,
+    mission: &Mission,
+) -> Result<(), ApiError> {
     if !mission.evolve {
         return Ok(());
     }
@@ -600,7 +607,9 @@ fn ensure_no_other_active_evolve_mission(state: &AppState, mission: &Mission) ->
         .list_missions()?
         .into_iter()
         .find(|candidate| {
-            candidate.id != mission.id && candidate.evolve && !mission_is_terminal(&candidate.status)
+            candidate.id != mission.id
+                && candidate.evolve
+                && !mission_is_terminal(&candidate.status)
         });
     if let Some(other) = other_active {
         return Err(ApiError::new(
@@ -1143,6 +1152,7 @@ async fn run_mission_cycle(
             thinking_level: None,
             attachments: Vec::new(),
             permission_preset: Some(PermissionPreset::FullAuto),
+            task_mode: None,
             output_schema_json: Some(output_schema.to_string()),
             persist: true,
             background: true,
@@ -1689,7 +1699,14 @@ fn gather_evolve_signals(workspace_root: &std::path::Path) -> Vec<String> {
 
     // 1. Count TODO/FIXME/HACK comments by reading Rust files directly.
     let mut todo_count = 0usize;
-    for crate_dir in ["crates/agent-core", "crates/agent-daemon", "crates/agent-storage", "crates/agent-providers", "crates/agent-cli", "crates/agent-policy"] {
+    for crate_dir in [
+        "crates/agent-core",
+        "crates/agent-daemon",
+        "crates/agent-storage",
+        "crates/agent-providers",
+        "crates/agent-cli",
+        "crates/agent-policy",
+    ] {
         let src = workspace_root.join(crate_dir).join("src");
         if let Ok(entries) = fs::read_dir(&src) {
             for entry in entries.flatten() {
@@ -1698,7 +1715,10 @@ fn gather_evolve_signals(workspace_root: &std::path::Path) -> Vec<String> {
                     if let Ok(content) = fs::read_to_string(&path) {
                         for line in content.lines() {
                             let upper = line.to_ascii_uppercase();
-                            if upper.contains("TODO") || upper.contains("FIXME") || upper.contains("HACK") {
+                            if upper.contains("TODO")
+                                || upper.contains("FIXME")
+                                || upper.contains("HACK")
+                            {
                                 todo_count += 1;
                             }
                         }
@@ -1708,7 +1728,10 @@ fn gather_evolve_signals(workspace_root: &std::path::Path) -> Vec<String> {
         }
     }
     if todo_count > 0 {
-        signals.push(format!("Found {} TODO/FIXME/HACK comments in Rust source files", todo_count));
+        signals.push(format!(
+            "Found {} TODO/FIXME/HACK comments in Rust source files",
+            todo_count
+        ));
     }
 
     // 2. Check for large files that may benefit from splitting.
@@ -1724,7 +1747,10 @@ fn gather_evolve_signals(workspace_root: &std::path::Path) -> Vec<String> {
         if let Ok(content) = fs::read_to_string(&path) {
             let line_count = content.lines().count();
             if line_count > 800 {
-                signals.push(format!("{} has {} lines — consider splitting", entry, line_count));
+                signals.push(format!(
+                    "{} has {} lines — consider splitting",
+                    entry, line_count
+                ));
             }
         }
     }
@@ -1738,10 +1764,7 @@ fn gather_evolve_signals(workspace_root: &std::path::Path) -> Vec<String> {
         .output()
     {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let warning_lines: Vec<&str> = stderr
-            .lines()
-            .filter(|l| l.contains("warning:"))
-            .collect();
+        let warning_lines: Vec<&str> = stderr.lines().filter(|l| l.contains("warning:")).collect();
         if !warning_lines.is_empty() {
             signals.push(format!("{} clippy warnings detected", warning_lines.len()));
             for w in warning_lines.iter().take(3) {
@@ -1923,7 +1946,10 @@ mod tests {
     use super::*;
     use agent_core::AppConfig;
     use reqwest::Client;
-    use std::{collections::{HashMap, HashSet}, sync::Arc};
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::Arc,
+    };
     use tokio::sync::{mpsc, Notify, RwLock};
     use uuid::Uuid;
 

@@ -1,12 +1,23 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod app_config;
+mod control;
+mod plugins;
+mod workspace;
+
+pub use control::*;
+pub use plugins::*;
+pub use workspace::*;
+
 pub const APP_NAME: &str = "Agent Builder";
 pub const APP_SLUG: &str = "agent-builder";
+pub const DISPLAY_APP_NAME: &str = "Nuclear Agent";
+pub const PRIMARY_COMMAND_NAME: &str = "nuclear";
+pub const LEGACY_COMMAND_NAME: &str = "autism";
 pub const CONFIG_VERSION: u32 = 2;
 pub const DEFAULT_DAEMON_HOST: &str = "127.0.0.1";
 pub const DEFAULT_DAEMON_PORT: u16 = 42690;
@@ -318,7 +329,9 @@ impl ProviderConfig {
                 .is_some_and(|account| !account.trim().is_empty())
     }
 
-    #[deprecated(note = "metadata-only helper; use runtime credential validation for actual usability checks")]
+    #[deprecated(
+        note = "metadata-only helper; use runtime credential validation for actual usability checks"
+    )]
     pub fn has_usable_saved_access(&self) -> bool {
         self.has_saved_access_reference()
     }
@@ -718,6 +731,8 @@ pub struct MemoryRecord {
     #[serde(default)]
     pub workspace_key: Option<String>,
     #[serde(default)]
+    pub evidence_refs: Vec<MemoryEvidenceRef>,
+    #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
     pub superseded_by: Option<String>,
@@ -750,6 +765,7 @@ impl MemoryRecord {
             source_message_id: None,
             provider_id: None,
             workspace_key: None,
+            evidence_refs: Vec::new(),
             tags: Vec::new(),
             superseded_by: None,
             review_status: MemoryReviewStatus::Accepted,
@@ -758,6 +774,20 @@ impl MemoryRecord {
             supersedes: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryEvidenceRef {
+    pub session_id: String,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub role: Option<MessageRole>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -776,6 +806,8 @@ pub struct MemoryUpsertRequest {
     pub provider_id: Option<String>,
     #[serde(default)]
     pub workspace_key: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<MemoryEvidenceRef>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -833,6 +865,25 @@ pub struct MemorySearchResponse {
     pub memories: Vec<MemoryRecord>,
     #[serde(default)]
     pub transcript_hits: Vec<SessionSearchHit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MemoryRebuildRequest {
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub recompute_embeddings: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryRebuildResponse {
+    pub generated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub sessions_scanned: usize,
+    pub observations_scanned: usize,
+    pub memories_upserted: usize,
+    pub embeddings_refreshed: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -926,11 +977,7 @@ fn default_fifty_u8() -> u8 {
 }
 
 impl UsagePattern {
-    pub fn new(
-        pattern_type: PatternType,
-        description: String,
-        trigger_hint: String,
-    ) -> Self {
+    pub fn new(pattern_type: PatternType, description: String, trigger_hint: String) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),
@@ -954,6 +1001,8 @@ pub struct SessionSummary {
     pub alias: String,
     pub provider_id: String,
     pub model: String,
+    #[serde(default)]
+    pub task_mode: Option<TaskMode>,
     #[serde(default)]
     pub message_count: usize,
     #[serde(default)]
@@ -1095,6 +1144,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub app_connectors: Vec<AppConnectorConfig>,
     #[serde(default)]
+    pub plugins: Vec<InstalledPluginConfig>,
+    #[serde(default)]
     pub webhook_connectors: Vec<WebhookConnectorConfig>,
     #[serde(default)]
     pub inbox_connectors: Vec<InboxConnectorConfig>,
@@ -1138,6 +1189,7 @@ impl Default for AppConfig {
             evolve: EvolveConfig::default(),
             mcp_servers: Vec::new(),
             app_connectors: Vec::new(),
+            plugins: Vec::new(),
             webhook_connectors: Vec::new(),
             inbox_connectors: Vec::new(),
             telegram_connectors: Vec::new(),
@@ -1153,412 +1205,6 @@ impl Default for AppConfig {
             embedding: EmbeddingConfig::default(),
             onboarding_complete: false,
         }
-    }
-}
-
-impl AppConfig {
-    pub fn get_provider(&self, provider_id: &str) -> Option<&ProviderConfig> {
-        self.providers
-            .iter()
-            .find(|provider| provider.id == provider_id)
-    }
-
-    pub fn get_alias(&self, alias: &str) -> Option<&ModelAlias> {
-        self.aliases.iter().find(|entry| entry.alias == alias)
-    }
-
-    pub fn provider_delegation_enabled(&self, provider_id: &str) -> bool {
-        self.delegation.provider_enabled(provider_id)
-    }
-
-    pub fn main_alias(&self) -> Result<&ModelAlias> {
-        let alias = self
-            .main_agent_alias
-            .as_deref()
-            .ok_or_else(|| anyhow!("no main agent alias configured"))?;
-        self.get_alias(alias)
-            .ok_or_else(|| anyhow!("configured main alias '{alias}' is missing"))
-    }
-
-    pub fn has_configured_main_alias_provider(&self) -> bool {
-        self.main_alias()
-            .ok()
-            .and_then(|alias| self.get_provider(&alias.provider_id))
-            .is_some_and(ProviderConfig::has_saved_access_reference)
-    }
-
-    #[deprecated(note = "metadata-only helper; use daemon or CLI runtime readiness checks for actual usability")]
-    pub fn has_usable_main_alias(&self) -> bool {
-        self.has_configured_main_alias_provider()
-    }
-
-    pub fn alias_target_summary(&self, alias_name: &str) -> Option<MainTargetSummary> {
-        let alias = self.get_alias(alias_name)?;
-        let provider = self.get_provider(&alias.provider_id)?;
-        Some(MainTargetSummary {
-            alias: alias.alias.clone(),
-            provider_id: provider.id.clone(),
-            provider_display_name: if provider.display_name.trim().is_empty() {
-                provider.id.clone()
-            } else {
-                provider.display_name.clone()
-            },
-            model: alias.model.clone(),
-        })
-    }
-
-    pub fn main_target_summary(&self) -> Option<MainTargetSummary> {
-        self.main_agent_alias
-            .as_deref()
-            .and_then(|alias_name| self.alias_target_summary(alias_name))
-    }
-
-    pub fn next_available_provider_id(&self, preferred: &str) -> String {
-        self.next_available_provider_id_excluding(preferred, None)
-    }
-
-    pub fn next_available_provider_id_excluding(
-        &self,
-        preferred: &str,
-        existing_id: Option<&str>,
-    ) -> String {
-        let preferred = preferred.trim();
-        let preferred = if preferred.is_empty() {
-            "provider"
-        } else {
-            preferred
-        };
-        if !self.provider_id_taken(preferred, existing_id) {
-            return preferred.to_string();
-        }
-
-        let mut index = 2;
-        loop {
-            let candidate = format!("{preferred}-{index}");
-            if !self.provider_id_taken(&candidate, existing_id) {
-                return candidate;
-            }
-            index += 1;
-        }
-    }
-
-    pub fn next_available_alias_name(&self, preferred: &str) -> String {
-        self.next_available_alias_name_excluding(preferred, None)
-    }
-
-    pub fn next_available_alias_name_excluding(
-        &self,
-        preferred: &str,
-        existing_alias: Option<&str>,
-    ) -> String {
-        let preferred = preferred.trim();
-        let preferred = if preferred.is_empty() { "alias" } else { preferred };
-        if !self.alias_name_taken(preferred, existing_alias) {
-            return preferred.to_string();
-        }
-
-        let mut index = 2;
-        loop {
-            let candidate = format!("{preferred}-{index}");
-            if !self.alias_name_taken(&candidate, existing_alias) {
-                return candidate;
-            }
-            index += 1;
-        }
-    }
-
-    pub fn default_alias_name_for(&self, provider_id: &str, model: &str) -> String {
-        let preferred = if self.main_agent_alias.is_none() && self.aliases.is_empty() {
-            "main".to_string()
-        } else {
-            let model_slug = model
-                .chars()
-                .map(|ch| match ch {
-                    'a'..='z' | 'A'..='Z' | '0'..='9' => ch.to_ascii_lowercase(),
-                    _ => '-',
-                })
-                .collect::<String>()
-                .split('-')
-                .filter(|segment| !segment.is_empty())
-                .take(3)
-                .collect::<Vec<_>>()
-                .join("-");
-            if model_slug.is_empty() {
-                provider_id.to_string()
-            } else {
-                format!("{provider_id}-{model_slug}")
-            }
-        };
-        self.next_available_alias_name(&preferred)
-    }
-
-    fn provider_id_taken(&self, candidate: &str, existing_id: Option<&str>) -> bool {
-        self.get_provider(candidate)
-            .is_some_and(|provider| Some(provider.id.as_str()) != existing_id)
-    }
-
-    fn alias_name_taken(&self, candidate: &str, existing_alias: Option<&str>) -> bool {
-        self.get_alias(candidate)
-            .is_some_and(|alias| Some(alias.alias.as_str()) != existing_alias)
-    }
-
-    pub fn upsert_provider(&mut self, provider: ProviderConfig) {
-        if let Some(existing) = self
-            .providers
-            .iter_mut()
-            .find(|entry| entry.id == provider.id)
-        {
-            *existing = provider;
-        } else {
-            self.providers.push(provider);
-        }
-    }
-
-    pub fn upsert_alias(&mut self, alias: ModelAlias) {
-        if let Some(existing) = self
-            .aliases
-            .iter_mut()
-            .find(|entry| entry.alias == alias.alias)
-        {
-            *existing = alias;
-        } else {
-            self.aliases.push(alias);
-        }
-    }
-
-    pub fn remove_provider(&mut self, provider_id: &str) -> bool {
-        let before = self.providers.len();
-        self.providers.retain(|provider| provider.id != provider_id);
-        let removed = before != self.providers.len();
-        if removed {
-            self.aliases.retain(|alias| alias.provider_id != provider_id);
-            if self
-                .main_agent_alias
-                .as_deref()
-                .and_then(|alias_name| self.get_alias(alias_name))
-                .is_none()
-            {
-                self.main_agent_alias = None;
-            }
-            self.delegation
-                .disabled_provider_ids
-                .retain(|entry| entry != provider_id);
-        }
-        removed
-    }
-
-    pub fn remove_alias(&mut self, alias_name: &str) -> bool {
-        let before = self.aliases.len();
-        self.aliases.retain(|alias| alias.alias != alias_name);
-        let removed = before != self.aliases.len();
-        if removed && self.main_agent_alias.as_deref() == Some(alias_name) {
-            self.main_agent_alias = None;
-        }
-        removed
-    }
-
-    pub fn upsert_mcp_server(&mut self, server: McpServerConfig) {
-        if let Some(existing) = self
-            .mcp_servers
-            .iter_mut()
-            .find(|entry| entry.id == server.id)
-        {
-            *existing = server;
-        } else {
-            self.mcp_servers.push(server);
-        }
-    }
-
-    pub fn remove_mcp_server(&mut self, id: &str) -> bool {
-        let before = self.mcp_servers.len();
-        self.mcp_servers.retain(|server| server.id != id);
-        before != self.mcp_servers.len()
-    }
-
-    pub fn upsert_app_connector(&mut self, connector: AppConnectorConfig) {
-        if let Some(existing) = self
-            .app_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.app_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_app_connector(&mut self, id: &str) -> bool {
-        let before = self.app_connectors.len();
-        self.app_connectors.retain(|connector| connector.id != id);
-        before != self.app_connectors.len()
-    }
-
-    pub fn upsert_webhook_connector(&mut self, connector: WebhookConnectorConfig) {
-        if let Some(existing) = self
-            .webhook_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.webhook_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_webhook_connector(&mut self, id: &str) -> bool {
-        let before = self.webhook_connectors.len();
-        self.webhook_connectors
-            .retain(|connector| connector.id != id);
-        before != self.webhook_connectors.len()
-    }
-
-    pub fn upsert_inbox_connector(&mut self, connector: InboxConnectorConfig) {
-        if let Some(existing) = self
-            .inbox_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.inbox_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_inbox_connector(&mut self, id: &str) -> bool {
-        let before = self.inbox_connectors.len();
-        self.inbox_connectors.retain(|connector| connector.id != id);
-        before != self.inbox_connectors.len()
-    }
-
-    pub fn upsert_telegram_connector(&mut self, connector: TelegramConnectorConfig) {
-        if let Some(existing) = self
-            .telegram_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.telegram_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_telegram_connector(&mut self, id: &str) -> bool {
-        let before = self.telegram_connectors.len();
-        self.telegram_connectors
-            .retain(|connector| connector.id != id);
-        before != self.telegram_connectors.len()
-    }
-
-    pub fn upsert_discord_connector(&mut self, connector: DiscordConnectorConfig) {
-        if let Some(existing) = self
-            .discord_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.discord_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_discord_connector(&mut self, id: &str) -> bool {
-        let before = self.discord_connectors.len();
-        self.discord_connectors
-            .retain(|connector| connector.id != id);
-        before != self.discord_connectors.len()
-    }
-
-    pub fn upsert_slack_connector(&mut self, connector: SlackConnectorConfig) {
-        if let Some(existing) = self
-            .slack_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.slack_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_slack_connector(&mut self, id: &str) -> bool {
-        let before = self.slack_connectors.len();
-        self.slack_connectors.retain(|connector| connector.id != id);
-        before != self.slack_connectors.len()
-    }
-
-    pub fn upsert_home_assistant_connector(&mut self, connector: HomeAssistantConnectorConfig) {
-        if let Some(existing) = self
-            .home_assistant_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.home_assistant_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_home_assistant_connector(&mut self, id: &str) -> bool {
-        let before = self.home_assistant_connectors.len();
-        self.home_assistant_connectors
-            .retain(|connector| connector.id != id);
-        before != self.home_assistant_connectors.len()
-    }
-
-    pub fn upsert_signal_connector(&mut self, connector: SignalConnectorConfig) {
-        if let Some(existing) = self
-            .signal_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.signal_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_signal_connector(&mut self, id: &str) -> bool {
-        let before = self.signal_connectors.len();
-        self.signal_connectors
-            .retain(|connector| connector.id != id);
-        before != self.signal_connectors.len()
-    }
-
-    pub fn upsert_gmail_connector(&mut self, connector: GmailConnectorConfig) {
-        if let Some(existing) = self
-            .gmail_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.gmail_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_gmail_connector(&mut self, id: &str) -> bool {
-        let before = self.gmail_connectors.len();
-        self.gmail_connectors
-            .retain(|connector| connector.id != id);
-        before != self.gmail_connectors.len()
-    }
-
-    pub fn upsert_brave_connector(&mut self, connector: BraveConnectorConfig) {
-        if let Some(existing) = self
-            .brave_connectors
-            .iter_mut()
-            .find(|entry| entry.id == connector.id)
-        {
-            *existing = connector;
-        } else {
-            self.brave_connectors.push(connector);
-        }
-    }
-
-    pub fn remove_brave_connector(&mut self, id: &str) -> bool {
-        let before = self.brave_connectors.len();
-        self.brave_connectors.retain(|connector| connector.id != id);
-        before != self.brave_connectors.len()
     }
 }
 
@@ -1924,9 +1570,27 @@ pub struct SubAgentTask {
     #[serde(default)]
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(default)]
+    pub task_mode: Option<TaskMode>,
+    #[serde(default)]
     pub output_schema_json: Option<String>,
     #[serde(default)]
     pub strategy: Option<SubAgentStrategy>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskMode {
+    Build,
+    Daily,
+}
+
+impl TaskMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Daily => "daily",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1982,6 +1646,8 @@ pub struct RunTaskRequest {
     #[serde(default)]
     pub permission_preset: Option<PermissionPreset>,
     #[serde(default)]
+    pub task_mode: Option<TaskMode>,
+    #[serde(default)]
     pub output_schema_json: Option<String>,
     #[serde(default)]
     pub ephemeral: bool,
@@ -2026,6 +1692,8 @@ pub struct BatchTaskRequest {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default)]
+    pub task_mode: Option<TaskMode>,
     #[serde(default)]
     pub strategy: Option<SubAgentStrategy>,
     #[serde(default)]
@@ -2246,6 +1914,8 @@ pub struct WebhookConnectorUpsertRequest {
     pub connector: WebhookConnectorConfig,
     #[serde(default)]
     pub webhook_token: Option<String>,
+    #[serde(default)]
+    pub clear_webhook_token: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2547,6 +2217,8 @@ pub struct DaemonStatus {
     pub delegation: DelegationConfig,
     pub providers: usize,
     pub aliases: usize,
+    #[serde(default)]
+    pub plugins: usize,
     pub delegation_targets: usize,
     #[serde(default)]
     pub webhook_connectors: usize,
@@ -2620,6 +2292,8 @@ pub struct DashboardBootstrapResponse {
     #[serde(default)]
     pub brave_connectors: Vec<BraveConnectorConfig>,
     #[serde(default)]
+    pub plugins: Vec<InstalledPluginConfig>,
+    #[serde(default)]
     pub sessions: Vec<SessionSummary>,
     #[serde(default)]
     pub events: Vec<LogEntry>,
@@ -2647,10 +2321,24 @@ pub struct HealthReport {
     pub data_path: String,
     pub keyring_ok: bool,
     pub providers: Vec<ProviderHealth>,
+    #[serde(default)]
+    pub plugins: Vec<PluginDoctorReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionTranscript {
     pub session: SessionSummary,
     pub messages: Vec<SessionMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionResumePacket {
+    pub session: SessionSummary,
+    pub generated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub recent_messages: Vec<SessionMessage>,
+    #[serde(default)]
+    pub linked_memories: Vec<MemoryRecord>,
+    #[serde(default)]
+    pub related_transcript_hits: Vec<SessionSearchHit>,
 }

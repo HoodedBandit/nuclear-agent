@@ -66,7 +66,7 @@ pub(super) async fn process_signal_connector(
                         "warn",
                         "signal",
                         format!(
-                            "signal '{}' requires pairing approval for group={} user={} (run 'autism signal approvals' to review)",
+                            "signal '{}' requires pairing approval for group={} user={} (run 'nuclear signal approvals' to review)",
                             connector.id,
                             approval.external_chat_id.as_deref().unwrap_or("-"),
                             approval.external_user_id.as_deref().unwrap_or("-")

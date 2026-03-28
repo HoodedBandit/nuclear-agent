@@ -33,9 +33,17 @@ resolve_bundled_binary() {
   arch="$(uname -m)"
   case "$arch" in
     x86_64|amd64)
+      if [ -x "$root/bin/linux-x64/nuclear" ]; then
+        printf '%s\n' "$root/bin/linux-x64/nuclear"
+        return
+      fi
       candidate="$root/bin/linux-x64/autism"
       ;;
     aarch64|arm64)
+      if [ -x "$root/bin/linux-arm64/nuclear" ]; then
+        printf '%s\n' "$root/bin/linux-arm64/nuclear"
+        return
+      fi
       candidate="$root/bin/linux-arm64/autism"
       ;;
     *)
@@ -45,6 +53,11 @@ resolve_bundled_binary() {
 
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then
     printf '%s\n' "$candidate"
+    return
+  fi
+
+  if [ -x "$root/target/release/nuclear" ]; then
+    printf '%s\n' "$root/target/release/nuclear"
     return
   fi
 
@@ -81,6 +94,11 @@ ensure_cargo() {
 }
 
 choose_install_dir() {
+  if [ -n "${NUCLEAR_INSTALL_DIR:-}" ]; then
+    printf '%s\n' "$NUCLEAR_INSTALL_DIR"
+    return
+  fi
+
   if [ -n "${AUTISM_INSTALL_DIR:-}" ]; then
     printf '%s\n' "$AUTISM_INSTALL_DIR"
     return
@@ -122,7 +140,7 @@ add_to_path() {
       ;;
   esac
 
-  if [ "${AUTISM_SKIP_PATH_PERSIST:-0}" = "1" ]; then
+  if [ "${NUCLEAR_SKIP_PATH_PERSIST:-${AUTISM_SKIP_PATH_PERSIST:-0}}" = "1" ]; then
     step "Skipped persistent PATH changes for this install run"
     return
   fi
@@ -140,7 +158,7 @@ add_to_path() {
   esac
 
   {
-    printf '\n# Added by autism installer\n'
+    printf '\n# Added by Nuclear Agent installer\n'
     printf '%s\n' "$path_line"
   } >>"$profile"
   step "Updated PATH for future shells in $profile"
@@ -162,7 +180,7 @@ stop_installed_processes() {
     return
   fi
 
-  step "Stopping any running autism processes from the install directory"
+  step "Stopping any running Nuclear Agent compatibility processes from the install directory"
   "$binary_path" daemon stop >/dev/null 2>&1 || true
   sleep 1
 
@@ -178,15 +196,22 @@ stop_installed_processes() {
 build_binary_from_source() {
   source_root="$1"
   target_binary="$2"
+  legacy_binary="$3"
   ensure_cargo
-  step "Building autism from source"
-  cargo build --release --bin autism --manifest-path "$source_root/Cargo.toml"
-  built_binary="$source_root/target/release/autism"
+  step "Building Nuclear Agent from source"
+  cargo build --release --bin nuclear --bin autism --manifest-path "$source_root/Cargo.toml"
+  built_binary="$source_root/target/release/nuclear"
   if [ ! -x "$built_binary" ]; then
     echo "Cargo reported success but $built_binary was not found." >&2
     exit 1
   fi
+  built_legacy_binary="$source_root/target/release/autism"
+  if [ ! -x "$built_legacy_binary" ]; then
+    echo "Cargo reported success but $built_legacy_binary was not found." >&2
+    exit 1
+  fi
   install_binary_atomic "$built_binary" "$target_binary"
+  install_binary_atomic "$built_legacy_binary" "$legacy_binary"
 }
 
 case "$(uname -s)" in
@@ -201,27 +226,31 @@ esac
 root="$(script_dir)"
 source_root="$(resolve_source_root "$root")"
 install_dir="$(choose_install_dir)"
-binary_path="$install_dir/autism"
+binary_path="$install_dir/nuclear"
+legacy_binary_path="$install_dir/autism"
 bundled_binary="$(resolve_bundled_binary "$root")"
 
-step "Installing autism CLI"
+step "Installing Nuclear Agent CLI"
 step "Install directory: $install_dir"
 mkdir -p "$install_dir"
 stop_installed_processes "$binary_path"
+stop_installed_processes "$legacy_binary_path"
 
 if [ -n "$bundled_binary" ]; then
   step "Using bundled Linux binary"
   install_binary_atomic "$bundled_binary" "$binary_path"
+  install_binary_atomic "$bundled_binary" "$legacy_binary_path"
 else
-  build_binary_from_source "$source_root" "$binary_path"
+  build_binary_from_source "$source_root" "$binary_path" "$legacy_binary_path"
 fi
 
 version="$("$binary_path" --version)"
 add_to_path "$install_dir"
 
 step "Installed version: $version"
-if command -v autism >/dev/null 2>&1; then
-  step "Run: autism"
+if command -v nuclear >/dev/null 2>&1; then
+  step "Run: nuclear"
 else
-  step "Open a new terminal and run: autism"
+  step "Open a new terminal and run: nuclear"
 fi
+step "Legacy command compatibility: autism"

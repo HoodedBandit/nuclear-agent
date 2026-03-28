@@ -8,56 +8,117 @@ use std::{
     time::Duration,
 };
 
+mod connector_cli;
+mod connector_support;
+mod integrations_cli;
+mod interactive_commands;
+mod interactive_ui;
+mod operations_cli;
+mod plugins_cli;
+mod provider_auth;
+mod repo_cli;
+mod session_support;
 mod tui;
 
+#[cfg(test)]
+use agent_core::{DiscordChannelCursor, MessageRole, SessionResumePacket};
+use connector_cli::{
+    discord_command, home_assistant_command, inbox_command, signal_command, skills_command,
+    slack_command, telegram_command, webhook_command,
+};
+pub(crate) use connector_support::{
+    format_discord_channel_cursors, format_home_assistant_entity_cursors, format_i64_list,
+    format_slack_channel_cursors, format_string_list, hash_webhook_token_local,
+};
 use futures::StreamExt;
+use integrations_cli::{app_command, mcp_command, AppCommands, McpCommands};
+#[cfg(test)]
+use integrations_cli::{AppAddArgs, McpAddArgs};
+use operations_cli::{
+    autonomy_command, autopilot_command, dashboard_command, doctor_command, evolve_command,
+    logs_command, memory_command, mission_command, session_command,
+};
+use plugins_cli::{plugin_command, PluginCommands};
+pub(crate) use repo_cli::{
+    build_review_prompt, build_uncommitted_diff, build_uncommitted_review_prompt,
+};
+use repo_cli::{repo_command, RepoCommands};
+pub(crate) use session_support::{
+    build_compact_prompt, compact_session, copy_to_clipboard, fork_session,
+    format_session_message_for_display, format_session_resume_packet, format_session_search_hits,
+    init_agents_file, latest_assistant_output_from_transcript, load_last_assistant_output,
+    load_session_for_command, load_session_resume_packet, load_transcript_for_interactive_fork,
+    load_transcript_for_interactive_resume, rank_sessions_for_picker, SESSION_PICKER_LIMIT,
+};
 
 use agent_core::{
-    AliasUpsertRequest, AppConfig, AppConnectorConfig, AppConnectorUpsertRequest, AuthMode,
-    AutonomyEnableRequest, AutonomyMode, AutopilotConfig, AutopilotState, AutopilotUpdateRequest,
-    BatchTaskRequest, BatchTaskResponse, ConnectorApprovalRecord, ConnectorApprovalStatus,
-    ConnectorApprovalUpdateRequest, ConnectorKind, DaemonConfigUpdateRequest,
-    DashboardLaunchResponse, DaemonStatus,
-    DiscordChannelCursor, DiscordConnectorConfig, DiscordConnectorUpsertRequest,
-    DiscordPollResponse, DiscordSendRequest, DiscordSendResponse, EvolveConfig, EvolveStartRequest,
-    HealthReport, HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest,
-    HomeAssistantEntityState, HomeAssistantPollResponse, HomeAssistantServiceCallRequest,
-    HomeAssistantServiceCallResponse, InboxConnectorConfig, InboxConnectorUpsertRequest,
-    InboxPollResponse, InputAttachment, KeyValuePair, McpServerConfig, McpServerUpsertRequest,
-    MemoryKind, MemoryRecord, MemoryReviewStatus, MemoryReviewUpdateRequest, MemoryScope,
-    MemorySearchQuery, MemorySearchResponse, MemoryUpsertRequest, MessageRole, Mission,
-    MissionCheckpoint, MissionControlRequest, MissionStatus, ModelAlias, OAuthConfig, OAuthToken,
-    PermissionPreset, PermissionUpdateRequest, PersistenceMode, ProviderConfig, ProviderKind,
-    ProviderUpsertRequest, RunTaskRequest, RunTaskResponse, SessionTranscript,
-    SignalConnectorConfig, SignalConnectorUpsertRequest, SignalPollResponse, SignalSendRequest,
-    SignalSendResponse, SkillDraft, SkillDraftStatus, SkillUpdateRequest, SlackChannelCursor,
-    SlackConnectorConfig, SlackConnectorUpsertRequest, SlackPollResponse, SlackSendRequest,
-    SlackSendResponse, SubAgentTask, TelegramConnectorConfig, TelegramConnectorUpsertRequest,
-    TelegramPollResponse, TelegramSendRequest, TelegramSendResponse, ThinkingLevel, TrustPolicy,
-    TrustUpdateRequest, WakeTrigger, WebhookConnectorConfig, WebhookConnectorUpsertRequest,
-    WebhookEventRequest, WebhookEventResponse, DEFAULT_ANTHROPIC_URL, DEFAULT_CHATGPT_CODEX_URL,
+    AliasUpsertRequest, AppConfig, AuthMode, AutonomyEnableRequest, AutonomyMode, AutopilotConfig,
+    AutopilotState, AutopilotUpdateRequest, BatchTaskRequest, BatchTaskResponse,
+    ConnectorApprovalRecord, ConnectorApprovalStatus, ConnectorApprovalUpdateRequest,
+    ConnectorKind, DaemonConfigUpdateRequest, DaemonStatus, DashboardLaunchResponse,
+    DiscordConnectorConfig, DiscordConnectorUpsertRequest, DiscordPollResponse, DiscordSendRequest,
+    DiscordSendResponse, EvolveConfig, EvolveStartRequest, HealthReport,
+    HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest, HomeAssistantEntityState,
+    HomeAssistantPollResponse, HomeAssistantServiceCallRequest, HomeAssistantServiceCallResponse,
+    InboxConnectorConfig, InboxConnectorUpsertRequest, InboxPollResponse, InputAttachment,
+    KeyValuePair, MemoryKind, MemoryRebuildRequest, MemoryRebuildResponse, MemoryRecord,
+    MemoryReviewStatus, MemoryReviewUpdateRequest, MemoryScope, MemorySearchQuery,
+    MemorySearchResponse, MemoryUpsertRequest, Mission, MissionCheckpoint, MissionControlRequest,
+    MissionStatus, ModelAlias, OAuthConfig, OAuthToken, PermissionPreset, PermissionUpdateRequest,
+    PersistenceMode, ProviderConfig, ProviderKind, ProviderUpsertRequest, RunTaskRequest,
+    RunTaskResponse, SessionTranscript, SignalConnectorConfig, SignalConnectorUpsertRequest,
+    SignalPollResponse, SignalSendRequest, SignalSendResponse, SkillDraft, SkillDraftStatus,
+    SkillUpdateRequest, SlackConnectorConfig, SlackConnectorUpsertRequest, SlackPollResponse,
+    SlackSendRequest, SlackSendResponse, SubAgentTask, TaskMode, TelegramConnectorConfig,
+    TelegramConnectorUpsertRequest, TelegramPollResponse, TelegramSendRequest,
+    TelegramSendResponse, ThinkingLevel, TrustPolicy, TrustUpdateRequest, WakeTrigger,
+    WebhookConnectorConfig, WebhookConnectorUpsertRequest, WebhookEventRequest,
+    WebhookEventResponse, DEFAULT_ANTHROPIC_URL, DEFAULT_CHATGPT_CODEX_URL,
     DEFAULT_LOCAL_OPENAI_URL, DEFAULT_MOONSHOT_URL, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL,
-    DEFAULT_OPENROUTER_URL, DEFAULT_VENICE_URL, INTERNAL_DAEMON_ARG,
+    DEFAULT_OPENROUTER_URL, DEFAULT_VENICE_URL, DISPLAY_APP_NAME, INTERNAL_DAEMON_ARG,
+    PRIMARY_COMMAND_NAME,
 };
 use agent_policy::{
     allow_shell, autonomy_summary, autonomy_warning, permission_summary, trust_summary,
 };
 use agent_providers::{
     build_oauth_authorization_url, delete_secret, exchange_oauth_code, health_check,
-    keyring_available, list_model_descriptors, list_models as provider_list_models,
-    list_models_with_overrides as provider_list_models_with_overrides, load_api_key,
-    load_oauth_token, store_api_key, store_oauth_token,
+    keyring_available, list_models as provider_list_models,
+    list_models_with_overrides as provider_list_models_with_overrides, store_api_key,
+    store_oauth_token,
 };
-use agent_storage::Storage;
+use agent_storage::{plugins as storage_plugins, Storage};
 use anyhow::{anyhow, bail, Context, Result};
-use arboard::Clipboard;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
-use dialoguer::{theme::ColorfulTheme, Confirm, FuzzySelect, Input, Password, Select};
+pub(crate) use connector_cli::{
+    load_discord_connectors, load_home_assistant_connectors, load_inbox_connectors,
+    load_signal_connectors, load_slack_connectors, load_telegram_connectors,
+    load_webhook_connectors,
+};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
+pub(crate) use interactive_commands::{
+    parse_interactive_command, InteractiveCommand, InteractiveModelSelection,
+    InteractiveSkillCommand,
+};
+#[cfg(test)]
+use interactive_ui::normalize_model_selection_value;
+pub(crate) use interactive_ui::{
+    clear_terminal, interactive_model_choices_text, interactive_provider_choices_text,
+    print_interactive_help, provider_has_saved_access, resolve_interactive_model_selection,
+    resolve_interactive_provider_selection, resolve_requested_model_override,
+    resolve_session_model_override,
+};
+pub(crate) use operations_cli::{dashboard_launch_url, dashboard_ui_url};
+use provider_auth::*;
+pub(crate) use provider_auth::{
+    browser_hosted_kind_to_provider_kind, complete_browser_login, complete_oauth_login,
+    default_browser_hosted_url, default_hosted_url, hosted_kind_to_provider_kind,
+    interactive_provider_setup, openai_browser_oauth_config,
+};
 use reqwest::{Client, Method};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -109,12 +170,12 @@ enum BrowserLoginResult {
 
 #[derive(Parser)]
 #[command(
-    name = "autism",
-    bin_name = "autism",
+    name = "nuclear",
+    bin_name = "nuclear",
     version,
-    about = "Persistent local coding agent CLI",
+    about = "Persistent local work agent CLI for Nuclear Agent",
     subcommand_negates_reqs = true,
-    override_usage = "autism [OPTIONS] [PROMPT]\n       autism [OPTIONS] <COMMAND> [ARGS]"
+    override_usage = "nuclear [OPTIONS] [PROMPT]\n       nuclear [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct Cli {
     #[arg(value_name = "PROMPT")]
@@ -161,6 +222,14 @@ enum Commands {
     App {
         #[command(subcommand)]
         command: AppCommands,
+    },
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommands,
+    },
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommands,
     },
     Telegram {
         #[command(subcommand)]
@@ -263,52 +332,6 @@ enum ProviderCommands {
     Add(ProviderAddArgs),
     AddLocal(LocalProviderAddArgs),
     List,
-}
-
-#[derive(Subcommand)]
-enum McpCommands {
-    List {
-        #[arg(long, default_value_t = false)]
-        json: bool,
-    },
-    Get {
-        id: String,
-        #[arg(long, default_value_t = false)]
-        json: bool,
-    },
-    Add(McpAddArgs),
-    Remove {
-        id: String,
-    },
-    Enable {
-        id: String,
-    },
-    Disable {
-        id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum AppCommands {
-    List {
-        #[arg(long, default_value_t = false)]
-        json: bool,
-    },
-    Get {
-        id: String,
-        #[arg(long, default_value_t = false)]
-        json: bool,
-    },
-    Add(AppAddArgs),
-    Remove {
-        id: String,
-    },
-    Enable {
-        id: String,
-    },
-    Disable {
-        id: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -707,6 +730,8 @@ struct RunArgs {
     tasks: Vec<String>,
     #[arg(long, value_enum)]
     thinking: Option<ThinkingLevelArg>,
+    #[arg(long, value_enum)]
+    mode: Option<TaskModeArg>,
     #[arg(long = "image", value_name = "PATH")]
     images: Vec<PathBuf>,
     #[arg(long = "output-schema", value_name = "FILE")]
@@ -727,6 +752,8 @@ struct ChatArgs {
     alias: Option<String>,
     #[arg(long, value_enum)]
     thinking: Option<ThinkingLevelArg>,
+    #[arg(long, value_enum)]
+    mode: Option<TaskModeArg>,
     #[arg(long = "image", value_name = "PATH")]
     images: Vec<PathBuf>,
     #[arg(long, value_enum)]
@@ -739,50 +766,6 @@ struct ChatArgs {
 struct PermissionsArgs {
     #[arg(value_enum)]
     preset: Option<PermissionPresetArg>,
-}
-
-#[derive(Args)]
-struct McpAddArgs {
-    #[arg(long)]
-    id: String,
-    #[arg(long)]
-    name: String,
-    #[arg(long)]
-    description: String,
-    #[arg(long)]
-    command: String,
-    #[arg(long = "arg")]
-    args: Vec<String>,
-    #[arg(long = "tool-name")]
-    tool_name: String,
-    #[arg(long = "schema-file")]
-    schema_file: PathBuf,
-    #[arg(long)]
-    cwd: Option<PathBuf>,
-    #[arg(long, default_value_t = true)]
-    enabled: bool,
-}
-
-#[derive(Args)]
-struct AppAddArgs {
-    #[arg(long)]
-    id: String,
-    #[arg(long)]
-    name: String,
-    #[arg(long)]
-    description: String,
-    #[arg(long)]
-    command: String,
-    #[arg(long = "arg")]
-    args: Vec<String>,
-    #[arg(long = "tool-name")]
-    tool_name: String,
-    #[arg(long = "schema-file")]
-    schema_file: PathBuf,
-    #[arg(long)]
-    cwd: Option<PathBuf>,
-    #[arg(long, default_value_t = true)]
-    enabled: bool,
 }
 
 #[derive(Args)]
@@ -1134,6 +1117,7 @@ struct ResetArgs {
 enum SessionCommands {
     List,
     Resume { id: String },
+    ResumePacket { id: String },
     Rename { id: String, title: String },
 }
 
@@ -1269,6 +1253,12 @@ enum MemoryCommands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
     },
+    Rebuild {
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long, default_value_t = false)]
+        recompute_embeddings: bool,
+    },
     Remember {
         subject: String,
         content: String,
@@ -1341,6 +1331,12 @@ enum PermissionPresetArg {
     Suggest,
     AutoEdit,
     FullAuto,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum TaskModeArg {
+    Build,
+    Daily,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1424,6 +1420,15 @@ impl From<PermissionPresetArg> for PermissionPreset {
     }
 }
 
+impl From<TaskModeArg> for TaskMode {
+    fn from(value: TaskModeArg) -> Self {
+        match value {
+            TaskModeArg::Build => TaskMode::Build,
+            TaskModeArg::Daily => TaskMode::Daily,
+        }
+    }
+}
+
 impl From<AutonomyModeArg> for AutonomyMode {
     fn from(value: AutonomyModeArg) -> Self {
         match value {
@@ -1494,6 +1499,7 @@ async fn main() -> Result<()> {
                 None,
                 cli.prompt,
                 None,
+                None,
                 Vec::new(),
                 None,
                 false,
@@ -1513,6 +1519,8 @@ async fn main() -> Result<()> {
         Some(Commands::Provider { command }) => provider_command(&storage, command).await?,
         Some(Commands::Mcp { command }) => mcp_command(&storage, command).await?,
         Some(Commands::App { command }) => app_command(&storage, command).await?,
+        Some(Commands::Plugin { command }) => plugin_command(&storage, command).await?,
+        Some(Commands::Repo { command }) => repo_command(&storage, command).await?,
         Some(Commands::Telegram { command }) => telegram_command(&storage, command).await?,
         Some(Commands::Discord { command }) => discord_command(&storage, command).await?,
         Some(Commands::Slack { command }) => slack_command(&storage, command).await?,
@@ -1576,7 +1584,10 @@ async fn setup(storage: &Storage) -> Result<()> {
 
     if needs_onboarding(&config) {
         println!();
-        println!("A main model must be configured before autism can start.");
+        println!(
+            "A main model must be configured before {} can start.",
+            PRIMARY_COMMAND_NAME
+        );
         let (request, alias) = interactive_provider_setup(&theme, &config).await?;
         apply_provider_request_locally(&mut config, &request)?;
         config.main_agent_alias = Some(alias.alias.clone());
@@ -1662,15 +1673,15 @@ async fn setup(storage: &Storage) -> Result<()> {
 }
 
 fn needs_onboarding(config: &AppConfig) -> bool {
-    !config.onboarding_complete || config.providers.is_empty() || !has_usable_main_alias(config)
+    !config.onboarding_complete || !has_usable_main_alias(config)
 }
 
 fn has_usable_main_alias(config: &AppConfig) -> bool {
     config
         .main_alias()
         .ok()
-        .and_then(|alias| config.get_provider(&alias.provider_id))
-        .is_some_and(provider_has_saved_access)
+        .and_then(|alias| config.resolve_provider(&alias.provider_id))
+        .is_some_and(|provider| provider_has_saved_access(&provider))
 }
 
 async fn ensure_onboarded(storage: &Storage) -> Result<()> {
@@ -1680,7 +1691,10 @@ async fn ensure_onboarded(storage: &Storage) -> Result<()> {
     }
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        bail!("no completed setup found; run `autism setup` in an interactive terminal first");
+        bail!(
+            "no completed setup found; run `{} setup` in an interactive terminal first",
+            PRIMARY_COMMAND_NAME
+        );
     }
 
     println!("No completed setup found. Launching onboarding.");
@@ -1703,17 +1717,17 @@ fn print_onboarding_banner(config: &AppConfig) -> Result<()> {
         .as_deref()
         .unwrap_or("not configured");
     let lines = [
-        format!(" >_ Autism CLI (v{version})"),
+        format!(" >_ {DISPLAY_APP_NAME} CLI (v{version})"),
         String::new(),
         format!(" model:     {model_label}"),
         format!(" directory: {}", directory.display()),
     ];
     let width = lines.iter().map(|line| line.len()).max().unwrap_or(0) + 2;
-    println!("╭{}╮", "─".repeat(width));
+    println!("â•­{}â•®", "â”€".repeat(width));
     for line in lines {
-        println!("│ {:width$} │", line, width = width.saturating_sub(1));
+        println!("â”‚ {:width$} â”‚", line, width = width.saturating_sub(1));
     }
-    println!("╰{}╯", "─".repeat(width));
+    println!("â•°{}â•¯", "â”€".repeat(width));
     Ok(())
 }
 
@@ -1752,7 +1766,7 @@ fn print_onboarding_banner_clean(config: &AppConfig) -> Result<()> {
         .as_deref()
         .unwrap_or("not configured");
     let lines = [
-        format!(" >_ Autism CLI (v{version})"),
+        format!(" >_ {DISPLAY_APP_NAME} CLI (v{version})"),
         String::new(),
         format!(" model:     {model_label}"),
         format!(" directory: {}", directory.display()),
@@ -1806,6 +1820,7 @@ async fn daemon_command(storage: &Storage, command: DaemonCommands) -> Result<()
             println!("autonomy: {}", autonomy_summary(status.autonomy.state));
             println!("providers: {}", status.providers);
             println!("aliases: {}", status.aliases);
+            println!("plugins: {}", status.plugins);
             println!("webhooks: {}", status.webhook_connectors);
             println!("inboxes: {}", status.inbox_connectors);
             println!("telegram: {}", status.telegram_connectors);
@@ -2077,1759 +2092,6 @@ struct SkillInfo {
     path: PathBuf,
 }
 
-async fn mcp_command(storage: &Storage, command: McpCommands) -> Result<()> {
-    match command {
-        McpCommands::List { json } => {
-            let servers = load_mcp_servers(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&servers)?);
-            } else {
-                for server in servers {
-                    println!(
-                        "{} [{}] tool={} enabled={} cmd={} {}",
-                        server.id,
-                        server.name,
-                        server.tool_name,
-                        server.enabled,
-                        server.command,
-                        server.args.join(" ")
-                    );
-                }
-            }
-        }
-        McpCommands::Get { id, json } => {
-            let server = load_mcp_servers(storage)
-                .await?
-                .into_iter()
-                .find(|server| server.id == id)
-                .ok_or_else(|| anyhow!("unknown MCP server '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&server)?);
-            } else {
-                println!("id={}", server.id);
-                println!("name={}", server.name);
-                println!("tool_name={}", server.tool_name);
-                println!("enabled={}", server.enabled);
-                println!("command={} {}", server.command, server.args.join(" "));
-                println!("schema={}", server.input_schema_json);
-            }
-        }
-        McpCommands::Add(args) => {
-            let server = McpServerConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                command: args.command,
-                args: args.args,
-                tool_name: args.tool_name,
-                input_schema_json: load_schema_file(&args.schema_file)?,
-                enabled: args.enabled,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: McpServerConfig = client
-                    .post(
-                        "/v1/mcp",
-                        &McpServerUpsertRequest {
-                            server: server.clone(),
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_mcp_server(server.clone());
-                storage.save_config(&config)?;
-            }
-            println!("mcp_server='{}' configured", args.id);
-        }
-        McpCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value = client.delete(&format!("/v1/mcp/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                if !config.remove_mcp_server(&id) {
-                    bail!("unknown MCP server '{id}'");
-                }
-                storage.save_config(&config)?;
-            }
-            println!("mcp_server='{}' removed", id);
-        }
-        McpCommands::Enable { id } => {
-            set_mcp_enabled(storage, &id, true).await?;
-            println!("mcp_server='{}' enabled", id);
-        }
-        McpCommands::Disable { id } => {
-            set_mcp_enabled(storage, &id, false).await?;
-            println!("mcp_server='{}' disabled", id);
-        }
-    }
-    Ok(())
-}
-
-async fn app_command(storage: &Storage, command: AppCommands) -> Result<()> {
-    match command {
-        AppCommands::List { json } => {
-            let connectors = load_app_connectors(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connectors)?);
-            } else {
-                for connector in connectors {
-                    println!(
-                        "{} [{}] tool={} enabled={} cmd={} {}",
-                        connector.id,
-                        connector.name,
-                        connector.tool_name,
-                        connector.enabled,
-                        connector.command,
-                        connector.args.join(" ")
-                    );
-                }
-            }
-        }
-        AppCommands::Get { id, json } => {
-            let connector = load_app_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == id)
-                .ok_or_else(|| anyhow!("unknown app connector '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connector)?);
-            } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
-                println!("tool_name={}", connector.tool_name);
-                println!("enabled={}", connector.enabled);
-                println!("command={} {}", connector.command, connector.args.join(" "));
-                println!("schema={}", connector.input_schema_json);
-            }
-        }
-        AppCommands::Add(args) => {
-            let connector = AppConnectorConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                command: args.command,
-                args: args.args,
-                tool_name: args.tool_name,
-                input_schema_json: load_schema_file(&args.schema_file)?,
-                enabled: args.enabled,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: AppConnectorConfig = client
-                    .post(
-                        "/v1/apps",
-                        &AppConnectorUpsertRequest {
-                            connector: connector.clone(),
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_app_connector(connector.clone());
-                storage.save_config(&config)?;
-            }
-            println!("app_connector='{}' configured", args.id);
-        }
-        AppCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value = client.delete(&format!("/v1/apps/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                if !config.remove_app_connector(&id) {
-                    bail!("unknown app connector '{id}'");
-                }
-                storage.save_config(&config)?;
-            }
-            println!("app_connector='{}' removed", id);
-        }
-        AppCommands::Enable { id } => {
-            set_app_enabled(storage, &id, true).await?;
-            println!("app_connector='{}' enabled", id);
-        }
-        AppCommands::Disable { id } => {
-            set_app_enabled(storage, &id, false).await?;
-            println!("app_connector='{}' disabled", id);
-        }
-    }
-    Ok(())
-}
-
-async fn telegram_command(storage: &Storage, command: TelegramCommands) -> Result<()> {
-    match command {
-        TelegramCommands::List { json } => {
-            let connectors = load_telegram_connectors(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connectors)?);
-            } else {
-                for connector in connectors {
-                    println!(
-                        "{} [{}] enabled={} token={} require_pairing_approval={} chats={} users={} alias={} model={} last_update_id={} cwd={}",
-                        connector.id,
-                        connector.name,
-                        connector.enabled,
-                        connector.bot_token_keychain_account.is_some(),
-                        connector.require_pairing_approval,
-                        format_i64_list(&connector.allowed_chat_ids),
-                        format_i64_list(&connector.allowed_user_ids),
-                        connector.alias.as_deref().unwrap_or("-"),
-                        connector.requested_model.as_deref().unwrap_or("-"),
-                        connector
-                            .last_update_id
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "-".to_string()),
-                        connector
-                            .cwd
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    );
-                }
-            }
-        }
-        TelegramCommands::Get { id, json } => {
-            let connector = load_telegram_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == id)
-                .ok_or_else(|| anyhow!("unknown telegram connector '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connector)?);
-            } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
-                println!("enabled={}", connector.enabled);
-                println!(
-                    "bot_token_configured={}",
-                    connector.bot_token_keychain_account.is_some()
-                );
-                println!(
-                    "require_pairing_approval={}",
-                    connector.require_pairing_approval
-                );
-                println!("chat_ids={}", format_i64_list(&connector.allowed_chat_ids));
-                println!("user_ids={}", format_i64_list(&connector.allowed_user_ids));
-                println!("alias={}", connector.alias.as_deref().unwrap_or("-"));
-                println!(
-                    "model={}",
-                    connector.requested_model.as_deref().unwrap_or("-")
-                );
-                println!(
-                    "last_update_id={}",
-                    connector
-                        .last_update_id
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-                println!(
-                    "cwd={}",
-                    connector
-                        .cwd
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-            }
-        }
-        TelegramCommands::Add(args) => {
-            let existing = load_telegram_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == args.id);
-            let bot_token_keychain_account = match args.bot_token {
-                Some(bot_token) => Some(store_api_key(
-                    &format!("connector:telegram:{}", args.id),
-                    &bot_token,
-                )?),
-                None => existing
-                    .as_ref()
-                    .and_then(|connector| connector.bot_token_keychain_account.clone()),
-            };
-            if bot_token_keychain_account.is_none() {
-                bail!("--bot-token is required for new telegram connectors");
-            }
-            let connector = TelegramConnectorConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                enabled: args.enabled,
-                bot_token_keychain_account,
-                require_pairing_approval: args.require_pairing_approval,
-                allowed_chat_ids: args.chat_ids,
-                allowed_user_ids: args.user_ids,
-                last_update_id: existing.and_then(|connector| connector.last_update_id),
-                alias: args.alias,
-                requested_model: args.model,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: TelegramConnectorConfig = client
-                    .post(
-                        "/v1/telegram",
-                        &TelegramConnectorUpsertRequest {
-                            connector: connector.clone(),
-                            bot_token: None,
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_telegram_connector(connector.clone());
-                storage.save_config(&config)?;
-            }
-            println!(
-                "telegram='{}' configured require_pairing_approval={} chats={} users={} auto_poll=daemon",
-                args.id,
-                connector.require_pairing_approval,
-                format_i64_list(&connector.allowed_chat_ids),
-                format_i64_list(&connector.allowed_user_ids)
-            );
-        }
-        TelegramCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value = client.delete(&format!("/v1/telegram/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                let connector = config
-                    .telegram_connectors
-                    .iter()
-                    .find(|connector| connector.id == id)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("unknown telegram connector '{id}'"))?;
-                config.remove_telegram_connector(&id);
-                storage.save_config(&config)?;
-                if let Some(account) = connector.bot_token_keychain_account.as_deref() {
-                    let _ = delete_secret(account);
-                }
-            }
-            println!("telegram='{}' removed", id);
-        }
-        TelegramCommands::Enable { id } => {
-            set_telegram_enabled(storage, &id, true).await?;
-            println!("telegram='{}' enabled", id);
-        }
-        TelegramCommands::Disable { id } => {
-            set_telegram_enabled(storage, &id, false).await?;
-            println!("telegram='{}' disabled", id);
-        }
-        TelegramCommands::Poll { id } => {
-            let client = ensure_daemon(storage).await?;
-            let response: TelegramPollResponse = client
-                .post(&format!("/v1/telegram/{id}/poll"), &serde_json::json!({}))
-                .await?;
-            println!(
-                "telegram='{}' processed_updates={} queued_missions={} pending_approvals={} last_update_id={}",
-                response.connector_id,
-                response.processed_updates,
-                response.queued_missions,
-                response.pending_approvals,
-                response
-                    .last_update_id
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "-".to_string())
-            );
-        }
-        TelegramCommands::Send(args) => {
-            let client = ensure_daemon(storage).await?;
-            let response: TelegramSendResponse = client
-                .post(
-                    &format!("/v1/telegram/{}/send", args.id),
-                    &TelegramSendRequest {
-                        chat_id: args.chat_id,
-                        text: args.text,
-                        disable_notification: args.disable_notification,
-                    },
-                )
-                .await?;
-            println!(
-                "telegram='{}' sent message to chat={} message_id={}",
-                response.connector_id,
-                response.chat_id,
-                response
-                    .message_id
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "-".to_string())
-            );
-        }
-        TelegramCommands::Approvals { command } => match command {
-            TelegramApprovalCommands::List { limit, json } => {
-                let approvals =
-                    load_connector_approvals(storage, ConnectorKind::Telegram, limit).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&approvals)?);
-                } else {
-                    println!("{}", format_connector_approvals(&approvals));
-                }
-            }
-            TelegramApprovalCommands::Approve { id, note } => {
-                let approval = update_connector_approval_status(
-                    storage,
-                    &id,
-                    ConnectorApprovalStatus::Approved,
-                    note,
-                )
-                .await?;
-                println!(
-                    "approved telegram pairing={} connector={} chat={} user={}",
-                    approval.id,
-                    approval.connector_id,
-                    approval.external_chat_display.as_deref().unwrap_or("-"),
-                    approval.external_user_display.as_deref().unwrap_or("-")
-                );
-            }
-            TelegramApprovalCommands::Reject { id, note } => {
-                let approval = update_connector_approval_status(
-                    storage,
-                    &id,
-                    ConnectorApprovalStatus::Rejected,
-                    note,
-                )
-                .await?;
-                println!(
-                    "rejected telegram pairing={} connector={} chat={} user={}",
-                    approval.id,
-                    approval.connector_id,
-                    approval.external_chat_display.as_deref().unwrap_or("-"),
-                    approval.external_user_display.as_deref().unwrap_or("-")
-                );
-            }
-        },
-    }
-    Ok(())
-}
-
-async fn discord_command(storage: &Storage, command: DiscordCommands) -> Result<()> {
-    match command {
-        DiscordCommands::List { json } => {
-            let connectors = load_discord_connectors(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connectors)?);
-            } else {
-                for connector in connectors {
-                    println!(
-                        "{} [{}] enabled={} token={} require_pairing_approval={} monitored_channels={} allowed_channels={} users={} tracked_channels={} alias={} model={} cwd={}",
-                        connector.id,
-                        connector.name,
-                        connector.enabled,
-                        connector.bot_token_keychain_account.is_some(),
-                        connector.require_pairing_approval,
-                        format_string_list(&connector.monitored_channel_ids),
-                        format_string_list(&connector.allowed_channel_ids),
-                        format_string_list(&connector.allowed_user_ids),
-                        connector.channel_cursors.len(),
-                        connector.alias.as_deref().unwrap_or("-"),
-                        connector.requested_model.as_deref().unwrap_or("-"),
-                        connector
-                            .cwd
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    );
-                }
-            }
-        }
-        DiscordCommands::Get { id, json } => {
-            let connector = load_discord_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == id)
-                .ok_or_else(|| anyhow!("unknown discord connector '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connector)?);
-            } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
-                println!("enabled={}", connector.enabled);
-                println!(
-                    "bot_token_configured={}",
-                    connector.bot_token_keychain_account.is_some()
-                );
-                println!(
-                    "require_pairing_approval={}",
-                    connector.require_pairing_approval
-                );
-                println!(
-                    "monitored_channel_ids={}",
-                    format_string_list(&connector.monitored_channel_ids)
-                );
-                println!(
-                    "allowed_channel_ids={}",
-                    format_string_list(&connector.allowed_channel_ids)
-                );
-                println!(
-                    "allowed_user_ids={}",
-                    format_string_list(&connector.allowed_user_ids)
-                );
-                println!(
-                    "channel_cursors={}",
-                    format_discord_channel_cursors(&connector.channel_cursors)
-                );
-                println!("alias={}", connector.alias.as_deref().unwrap_or("-"));
-                println!(
-                    "model={}",
-                    connector.requested_model.as_deref().unwrap_or("-")
-                );
-                println!(
-                    "cwd={}",
-                    connector
-                        .cwd
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-            }
-        }
-        DiscordCommands::Add(args) => {
-            let existing = load_discord_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == args.id);
-            let bot_token_keychain_account = match args.bot_token {
-                Some(bot_token) => Some(store_api_key(
-                    &format!("connector:discord:{}", args.id),
-                    &bot_token,
-                )?),
-                None => existing
-                    .as_ref()
-                    .and_then(|connector| connector.bot_token_keychain_account.clone()),
-            };
-            if bot_token_keychain_account.is_none() {
-                bail!("--bot-token is required for new discord connectors");
-            }
-            let connector = DiscordConnectorConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                enabled: args.enabled,
-                bot_token_keychain_account,
-                require_pairing_approval: args.require_pairing_approval,
-                monitored_channel_ids: args.monitored_channel_ids,
-                allowed_channel_ids: args.allowed_channel_ids,
-                allowed_user_ids: args.user_ids,
-                channel_cursors: existing
-                    .map(|connector| connector.channel_cursors)
-                    .unwrap_or_default(),
-                alias: args.alias,
-                requested_model: args.model,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: DiscordConnectorConfig = client
-                    .post(
-                        "/v1/discord",
-                        &DiscordConnectorUpsertRequest {
-                            connector: connector.clone(),
-                            bot_token: None,
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_discord_connector(connector.clone());
-                storage.save_config(&config)?;
-            }
-            println!(
-                "discord='{}' configured require_pairing_approval={} monitored_channels={} allowed_channels={} users={} auto_poll=daemon",
-                args.id,
-                connector.require_pairing_approval,
-                format_string_list(&connector.monitored_channel_ids),
-                format_string_list(&connector.allowed_channel_ids),
-                format_string_list(&connector.allowed_user_ids)
-            );
-        }
-        DiscordCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value = client.delete(&format!("/v1/discord/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                let connector = config
-                    .discord_connectors
-                    .iter()
-                    .find(|connector| connector.id == id)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("unknown discord connector '{id}'"))?;
-                config.remove_discord_connector(&id);
-                storage.save_config(&config)?;
-                if let Some(account) = connector.bot_token_keychain_account.as_deref() {
-                    let _ = delete_secret(account);
-                }
-            }
-            println!("discord='{}' removed", id);
-        }
-        DiscordCommands::Enable { id } => {
-            set_discord_enabled(storage, &id, true).await?;
-            println!("discord='{}' enabled", id);
-        }
-        DiscordCommands::Disable { id } => {
-            set_discord_enabled(storage, &id, false).await?;
-            println!("discord='{}' disabled", id);
-        }
-        DiscordCommands::Poll { id } => {
-            let client = ensure_daemon(storage).await?;
-            let response: DiscordPollResponse = client
-                .post(&format!("/v1/discord/{id}/poll"), &serde_json::json!({}))
-                .await?;
-            println!(
-                "discord='{}' processed_messages={} queued_missions={} pending_approvals={} updated_channels={}",
-                response.connector_id,
-                response.processed_messages,
-                response.queued_missions,
-                response.pending_approvals,
-                response.updated_channels
-            );
-        }
-        DiscordCommands::Send(args) => {
-            let client = ensure_daemon(storage).await?;
-            let response: DiscordSendResponse = client
-                .post(
-                    &format!("/v1/discord/{}/send", args.id),
-                    &DiscordSendRequest {
-                        channel_id: args.channel_id.clone(),
-                        content: args.content.clone(),
-                    },
-                )
-                .await?;
-            println!(
-                "discord='{}' sent message to channel={} message_id={}",
-                response.connector_id,
-                response.channel_id,
-                response.message_id.as_deref().unwrap_or("-")
-            );
-        }
-        DiscordCommands::Approvals { command } => match command {
-            DiscordApprovalCommands::List { limit, json } => {
-                let approvals =
-                    load_connector_approvals(storage, ConnectorKind::Discord, limit).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&approvals)?);
-                } else {
-                    println!("{}", format_connector_approvals(&approvals));
-                }
-            }
-            DiscordApprovalCommands::Approve { id, note } => {
-                let approval = update_connector_approval_status(
-                    storage,
-                    &id,
-                    ConnectorApprovalStatus::Approved,
-                    note,
-                )
-                .await?;
-                println!(
-                    "approved discord pairing={} connector={} channel={} user={}",
-                    approval.id,
-                    approval.connector_id,
-                    approval.external_chat_display.as_deref().unwrap_or("-"),
-                    approval.external_user_display.as_deref().unwrap_or("-")
-                );
-            }
-            DiscordApprovalCommands::Reject { id, note } => {
-                let approval = update_connector_approval_status(
-                    storage,
-                    &id,
-                    ConnectorApprovalStatus::Rejected,
-                    note,
-                )
-                .await?;
-                println!(
-                    "rejected discord pairing={} connector={} channel={} user={}",
-                    approval.id,
-                    approval.connector_id,
-                    approval.external_chat_display.as_deref().unwrap_or("-"),
-                    approval.external_user_display.as_deref().unwrap_or("-")
-                );
-            }
-        },
-    }
-    Ok(())
-}
-
-async fn slack_command(storage: &Storage, command: SlackCommands) -> Result<()> {
-    match command {
-        SlackCommands::List { json } => {
-            let connectors = load_slack_connectors(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connectors)?);
-            } else {
-                for connector in connectors {
-                    println!(
-                        "{} [{}] enabled={} token={} require_pairing_approval={} monitored_channels={} allowed_channels={} users={} tracked_channels={} alias={} model={} cwd={}",
-                        connector.id,
-                        connector.name,
-                        connector.enabled,
-                        connector.bot_token_keychain_account.is_some(),
-                        connector.require_pairing_approval,
-                        format_string_list(&connector.monitored_channel_ids),
-                        format_string_list(&connector.allowed_channel_ids),
-                        format_string_list(&connector.allowed_user_ids),
-                        connector.channel_cursors.len(),
-                        connector.alias.as_deref().unwrap_or("-"),
-                        connector.requested_model.as_deref().unwrap_or("-"),
-                        connector
-                            .cwd
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    );
-                }
-            }
-        }
-        SlackCommands::Get { id, json } => {
-            let connector = load_slack_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == id)
-                .ok_or_else(|| anyhow!("unknown slack connector '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connector)?);
-            } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
-                println!("enabled={}", connector.enabled);
-                println!(
-                    "bot_token_configured={}",
-                    connector.bot_token_keychain_account.is_some()
-                );
-                println!(
-                    "require_pairing_approval={}",
-                    connector.require_pairing_approval
-                );
-                println!(
-                    "monitored_channel_ids={}",
-                    format_string_list(&connector.monitored_channel_ids)
-                );
-                println!(
-                    "allowed_channel_ids={}",
-                    format_string_list(&connector.allowed_channel_ids)
-                );
-                println!(
-                    "allowed_user_ids={}",
-                    format_string_list(&connector.allowed_user_ids)
-                );
-                println!(
-                    "channel_cursors={}",
-                    format_slack_channel_cursors(&connector.channel_cursors)
-                );
-                println!("alias={}", connector.alias.as_deref().unwrap_or("-"));
-                println!(
-                    "model={}",
-                    connector.requested_model.as_deref().unwrap_or("-")
-                );
-                println!(
-                    "cwd={}",
-                    connector
-                        .cwd
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-            }
-        }
-        SlackCommands::Add(args) => {
-            let existing = load_slack_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == args.id);
-            let bot_token_keychain_account = match args.bot_token {
-                Some(bot_token) => Some(store_api_key(
-                    &format!("connector:slack:{}", args.id),
-                    &bot_token,
-                )?),
-                None => existing
-                    .as_ref()
-                    .and_then(|connector| connector.bot_token_keychain_account.clone()),
-            };
-            if bot_token_keychain_account.is_none() {
-                bail!("--bot-token is required for new slack connectors");
-            }
-            let connector = SlackConnectorConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                enabled: args.enabled,
-                bot_token_keychain_account,
-                require_pairing_approval: args.require_pairing_approval,
-                monitored_channel_ids: args.monitored_channel_ids,
-                allowed_channel_ids: args.allowed_channel_ids,
-                allowed_user_ids: args.user_ids,
-                channel_cursors: existing
-                    .map(|connector| connector.channel_cursors)
-                    .unwrap_or_default(),
-                alias: args.alias,
-                requested_model: args.model,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: SlackConnectorConfig = client
-                    .post(
-                        "/v1/slack",
-                        &SlackConnectorUpsertRequest {
-                            connector: connector.clone(),
-                            bot_token: None,
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_slack_connector(connector.clone());
-                storage.save_config(&config)?;
-            }
-            println!(
-                "slack='{}' configured require_pairing_approval={} monitored_channels={} allowed_channels={} users={} auto_poll=daemon",
-                args.id,
-                connector.require_pairing_approval,
-                format_string_list(&connector.monitored_channel_ids),
-                format_string_list(&connector.allowed_channel_ids),
-                format_string_list(&connector.allowed_user_ids)
-            );
-        }
-        SlackCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value = client.delete(&format!("/v1/slack/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                let connector = config
-                    .slack_connectors
-                    .iter()
-                    .find(|connector| connector.id == id)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("unknown slack connector '{id}'"))?;
-                config.remove_slack_connector(&id);
-                storage.save_config(&config)?;
-                if let Some(account) = connector.bot_token_keychain_account.as_deref() {
-                    let _ = delete_secret(account);
-                }
-            }
-            println!("slack='{}' removed", id);
-        }
-        SlackCommands::Enable { id } => {
-            set_slack_enabled(storage, &id, true).await?;
-            println!("slack='{}' enabled", id);
-        }
-        SlackCommands::Disable { id } => {
-            set_slack_enabled(storage, &id, false).await?;
-            println!("slack='{}' disabled", id);
-        }
-        SlackCommands::Poll { id } => {
-            let client = ensure_daemon(storage).await?;
-            let response: SlackPollResponse = client
-                .post(&format!("/v1/slack/{id}/poll"), &serde_json::json!({}))
-                .await?;
-            println!(
-                "slack='{}' processed_messages={} queued_missions={} pending_approvals={} updated_channels={}",
-                response.connector_id,
-                response.processed_messages,
-                response.queued_missions,
-                response.pending_approvals,
-                response.updated_channels
-            );
-        }
-        SlackCommands::Send(args) => {
-            let client = ensure_daemon(storage).await?;
-            let response: SlackSendResponse = client
-                .post(
-                    &format!("/v1/slack/{}/send", args.id),
-                    &SlackSendRequest {
-                        channel_id: args.channel_id.clone(),
-                        text: args.text.clone(),
-                    },
-                )
-                .await?;
-            println!(
-                "slack='{}' sent message to channel={} ts={}",
-                response.connector_id,
-                response.channel_id,
-                response.message_ts.as_deref().unwrap_or("-")
-            );
-        }
-        SlackCommands::Approvals { command } => match command {
-            SlackApprovalCommands::List { limit, json } => {
-                let approvals =
-                    load_connector_approvals(storage, ConnectorKind::Slack, limit).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&approvals)?);
-                } else {
-                    println!("{}", format_connector_approvals(&approvals));
-                }
-            }
-            SlackApprovalCommands::Approve { id, note } => {
-                let approval = update_connector_approval_status(
-                    storage,
-                    &id,
-                    ConnectorApprovalStatus::Approved,
-                    note,
-                )
-                .await?;
-                println!(
-                    "approved slack pairing={} connector={} channel={} user={}",
-                    approval.id,
-                    approval.connector_id,
-                    approval.external_chat_display.as_deref().unwrap_or("-"),
-                    approval.external_user_display.as_deref().unwrap_or("-")
-                );
-            }
-            SlackApprovalCommands::Reject { id, note } => {
-                let approval = update_connector_approval_status(
-                    storage,
-                    &id,
-                    ConnectorApprovalStatus::Rejected,
-                    note,
-                )
-                .await?;
-                println!(
-                    "rejected slack pairing={} connector={} channel={} user={}",
-                    approval.id,
-                    approval.connector_id,
-                    approval.external_chat_display.as_deref().unwrap_or("-"),
-                    approval.external_user_display.as_deref().unwrap_or("-")
-                );
-            }
-        },
-    }
-    Ok(())
-}
-
-async fn signal_command(storage: &Storage, command: SignalCommands) -> Result<()> {
-    match command {
-        SignalCommands::List { json } => {
-            let connectors = load_signal_connectors(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connectors)?);
-            } else {
-                for connector in connectors {
-                    println!(
-                        "{} [{}] enabled={} account={} cli_path={} require_pairing_approval={} monitored_groups={} allowed_groups={} users={} alias={} model={} cwd={}",
-                        connector.id,
-                        connector.name,
-                        connector.enabled,
-                        connector.account,
-                        connector
-                            .cli_path
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "signal-cli".to_string()),
-                        connector.require_pairing_approval,
-                        format_string_list(&connector.monitored_group_ids),
-                        format_string_list(&connector.allowed_group_ids),
-                        format_string_list(&connector.allowed_user_ids),
-                        connector.alias.as_deref().unwrap_or("-"),
-                        connector.requested_model.as_deref().unwrap_or("-"),
-                        connector
-                            .cwd
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    );
-                }
-            }
-        }
-        SignalCommands::Get { id, json } => {
-            let connector = load_signal_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == id)
-                .ok_or_else(|| anyhow!("unknown signal connector '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connector)?);
-            } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
-                println!("enabled={}", connector.enabled);
-                println!("account={}", connector.account);
-                println!(
-                    "cli_path={}",
-                    connector
-                        .cli_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "signal-cli".to_string())
-                );
-                println!(
-                    "require_pairing_approval={}",
-                    connector.require_pairing_approval
-                );
-                println!(
-                    "monitored_group_ids={}",
-                    format_string_list(&connector.monitored_group_ids)
-                );
-                println!(
-                    "allowed_group_ids={}",
-                    format_string_list(&connector.allowed_group_ids)
-                );
-                println!(
-                    "allowed_user_ids={}",
-                    format_string_list(&connector.allowed_user_ids)
-                );
-                println!("alias={}", connector.alias.as_deref().unwrap_or("-"));
-                println!(
-                    "model={}",
-                    connector.requested_model.as_deref().unwrap_or("-")
-                );
-                println!(
-                    "cwd={}",
-                    connector
-                        .cwd
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-            }
-        }
-        SignalCommands::Add(args) => {
-            let connector = SignalConnectorConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                enabled: args.enabled,
-                account: args.account,
-                cli_path: args.cli_path,
-                require_pairing_approval: args.require_pairing_approval,
-                monitored_group_ids: args.monitored_group_ids,
-                allowed_group_ids: args.allowed_group_ids,
-                allowed_user_ids: args.user_ids,
-                alias: args.alias,
-                requested_model: args.model,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: SignalConnectorConfig = client
-                    .post(
-                        "/v1/signal",
-                        &SignalConnectorUpsertRequest {
-                            connector: connector.clone(),
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_signal_connector(connector.clone());
-                storage.save_config(&config)?;
-            }
-            println!(
-                "signal='{}' configured account={} monitored_groups={} allowed_groups={} users={} auto_poll=daemon",
-                connector.id,
-                connector.account,
-                format_string_list(&connector.monitored_group_ids),
-                format_string_list(&connector.allowed_group_ids),
-                format_string_list(&connector.allowed_user_ids)
-            );
-        }
-        SignalCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value = client.delete(&format!("/v1/signal/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                let exists = config
-                    .signal_connectors
-                    .iter()
-                    .any(|connector| connector.id == id);
-                if !exists {
-                    bail!("unknown signal connector '{id}'");
-                }
-                config.remove_signal_connector(&id);
-                storage.save_config(&config)?;
-            }
-            println!("signal='{}' removed", id);
-        }
-        SignalCommands::Enable { id } => {
-            set_signal_enabled(storage, &id, true).await?;
-            println!("signal='{}' enabled", id);
-        }
-        SignalCommands::Disable { id } => {
-            set_signal_enabled(storage, &id, false).await?;
-            println!("signal='{}' disabled", id);
-        }
-        SignalCommands::Poll { id } => {
-            let client = ensure_daemon(storage).await?;
-            let response: SignalPollResponse = client
-                .post(&format!("/v1/signal/{id}/poll"), &serde_json::json!({}))
-                .await?;
-            println!(
-                "signal='{}' processed_messages={} queued_missions={} pending_approvals={}",
-                response.connector_id,
-                response.processed_messages,
-                response.queued_missions,
-                response.pending_approvals
-            );
-        }
-        SignalCommands::Send(args) => {
-            let client = ensure_daemon(storage).await?;
-            let response: SignalSendResponse = client
-                .post(
-                    &format!("/v1/signal/{}/send", args.id),
-                    &SignalSendRequest {
-                        recipient: args.recipient.clone(),
-                        group_id: args.group_id.clone(),
-                        text: args.text.clone(),
-                    },
-                )
-                .await?;
-            println!(
-                "signal='{}' sent message to {}",
-                response.connector_id, response.target
-            );
-        }
-        SignalCommands::Approvals { command } => match command {
-            SignalApprovalCommands::List { limit, json } => {
-                let approvals =
-                    load_connector_approvals(storage, ConnectorKind::Signal, limit).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&approvals)?);
-                } else {
-                    println!("{}", format_connector_approvals(&approvals));
-                }
-            }
-            SignalApprovalCommands::Approve { id, note } => {
-                let approval = update_connector_approval_status(
-                    storage,
-                    &id,
-                    ConnectorApprovalStatus::Approved,
-                    note,
-                )
-                .await?;
-                println!(
-                    "approved signal pairing={} connector={} conversation={} user={}",
-                    approval.id,
-                    approval.connector_id,
-                    approval.external_chat_display.as_deref().unwrap_or("-"),
-                    approval.external_user_display.as_deref().unwrap_or("-")
-                );
-            }
-            SignalApprovalCommands::Reject { id, note } => {
-                let approval = update_connector_approval_status(
-                    storage,
-                    &id,
-                    ConnectorApprovalStatus::Rejected,
-                    note,
-                )
-                .await?;
-                println!(
-                    "rejected signal pairing={} connector={} conversation={} user={}",
-                    approval.id,
-                    approval.connector_id,
-                    approval.external_chat_display.as_deref().unwrap_or("-"),
-                    approval.external_user_display.as_deref().unwrap_or("-")
-                );
-            }
-        },
-    }
-    Ok(())
-}
-
-async fn home_assistant_command(storage: &Storage, command: HomeAssistantCommands) -> Result<()> {
-    match command {
-        HomeAssistantCommands::List { json } => {
-            let connectors = load_home_assistant_connectors(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connectors)?);
-            } else {
-                for connector in connectors {
-                    println!(
-                        "{} [{}] enabled={} token={} base_url={} monitored_entities={} service_domains={} service_entities={} tracked_entities={} alias={} model={} cwd={}",
-                        connector.id,
-                        connector.name,
-                        connector.enabled,
-                        connector.access_token_keychain_account.is_some(),
-                        connector.base_url,
-                        format_string_list(&connector.monitored_entity_ids),
-                        format_string_list(&connector.allowed_service_domains),
-                        format_string_list(&connector.allowed_service_entity_ids),
-                        connector.entity_cursors.len(),
-                        connector.alias.as_deref().unwrap_or("-"),
-                        connector.requested_model.as_deref().unwrap_or("-"),
-                        connector
-                            .cwd
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    );
-                }
-            }
-        }
-        HomeAssistantCommands::Get { id, json } => {
-            let connector = load_home_assistant_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == id)
-                .ok_or_else(|| anyhow!("unknown home assistant connector '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connector)?);
-            } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
-                println!("enabled={}", connector.enabled);
-                println!(
-                    "access_token_configured={}",
-                    connector.access_token_keychain_account.is_some()
-                );
-                println!("base_url={}", connector.base_url);
-                println!(
-                    "monitored_entity_ids={}",
-                    format_string_list(&connector.monitored_entity_ids)
-                );
-                println!(
-                    "allowed_service_domains={}",
-                    format_string_list(&connector.allowed_service_domains)
-                );
-                println!(
-                    "allowed_service_entity_ids={}",
-                    format_string_list(&connector.allowed_service_entity_ids)
-                );
-                println!(
-                    "tracked_entities={}",
-                    format_home_assistant_entity_cursors(&connector.entity_cursors)
-                );
-                println!("alias={}", connector.alias.as_deref().unwrap_or("-"));
-                println!(
-                    "model={}",
-                    connector.requested_model.as_deref().unwrap_or("-")
-                );
-                println!(
-                    "cwd={}",
-                    connector
-                        .cwd
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-            }
-        }
-        HomeAssistantCommands::Add(args) => {
-            let existing = load_home_assistant_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == args.id);
-            let access_token_keychain_account = match args.access_token {
-                Some(access_token) => Some(store_api_key(
-                    &format!("connector:home-assistant:{}", args.id),
-                    &access_token,
-                )?),
-                None => existing
-                    .as_ref()
-                    .and_then(|connector| connector.access_token_keychain_account.clone()),
-            };
-            if access_token_keychain_account.is_none() {
-                bail!("--access-token is required for new home assistant connectors");
-            }
-            let connector = HomeAssistantConnectorConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                enabled: args.enabled,
-                base_url: args.base_url.trim_end_matches('/').to_string(),
-                access_token_keychain_account,
-                monitored_entity_ids: args.monitored_entity_ids,
-                allowed_service_domains: args.allowed_service_domains,
-                allowed_service_entity_ids: args.allowed_service_entity_ids,
-                entity_cursors: existing
-                    .map(|connector| connector.entity_cursors)
-                    .unwrap_or_default(),
-                alias: args.alias,
-                requested_model: args.model,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: HomeAssistantConnectorConfig = client
-                    .post(
-                        "/v1/home-assistant",
-                        &HomeAssistantConnectorUpsertRequest {
-                            connector: connector.clone(),
-                            access_token: None,
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_home_assistant_connector(connector.clone());
-                storage.save_config(&config)?;
-            }
-            println!(
-                "home_assistant='{}' configured base_url={} monitored_entities={} service_domains={} service_entities={} auto_poll=daemon",
-                args.id,
-                connector.base_url,
-                format_string_list(&connector.monitored_entity_ids),
-                format_string_list(&connector.allowed_service_domains),
-                format_string_list(&connector.allowed_service_entity_ids)
-            );
-        }
-        HomeAssistantCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value =
-                    client.delete(&format!("/v1/home-assistant/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                let connector = config
-                    .home_assistant_connectors
-                    .iter()
-                    .find(|connector| connector.id == id)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("unknown home assistant connector '{id}'"))?;
-                config.remove_home_assistant_connector(&id);
-                storage.save_config(&config)?;
-                if let Some(account) = connector.access_token_keychain_account.as_deref() {
-                    let _ = delete_secret(account);
-                }
-            }
-            println!("home_assistant='{}' removed", id);
-        }
-        HomeAssistantCommands::Enable { id } => {
-            set_home_assistant_enabled(storage, &id, true).await?;
-            println!("home_assistant='{}' enabled", id);
-        }
-        HomeAssistantCommands::Disable { id } => {
-            set_home_assistant_enabled(storage, &id, false).await?;
-            println!("home_assistant='{}' disabled", id);
-        }
-        HomeAssistantCommands::Poll { id } => {
-            let client = ensure_daemon(storage).await?;
-            let response: HomeAssistantPollResponse = client
-                .post(
-                    &format!("/v1/home-assistant/{id}/poll"),
-                    &serde_json::json!({}),
-                )
-                .await?;
-            println!(
-                "home_assistant='{}' processed_entities={} queued_missions={} updated_entities={}",
-                response.connector_id,
-                response.processed_entities,
-                response.queued_missions,
-                response.updated_entities
-            );
-        }
-        HomeAssistantCommands::State { id, entity_id } => {
-            let client = ensure_daemon(storage).await?;
-            let state: HomeAssistantEntityState = client
-                .get(&format!("/v1/home-assistant/{id}/entities/{entity_id}"))
-                .await?;
-            println!("{}", serde_json::to_string_pretty(&state)?);
-        }
-        HomeAssistantCommands::CallService(args) => {
-            let client = ensure_daemon(storage).await?;
-            let service_data = args
-                .service_data_json
-                .as_deref()
-                .map(serde_json::from_str::<serde_json::Value>)
-                .transpose()
-                .context("--service-data-json must be valid JSON")?;
-            let response: HomeAssistantServiceCallResponse = client
-                .post(
-                    &format!("/v1/home-assistant/{}/services", args.id),
-                    &HomeAssistantServiceCallRequest {
-                        domain: args.domain.clone(),
-                        service: args.service.clone(),
-                        entity_id: args.entity_id.clone(),
-                        service_data,
-                    },
-                )
-                .await?;
-            println!(
-                "home_assistant='{}' called {}.{} changed_entities={}",
-                response.connector_id, response.domain, response.service, response.changed_entities
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn webhook_command(storage: &Storage, command: WebhookCommands) -> Result<()> {
-    match command {
-        WebhookCommands::List { json } => {
-            let connectors = load_webhook_connectors(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connectors)?);
-            } else {
-                for connector in connectors {
-                    println!(
-                        "{} [{}] enabled={} alias={} model={} token={} cwd={}",
-                        connector.id,
-                        connector.name,
-                        connector.enabled,
-                        connector.alias.as_deref().unwrap_or("-"),
-                        connector.requested_model.as_deref().unwrap_or("-"),
-                        connector.token_sha256.is_some(),
-                        connector
-                            .cwd
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    );
-                }
-            }
-        }
-        WebhookCommands::Get { id, json } => {
-            let connector = load_webhook_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == id)
-                .ok_or_else(|| anyhow!("unknown webhook connector '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connector)?);
-            } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
-                println!("enabled={}", connector.enabled);
-                println!("alias={}", connector.alias.as_deref().unwrap_or("-"));
-                println!(
-                    "model={}",
-                    connector.requested_model.as_deref().unwrap_or("-")
-                );
-                println!(
-                    "cwd={}",
-                    connector
-                        .cwd
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-                println!("token_configured={}", connector.token_sha256.is_some());
-                println!("prompt_template={}", connector.prompt_template);
-            }
-        }
-        WebhookCommands::Add(args) => {
-            let prompt_template =
-                load_prompt_template(args.prompt_template.as_deref(), args.prompt_file.as_ref())?;
-            let token = args.token.unwrap_or_else(|| Uuid::new_v4().to_string());
-            let connector = WebhookConnectorConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                prompt_template,
-                enabled: args.enabled,
-                token_sha256: Some(hash_webhook_token_local(&token)),
-                alias: args.alias,
-                requested_model: args.model,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: WebhookConnectorConfig = client
-                    .post(
-                        "/v1/webhooks",
-                        &WebhookConnectorUpsertRequest {
-                            connector: connector.clone(),
-                            webhook_token: None,
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_webhook_connector(connector.clone());
-                storage.save_config(&config)?;
-            }
-            let config = storage.load_config()?;
-            println!("webhook='{}' configured", args.id);
-            println!(
-                "url=http://{}:{}/v1/hooks/{}",
-                config.daemon.host, config.daemon.port, args.id
-            );
-            println!("token={token}");
-        }
-        WebhookCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value = client.delete(&format!("/v1/webhooks/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                if !config.remove_webhook_connector(&id) {
-                    bail!("unknown webhook connector '{id}'");
-                }
-                storage.save_config(&config)?;
-            }
-            println!("webhook='{}' removed", id);
-        }
-        WebhookCommands::Enable { id } => {
-            set_webhook_enabled(storage, &id, true).await?;
-            println!("webhook='{}' enabled", id);
-        }
-        WebhookCommands::Disable { id } => {
-            set_webhook_enabled(storage, &id, false).await?;
-            println!("webhook='{}' disabled", id);
-        }
-        WebhookCommands::Deliver(args) => {
-            let config = storage.load_config()?;
-            let base_url = format!("http://{}:{}", config.daemon.host, config.daemon.port);
-            let mut request = build_http_client()
-                .post(format!("{base_url}/v1/hooks/{}", args.id))
-                .json(&WebhookEventRequest {
-                    summary: args.summary,
-                    prompt: args.prompt,
-                    details: args.details,
-                    payload: match args.payload_file {
-                        Some(path) => Some(load_json_file(&path)?),
-                        None => None,
-                    },
-                });
-            if let Some(token) = args.token {
-                request = request.header("x-agent-webhook-token", token);
-            }
-            let response = request.send().await?;
-            let status = response.status();
-            let body = response.text().await?;
-            if !status.is_success() {
-                bail!("webhook delivery failed: {} {}", status, body);
-            }
-            let parsed: WebhookEventResponse =
-                serde_json::from_str(&body).context("failed to parse webhook response")?;
-            println!(
-                "queued webhook mission={} title={} status={:?}",
-                parsed.mission_id, parsed.title, parsed.status
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn inbox_command(storage: &Storage, command: InboxCommands) -> Result<()> {
-    match command {
-        InboxCommands::List { json } => {
-            let connectors = load_inbox_connectors(storage).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connectors)?);
-            } else {
-                for connector in connectors {
-                    println!(
-                        "{} [{}] enabled={} delete_after_read={} alias={} model={} path={} cwd={}",
-                        connector.id,
-                        connector.name,
-                        connector.enabled,
-                        connector.delete_after_read,
-                        connector.alias.as_deref().unwrap_or("-"),
-                        connector.requested_model.as_deref().unwrap_or("-"),
-                        connector.path.display(),
-                        connector
-                            .cwd
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    );
-                }
-            }
-        }
-        InboxCommands::Get { id, json } => {
-            let connector = load_inbox_connectors(storage)
-                .await?
-                .into_iter()
-                .find(|connector| connector.id == id)
-                .ok_or_else(|| anyhow!("unknown inbox connector '{id}'"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&connector)?);
-            } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
-                println!("enabled={}", connector.enabled);
-                println!("delete_after_read={}", connector.delete_after_read);
-                println!("alias={}", connector.alias.as_deref().unwrap_or("-"));
-                println!(
-                    "model={}",
-                    connector.requested_model.as_deref().unwrap_or("-")
-                );
-                println!("path={}", connector.path.display());
-                println!(
-                    "cwd={}",
-                    connector
-                        .cwd
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-            }
-        }
-        InboxCommands::Add(args) => {
-            let connector = InboxConnectorConfig {
-                id: args.id.clone(),
-                name: args.name,
-                description: args.description,
-                path: args.path,
-                enabled: args.enabled,
-                delete_after_read: args.delete_after_read,
-                alias: args.alias,
-                requested_model: args.model,
-                cwd: args.cwd,
-            };
-            if let Some(client) = try_daemon(storage).await? {
-                let _: InboxConnectorConfig = client
-                    .post(
-                        "/v1/inboxes",
-                        &InboxConnectorUpsertRequest {
-                            connector: connector.clone(),
-                        },
-                    )
-                    .await?;
-            } else {
-                let mut config = storage.load_config()?;
-                config.upsert_inbox_connector(connector.clone());
-                storage.save_config(&config)?;
-            }
-            println!(
-                "inbox='{}' configured path={}",
-                args.id,
-                connector.path.display()
-            );
-        }
-        InboxCommands::Remove { id } => {
-            if let Some(client) = try_daemon(storage).await? {
-                let _: serde_json::Value = client.delete(&format!("/v1/inboxes/{id}")).await?;
-            } else {
-                let mut config = storage.load_config()?;
-                if !config.remove_inbox_connector(&id) {
-                    bail!("unknown inbox connector '{id}'");
-                }
-                storage.save_config(&config)?;
-            }
-            println!("inbox='{}' removed", id);
-        }
-        InboxCommands::Enable { id } => {
-            set_inbox_enabled(storage, &id, true).await?;
-            println!("inbox='{}' enabled", id);
-        }
-        InboxCommands::Disable { id } => {
-            set_inbox_enabled(storage, &id, false).await?;
-            println!("inbox='{}' disabled", id);
-        }
-        InboxCommands::Poll { id } => {
-            let client = ensure_daemon(storage).await?;
-            let response: InboxPollResponse = client
-                .post(&format!("/v1/inboxes/{id}/poll"), &serde_json::json!({}))
-                .await?;
-            println!(
-                "polled inbox={} processed_files={} queued_missions={}",
-                response.connector_id, response.processed_files, response.queued_missions
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn skills_command(storage: &Storage, command: SkillCommands) -> Result<()> {
-    match command {
-        SkillCommands::List => {
-            let enabled = load_enabled_skills(storage).await?;
-            for skill in discover_skills()? {
-                let marker = if enabled.contains(&skill.name) {
-                    "*"
-                } else {
-                    " "
-                };
-                println!(
-                    "{} {} - {} ({})",
-                    marker,
-                    skill.name,
-                    skill.description,
-                    skill.path.display()
-                );
-            }
-        }
-        SkillCommands::Enable { name } => {
-            update_enabled_skill(storage, &name, true).await?;
-            println!("skill='{}' enabled", name);
-        }
-        SkillCommands::Disable { name } => {
-            update_enabled_skill(storage, &name, false).await?;
-            println!("skill='{}' disabled", name);
-        }
-        SkillCommands::Drafts { limit, status } => {
-            let drafts = load_skill_drafts(storage, limit, status.map(Into::into)).await?;
-            if drafts.is_empty() {
-                println!("no skill drafts");
-            } else {
-                for draft in drafts {
-                    println!(
-                        "{} [{:?}] uses={} provider={} workspace={}",
-                        draft.id,
-                        draft.status,
-                        draft.usage_count,
-                        draft.provider_id.as_deref().unwrap_or("-"),
-                        draft.workspace_key.as_deref().unwrap_or("-")
-                    );
-                    println!("  {}", draft.title);
-                    println!("  {}", draft.summary);
-                }
-            }
-        }
-        SkillCommands::Publish { id } => {
-            let draft =
-                update_skill_draft_status(storage, &id, SkillDraftStatus::Published).await?;
-            println!("published skill draft={} title={}", draft.id, draft.title);
-        }
-        SkillCommands::Reject { id } => {
-            let draft = update_skill_draft_status(storage, &id, SkillDraftStatus::Rejected).await?;
-            println!("rejected skill draft={} title={}", draft.id, draft.title);
-        }
-    }
-    Ok(())
-}
-
-async fn load_mcp_servers(storage: &Storage) -> Result<Vec<McpServerConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/mcp").await
-    } else {
-        Ok(storage.load_config()?.mcp_servers)
-    }
-}
-
-async fn load_app_connectors(storage: &Storage) -> Result<Vec<AppConnectorConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/apps").await
-    } else {
-        Ok(storage.load_config()?.app_connectors)
-    }
-}
-
-async fn load_telegram_connectors(storage: &Storage) -> Result<Vec<TelegramConnectorConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/telegram").await
-    } else {
-        Ok(storage.load_config()?.telegram_connectors)
-    }
-}
-
-async fn load_discord_connectors(storage: &Storage) -> Result<Vec<DiscordConnectorConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/discord").await
-    } else {
-        Ok(storage.load_config()?.discord_connectors)
-    }
-}
-
-async fn load_slack_connectors(storage: &Storage) -> Result<Vec<SlackConnectorConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/slack").await
-    } else {
-        Ok(storage.load_config()?.slack_connectors)
-    }
-}
-
-async fn load_home_assistant_connectors(
-    storage: &Storage,
-) -> Result<Vec<HomeAssistantConnectorConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/home-assistant").await
-    } else {
-        Ok(storage.load_config()?.home_assistant_connectors)
-    }
-}
-
-async fn load_signal_connectors(storage: &Storage) -> Result<Vec<SignalConnectorConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/signal").await
-    } else {
-        Ok(storage.load_config()?.signal_connectors)
-    }
-}
-
-async fn load_webhook_connectors(storage: &Storage) -> Result<Vec<WebhookConnectorConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/webhooks").await
-    } else {
-        Ok(storage.load_config()?.webhook_connectors)
-    }
-}
-
-async fn load_inbox_connectors(storage: &Storage) -> Result<Vec<InboxConnectorConfig>> {
-    if let Some(client) = try_daemon(storage).await? {
-        client.get("/v1/inboxes").await
-    } else {
-        Ok(storage.load_config()?.inbox_connectors)
-    }
-}
-
 async fn load_enabled_skills(storage: &Storage) -> Result<Vec<String>> {
     if let Some(client) = try_daemon(storage).await? {
         client.get("/v1/skills").await
@@ -4009,8 +2271,60 @@ pub(crate) fn format_memory_records(records: &[MemoryRecord]) -> String {
                 .as_deref()
                 .map(|value| format!("\n  note: {value}"))
                 .unwrap_or_default();
+            let source = match (
+                memory.source_session_id.as_deref(),
+                memory.source_message_id.as_deref(),
+            ) {
+                (Some(session_id), Some(message_id)) => {
+                    format!("\n  source: session={session_id} message={message_id}")
+                }
+                (Some(session_id), None) => format!("\n  source: session={session_id}"),
+                (None, Some(message_id)) => format!("\n  source: message={message_id}"),
+                (None, None) => String::new(),
+            };
+            let evidence = if memory.evidence_refs.is_empty() {
+                String::new()
+            } else {
+                let mut lines = memory
+                    .evidence_refs
+                    .iter()
+                    .take(3)
+                    .map(|evidence| {
+                        let role = evidence
+                            .role
+                            .as_ref()
+                            .map(|role| format!(" role={role:?}"))
+                            .unwrap_or_default();
+                        let message = evidence
+                            .message_id
+                            .as_deref()
+                            .map(|value| format!(" message={value}"))
+                            .unwrap_or_default();
+                        let tool = match (
+                            evidence.tool_name.as_deref(),
+                            evidence.tool_call_id.as_deref(),
+                        ) {
+                            (Some(name), Some(call_id)) => format!(" tool={name}#{call_id}"),
+                            (Some(name), None) => format!(" tool={name}"),
+                            (None, Some(call_id)) => format!(" tool_call={call_id}"),
+                            (None, None) => String::new(),
+                        };
+                        format!(
+                            "\n    - session={}{}{}{} @ {}",
+                            evidence.session_id, role, message, tool, evidence.created_at
+                        )
+                    })
+                    .collect::<String>();
+                if memory.evidence_refs.len() > 3 {
+                    lines.push_str(&format!(
+                        "\n    - ... {} more",
+                        memory.evidence_refs.len() - 3
+                    ));
+                }
+                format!("\n  evidence:{lines}")
+            };
             format!(
-                "{} [{:?}/{:?}] {}{}{}\n  {}{}",
+                "{} [{:?}/{:?}] {}{}{}\n  {}{}{}{}",
                 memory.id,
                 memory.kind,
                 memory.scope,
@@ -4018,7 +2332,9 @@ pub(crate) fn format_memory_records(records: &[MemoryRecord]) -> String {
                 tags,
                 review,
                 memory.content,
-                note
+                source,
+                note,
+                evidence
             )
         })
         .collect::<Vec<_>>()
@@ -4079,227 +2395,6 @@ pub(crate) fn format_skill_drafts(drafts: &[SkillDraft]) -> String {
         .join("\n")
 }
 
-async fn set_mcp_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut servers = load_mcp_servers(storage).await?;
-    let server = servers
-        .iter_mut()
-        .find(|server| server.id == id)
-        .ok_or_else(|| anyhow!("unknown MCP server '{id}'"))?;
-    server.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: McpServerConfig = client
-            .post(
-                "/v1/mcp",
-                &McpServerUpsertRequest {
-                    server: server.clone(),
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_mcp_server(server.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
-async fn set_app_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut connectors = load_app_connectors(storage).await?;
-    let connector = connectors
-        .iter_mut()
-        .find(|connector| connector.id == id)
-        .ok_or_else(|| anyhow!("unknown app connector '{id}'"))?;
-    connector.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: AppConnectorConfig = client
-            .post(
-                "/v1/apps",
-                &AppConnectorUpsertRequest {
-                    connector: connector.clone(),
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_app_connector(connector.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
-async fn set_telegram_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut connectors = load_telegram_connectors(storage).await?;
-    let connector = connectors
-        .iter_mut()
-        .find(|connector| connector.id == id)
-        .ok_or_else(|| anyhow!("unknown telegram connector '{id}'"))?;
-    connector.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: TelegramConnectorConfig = client
-            .post(
-                "/v1/telegram",
-                &TelegramConnectorUpsertRequest {
-                    connector: connector.clone(),
-                    bot_token: None,
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_telegram_connector(connector.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
-async fn set_discord_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut connectors = load_discord_connectors(storage).await?;
-    let connector = connectors
-        .iter_mut()
-        .find(|connector| connector.id == id)
-        .ok_or_else(|| anyhow!("unknown discord connector '{id}'"))?;
-    connector.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: DiscordConnectorConfig = client
-            .post(
-                "/v1/discord",
-                &DiscordConnectorUpsertRequest {
-                    connector: connector.clone(),
-                    bot_token: None,
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_discord_connector(connector.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
-async fn set_slack_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut connectors = load_slack_connectors(storage).await?;
-    let connector = connectors
-        .iter_mut()
-        .find(|connector| connector.id == id)
-        .ok_or_else(|| anyhow!("unknown slack connector '{id}'"))?;
-    connector.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: SlackConnectorConfig = client
-            .post(
-                "/v1/slack",
-                &SlackConnectorUpsertRequest {
-                    connector: connector.clone(),
-                    bot_token: None,
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_slack_connector(connector.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
-async fn set_home_assistant_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut connectors = load_home_assistant_connectors(storage).await?;
-    let connector = connectors
-        .iter_mut()
-        .find(|connector| connector.id == id)
-        .ok_or_else(|| anyhow!("unknown home assistant connector '{id}'"))?;
-    connector.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: HomeAssistantConnectorConfig = client
-            .post(
-                "/v1/home-assistant",
-                &HomeAssistantConnectorUpsertRequest {
-                    connector: connector.clone(),
-                    access_token: None,
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_home_assistant_connector(connector.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
-async fn set_signal_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut connectors = load_signal_connectors(storage).await?;
-    let connector = connectors
-        .iter_mut()
-        .find(|connector| connector.id == id)
-        .ok_or_else(|| anyhow!("unknown signal connector '{id}'"))?;
-    connector.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: SignalConnectorConfig = client
-            .post(
-                "/v1/signal",
-                &SignalConnectorUpsertRequest {
-                    connector: connector.clone(),
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_signal_connector(connector.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
-async fn set_webhook_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut connectors = load_webhook_connectors(storage).await?;
-    let connector = connectors
-        .iter_mut()
-        .find(|connector| connector.id == id)
-        .ok_or_else(|| anyhow!("unknown webhook connector '{id}'"))?;
-    connector.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: WebhookConnectorConfig = client
-            .post(
-                "/v1/webhooks",
-                &WebhookConnectorUpsertRequest {
-                    connector: connector.clone(),
-                    webhook_token: None,
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_webhook_connector(connector.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
-async fn set_inbox_enabled(storage: &Storage, id: &str, enabled: bool) -> Result<()> {
-    let mut connectors = load_inbox_connectors(storage).await?;
-    let connector = connectors
-        .iter_mut()
-        .find(|connector| connector.id == id)
-        .ok_or_else(|| anyhow!("unknown inbox connector '{id}'"))?;
-    connector.enabled = enabled;
-    if let Some(client) = try_daemon(storage).await? {
-        let _: InboxConnectorConfig = client
-            .post(
-                "/v1/inboxes",
-                &InboxConnectorUpsertRequest {
-                    connector: connector.clone(),
-                },
-            )
-            .await?;
-    } else {
-        let mut config = storage.load_config()?;
-        config.upsert_inbox_connector(connector.clone());
-        storage.save_config(&config)?;
-    }
-    Ok(())
-}
-
 fn load_prompt_template(inline: Option<&str>, file: Option<&PathBuf>) -> Result<String> {
     match (inline, file) {
         (Some(value), None) => Ok(value.to_string()),
@@ -4316,81 +2411,6 @@ fn load_json_file(path: &Path) -> Result<serde_json::Value> {
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("failed to parse JSON from {}", path.display()))
-}
-
-fn hash_webhook_token_local(token: &str) -> String {
-    format!("{:x}", Sha256::digest(token.as_bytes()))
-}
-
-fn format_i64_list(values: &[i64]) -> String {
-    if values.is_empty() {
-        "-".to_string()
-    } else {
-        values
-            .iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
-fn format_string_list(values: &[String]) -> String {
-    if values.is_empty() {
-        "-".to_string()
-    } else {
-        values.join(",")
-    }
-}
-
-fn format_discord_channel_cursors(values: &[DiscordChannelCursor]) -> String {
-    if values.is_empty() {
-        "-".to_string()
-    } else {
-        values
-            .iter()
-            .map(|cursor| match cursor.last_message_id.as_deref() {
-                Some(last_message_id) => format!("{}:{last_message_id}", cursor.channel_id),
-                None => format!("{}:-", cursor.channel_id),
-            })
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
-fn format_slack_channel_cursors(values: &[SlackChannelCursor]) -> String {
-    if values.is_empty() {
-        "-".to_string()
-    } else {
-        values
-            .iter()
-            .map(|cursor| match cursor.last_message_ts.as_deref() {
-                Some(last_message_ts) => format!("{}:{last_message_ts}", cursor.channel_id),
-                None => format!("{}:-", cursor.channel_id),
-            })
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
-fn format_home_assistant_entity_cursors(
-    values: &[agent_core::HomeAssistantEntityCursor],
-) -> String {
-    if values.is_empty() {
-        "-".to_string()
-    } else {
-        values
-            .iter()
-            .map(|cursor| {
-                format!(
-                    "{}:{}@{}",
-                    cursor.entity_id,
-                    cursor.last_state.as_deref().unwrap_or("-"),
-                    cursor.last_changed.as_deref().unwrap_or("-")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",")
-    }
 }
 
 async fn update_enabled_skill(storage: &Storage, name: &str, enabled: bool) -> Result<()> {
@@ -4526,7 +2546,10 @@ async fn alias_command(storage: &Storage, command: AliasCommands) -> Result<()> 
                 let _: ModelAlias = client.post("/v1/aliases", &payload).await?;
             } else {
                 let mut config = storage.load_config()?;
-                if config.get_provider(&payload.alias.provider_id).is_none() {
+                if config
+                    .resolve_provider(&payload.alias.provider_id)
+                    .is_none()
+                {
                     bail!("alias references unknown provider");
                 }
                 if payload.set_as_main {
@@ -4680,6 +2703,7 @@ async fn run_command(storage: &Storage, args: RunArgs) -> Result<()> {
     let client = ensure_daemon(storage).await?;
     let cwd = current_request_cwd()?;
     let thinking_level = resolve_thinking_level(storage, args.thinking)?;
+    let task_mode = args.mode.map(Into::into);
     let attachments = collect_image_attachments(&cwd, &args.images)?;
     let output_schema_json = args
         .output_schema
@@ -4699,6 +2723,7 @@ async fn run_command(storage: &Storage, args: RunArgs) -> Result<()> {
                     tasks,
                     cwd: Some(cwd),
                     thinking_level,
+                    task_mode,
                     strategy: None,
                     parent_alias: None,
                 },
@@ -4752,6 +2777,7 @@ async fn run_command(storage: &Storage, args: RunArgs) -> Result<()> {
         None,
         cwd,
         thinking_level,
+        task_mode,
         attachments,
         args.permissions.map(Into::into),
         output_schema_json,
@@ -4778,6 +2804,7 @@ async fn launch_chat_session(
     session_id: Option<String>,
     initial_prompt: Option<String>,
     thinking_level: Option<ThinkingLevel>,
+    task_mode: Option<TaskMode>,
     attachments: Vec<InputAttachment>,
     permission_preset: Option<PermissionPreset>,
     no_tui: bool,
@@ -4790,6 +2817,7 @@ async fn launch_chat_session(
             session_id,
             initial_prompt,
             thinking_level,
+            task_mode,
             attachments,
             permission_preset,
         )
@@ -4801,6 +2829,7 @@ async fn launch_chat_session(
         session_id,
         initial_prompt,
         thinking_level,
+        task_mode,
         attachments,
         permission_preset,
     )
@@ -4816,89 +2845,12 @@ async fn chat_command(storage: &Storage, args: ChatArgs) -> Result<()> {
         None,
         None,
         resolve_thinking_level(storage, args.thinking)?,
+        args.mode.map(Into::into),
         attachments,
         args.permissions.map(Into::into),
         args.no_tui,
     )
     .await
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum InteractiveCommand {
-    Exit,
-    Help,
-    Status,
-    ConfigShow,
-    DashboardOpen,
-    TelegramsShow,
-    DiscordsShow,
-    SlacksShow,
-    SignalsShow,
-    HomeAssistantsShow,
-    TelegramApprovalsShow,
-    TelegramApprove { id: String, note: Option<String> },
-    TelegramReject { id: String, note: Option<String> },
-    DiscordApprovalsShow,
-    DiscordApprove { id: String, note: Option<String> },
-    DiscordReject { id: String, note: Option<String> },
-    SlackApprovalsShow,
-    SlackApprove { id: String, note: Option<String> },
-    SlackReject { id: String, note: Option<String> },
-    WebhooksShow,
-    InboxesShow,
-    AutopilotShow,
-    AutopilotEnable,
-    AutopilotPause,
-    AutopilotResume,
-    MissionsShow,
-    EventsShow(usize),
-    Schedule { after_seconds: u64, title: String },
-    Repeat { every_seconds: u64, title: String },
-    Watch { path: PathBuf, title: String },
-    ProfileShow,
-    MemoryShow(Option<String>),
-    MemoryReviewShow,
-    MemoryApprove { id: String, note: Option<String> },
-    MemoryReject { id: String, note: Option<String> },
-    Remember(String),
-    Forget(String),
-    Skills(InteractiveSkillCommand),
-    PermissionsShow,
-    PermissionsSet(Option<PermissionPreset>),
-    Attach(PathBuf),
-    AttachmentsShow,
-    AttachmentsClear,
-    New,
-    Clear,
-    Diff,
-    Copy,
-    Compact,
-    Init,
-    Onboard,
-    ModelShow,
-    ModelSet(String),
-    ProviderShow,
-    ProviderSet(String),
-    ThinkingShow,
-    ThinkingSet(Option<ThinkingLevel>),
-    Fast,
-    Rename(Option<String>),
-    Review(Option<String>),
-    Resume(Option<String>),
-    Fork(Option<String>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum InteractiveSkillCommand {
-    Show(Option<SkillDraftStatus>),
-    Publish(String),
-    Reject(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum InteractiveModelSelection {
-    Alias(String),
-    Explicit(String),
 }
 
 async fn interactive_session(
@@ -4907,12 +2859,16 @@ async fn interactive_session(
     mut session_id: Option<String>,
     initial_prompt: Option<String>,
     mut thinking_level: Option<ThinkingLevel>,
+    mut task_mode: Option<TaskMode>,
     mut attachments: Vec<InputAttachment>,
     mut permission_preset: Option<PermissionPreset>,
 ) -> Result<()> {
     let mut client = ensure_daemon(storage).await?;
     let mut cwd =
         load_session_cwd(storage, session_id.as_deref())?.unwrap_or(current_request_cwd()?);
+    if task_mode.is_none() {
+        task_mode = load_session_task_mode(storage, session_id.as_deref())?;
+    }
     let mut last_output = load_last_assistant_output(storage, session_id.as_deref())?;
     let mut requested_model =
         resolve_session_model_override(storage, session_id.as_deref(), alias.as_deref())?;
@@ -4923,7 +2879,7 @@ async fn interactive_session(
         permission_preset = Some(storage.load_config()?.permission_preset);
     }
     println!(
-        "Interactive chat. Use /help for commands, /model or Ctrl+P for alias/main switching, /provider for provider switching, /onboard for a fresh setup reset, and /thinking to adjust reasoning."
+        "Interactive chat. Use /help for commands, /model or Ctrl+P for alias/main switching, /provider for provider switching, /mode to switch between build and daily presets, /onboard for a fresh setup reset, and /thinking to adjust reasoning."
     );
 
     if let Some(prompt) = normalize_prompt_input(initial_prompt)? {
@@ -4935,6 +2891,7 @@ async fn interactive_session(
             session_id.clone(),
             cwd.clone(),
             thinking_level,
+            task_mode,
             attachments.clone(),
             permission_preset,
             None,
@@ -4986,6 +2943,7 @@ async fn interactive_session(
                                     requested_model.as_deref(),
                                     session_id.as_deref(),
                                     thinking_level,
+                                    task_mode,
                                     permission_preset,
                                     &attachments,
                                     cwd.as_path(),
@@ -4994,7 +2952,7 @@ async fn interactive_session(
                             }
                             InteractiveCommand::ConfigShow => {
                                 println!(
-                                    "Settings:\n  /config opens the categorized settings menu in the TUI.\n  /dashboard opens the localhost web control room.\n  /model opens the alias/main switcher, /provider switches logged-in providers, and /thinking and /permissions remain quick shortcuts."
+                                    "Settings:\n  /config opens the categorized settings menu in the TUI.\n  /dashboard opens the localhost web control room.\n  /model opens the alias/main switcher, /provider switches logged-in providers, and /mode, /thinking, and /permissions remain quick shortcuts."
                                 );
                             }
                             InteractiveCommand::DashboardOpen => {
@@ -5479,6 +3437,25 @@ async fn interactive_session(
                                 let memories = load_memory_review_queue(storage, 20).await?;
                                 println!("{}", format_memory_records(&memories));
                             }
+                            InteractiveCommand::MemoryRebuild { session_id } => {
+                                let response: MemoryRebuildResponse = client
+                                    .post(
+                                        "/v1/memory/rebuild",
+                                        &MemoryRebuildRequest {
+                                            session_id,
+                                            recompute_embeddings: false,
+                                        },
+                                    )
+                                    .await?;
+                                println!(
+                                    "generated_at={} sessions_scanned={} observations_scanned={} memories_upserted={} embeddings_refreshed={}",
+                                    response.generated_at,
+                                    response.sessions_scanned,
+                                    response.observations_scanned,
+                                    response.memories_upserted,
+                                    response.embeddings_refreshed
+                                );
+                            }
                             InteractiveCommand::MemoryShow(query) => {
                                 if let Some(query) = query {
                                     let result: MemorySearchResponse = client
@@ -5494,29 +3471,22 @@ async fn interactive_session(
                                             },
                                         )
                                         .await?;
-                                    for memory in result.memories {
-                                        println!(
-                                            "{} [{:?}/{:?}] {}",
-                                            memory.id, memory.kind, memory.scope, memory.subject
-                                        );
-                                        println!("  {}", memory.content);
+                                    if !result.memories.is_empty() {
+                                        println!("{}", format_memory_records(&result.memories));
                                     }
-                                    for hit in result.transcript_hits {
+                                    if !result.transcript_hits.is_empty() {
+                                        if !result.memories.is_empty() {
+                                            println!();
+                                        }
                                         println!(
-                                            "session={} [{:?}] {}",
-                                            hit.session_id, hit.role, hit.preview
+                                            "{}",
+                                            format_session_search_hits(&result.transcript_hits)
                                         );
                                     }
                                 } else {
                                     let memories: Vec<MemoryRecord> =
                                         client.get("/v1/memory?limit=10").await?;
-                                    for memory in memories {
-                                        println!(
-                                            "{} [{:?}/{:?}] {}",
-                                            memory.id, memory.kind, memory.scope, memory.subject
-                                        );
-                                        println!("  {}", memory.content);
-                                    }
+                                    println!("{}", format_memory_records(&memories));
                                 }
                             }
                             InteractiveCommand::MemoryApprove { id, note } => {
@@ -5584,6 +3554,7 @@ async fn interactive_session(
                                             source_message_id: None,
                                             provider_id: None,
                                             workspace_key: Some(cwd.display().to_string()),
+                                            evidence_refs: Vec::new(),
                                             tags: vec!["manual".to_string()],
                                             identity_key: None,
                                             observation_source: None,
@@ -5680,6 +3651,7 @@ async fn interactive_session(
                                     None,
                                     cwd.clone(),
                                     thinking_level,
+                                    task_mode,
                                     Vec::new(),
                                     permission_preset,
                                     None,
@@ -5713,6 +3685,7 @@ async fn interactive_session(
                                 session_id = None;
                                 requested_model = None;
                                 thinking_level = config.thinking_level;
+                                task_mode = None;
                                 permission_preset = Some(config.permission_preset);
                                 attachments.clear();
                                 last_output = None;
@@ -5778,10 +3751,17 @@ async fn interactive_session(
                             InteractiveCommand::ThinkingShow => {
                                 println!("thinking={}", thinking_level_label(thinking_level));
                             }
+                            InteractiveCommand::ModeShow => {
+                                println!("mode={}", task_mode_label(task_mode));
+                            }
                             InteractiveCommand::ThinkingSet(new_level) => {
                                 thinking_level = new_level;
                                 persist_thinking_level(storage, thinking_level)?;
                                 println!("thinking={}", thinking_level_label(thinking_level));
+                            }
+                            InteractiveCommand::ModeSet(new_mode) => {
+                                task_mode = new_mode;
+                                println!("mode={}", task_mode_label(task_mode));
                             }
                             InteractiveCommand::Fast => {
                                 thinking_level = Some(ThinkingLevel::Minimal);
@@ -5815,6 +3795,7 @@ async fn interactive_session(
                                     session_id.clone(),
                                     cwd.clone(),
                                     thinking_level,
+                                    Some(TaskMode::Build),
                                     attachments.clone(),
                                     permission_preset,
                                     None,
@@ -5836,12 +3817,13 @@ async fn interactive_session(
                                     target.as_deref(),
                                 )?;
                                 println!(
-                                    "Resumed session={} title={} alias={} provider={} model={}",
+                                    "Resumed session={} title={} alias={} provider={} model={} mode={}",
                                     transcript.session.id,
                                     transcript.session.title.as_deref().unwrap_or("(untitled)"),
                                     transcript.session.alias,
                                     transcript.session.provider_id,
-                                    transcript.session.model
+                                    transcript.session.model,
+                                    task_mode_label(transcript.session.task_mode),
                                 );
                                 last_output = latest_assistant_output_from_transcript(&transcript);
                                 alias = Some(transcript.session.alias.clone());
@@ -5851,6 +3833,7 @@ async fn interactive_session(
                                     alias.as_deref(),
                                     &transcript.session.model,
                                 )?;
+                                task_mode = transcript.session.task_mode;
                                 cwd = transcript
                                     .session
                                     .cwd
@@ -5879,6 +3862,7 @@ async fn interactive_session(
                                     alias.as_deref(),
                                     &transcript.session.model,
                                 )?;
+                                task_mode = transcript.session.task_mode;
                                 cwd = transcript
                                     .session
                                     .cwd
@@ -5910,6 +3894,7 @@ async fn interactive_session(
             session_id.clone(),
             cwd.clone(),
             thinking_level,
+            task_mode,
             attachments.clone(),
             permission_preset,
             None,
@@ -5939,6 +3924,7 @@ async fn review_command(storage: &Storage, args: ReviewArgs) -> Result<()> {
         None,
         current_request_cwd()?,
         thinking_level,
+        Some(TaskMode::Build),
         Vec::new(),
         None,
         None,
@@ -5956,12 +3942,13 @@ async fn review_command(storage: &Storage, args: ReviewArgs) -> Result<()> {
 async fn resume_command(storage: &Storage, args: ResumeArgs) -> Result<()> {
     let transcript = load_session_for_command(storage, args.session_id, args.last, args.all)?;
     println!(
-        "Resuming session={} title={} alias={} provider={} model={}",
+        "Resuming session={} title={} alias={} provider={} model={} mode={}",
         transcript.session.id,
         transcript.session.title.as_deref().unwrap_or("(untitled)"),
         transcript.session.alias,
         transcript.session.provider_id,
-        transcript.session.model
+        transcript.session.model,
+        task_mode_label(transcript.session.task_mode),
     );
     launch_chat_session(
         storage,
@@ -5969,6 +3956,7 @@ async fn resume_command(storage: &Storage, args: ResumeArgs) -> Result<()> {
         Some(transcript.session.id),
         args.prompt,
         resolve_thinking_level(storage, args.thinking)?,
+        transcript.session.task_mode,
         Vec::new(),
         None,
         false,
@@ -5991,6 +3979,7 @@ async fn fork_command(storage: &Storage, args: ForkArgs) -> Result<()> {
         Some(new_session_id),
         args.prompt,
         resolve_thinking_level(storage, args.thinking)?,
+        transcript.session.task_mode,
         Vec::new(),
         None,
         false,
@@ -6000,7 +3989,12 @@ async fn fork_command(storage: &Storage, args: ForkArgs) -> Result<()> {
 
 fn completion_command(args: CompletionArgs) {
     let mut command = Cli::command();
-    generate(args.shell, &mut command, "autism", &mut io::stdout());
+    generate(
+        args.shell,
+        &mut command,
+        PRIMARY_COMMAND_NAME,
+        &mut io::stdout(),
+    );
 }
 
 async fn logout_command(storage: &Storage, args: LogoutArgs) -> Result<()> {
@@ -6028,11 +4022,15 @@ async fn logout_command(storage: &Storage, args: LogoutArgs) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn run_onboarding_reset(storage: &Storage, require_confirmation: bool) -> Result<()> {
+pub(crate) async fn run_onboarding_reset(
+    storage: &Storage,
+    require_confirmation: bool,
+) -> Result<()> {
     if require_confirmation {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             bail!(
-                "reset is destructive; rerun with `autism reset --yes` in an interactive terminal"
+                "reset is destructive; rerun with `{} reset --yes` in an interactive terminal",
+                PRIMARY_COMMAND_NAME
             );
         }
 
@@ -6072,7 +4070,10 @@ pub(crate) async fn run_onboarding_reset(storage: &Storage, require_confirmation
     }
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        println!("Run `autism setup` in an interactive terminal to complete onboarding again.");
+        println!(
+            "Run `{} setup` in an interactive terminal to complete onboarding again.",
+            PRIMARY_COMMAND_NAME
+        );
         return Ok(());
     }
 
@@ -6083,696 +4084,6 @@ pub(crate) async fn run_onboarding_reset(storage: &Storage, require_confirmation
 
 async fn reset_command(storage: &Storage, args: ResetArgs) -> Result<()> {
     run_onboarding_reset(storage, !args.yes).await
-}
-
-async fn session_command(storage: &Storage, command: SessionCommands) -> Result<()> {
-    match command {
-        SessionCommands::List => {
-            for session in storage.list_sessions(50)? {
-                println!(
-                    "{} {} {} {} {} {} {}",
-                    session.id,
-                    session.title.as_deref().unwrap_or("(untitled)"),
-                    session.alias,
-                    session.provider_id,
-                    session.model,
-                    session
-                        .cwd
-                        .as_deref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                    session.updated_at
-                );
-            }
-        }
-        SessionCommands::Resume { id } => {
-            let session = storage
-                .get_session(&id)?
-                .ok_or_else(|| anyhow!("unknown session"))?;
-            let transcript = SessionTranscript {
-                session,
-                messages: storage.list_session_messages(&id)?,
-            };
-            println!(
-                "session={} title={} alias={} provider={} model={}",
-                transcript.session.id,
-                transcript.session.title.as_deref().unwrap_or("(untitled)"),
-                transcript.session.alias,
-                transcript.session.provider_id,
-                transcript.session.model
-            );
-            for message in transcript.messages {
-                println!(
-                    "[{:?}] {}",
-                    message.role,
-                    format_session_message_for_display(&message)
-                );
-            }
-        }
-        SessionCommands::Rename { id, title } => {
-            let title = title.trim();
-            if title.is_empty() {
-                bail!("session title cannot be empty");
-            }
-            storage.rename_session(&id, title)?;
-            println!("renamed session={} title={}", id, title);
-        }
-    }
-    Ok(())
-}
-
-async fn autonomy_command(storage: &Storage, command: AutonomyCommands) -> Result<()> {
-    let client = ensure_daemon(storage).await?;
-    match command {
-        AutonomyCommands::Enable {
-            mode,
-            allow_self_edit,
-        } => {
-            let theme = ColorfulTheme::default();
-            println!("{}", autonomy_warning());
-            let first = Confirm::with_theme(&theme)
-                .with_prompt("Enable Think For Yourself mode?")
-                .default(false)
-                .interact()?;
-            if !first {
-                bail!("autonomy enable cancelled");
-            }
-            let second = Confirm::with_theme(&theme)
-                .with_prompt("Confirm that this mode can damage the system and burn API bandwidth without limits")
-                .default(false)
-                .interact()?;
-            if !second {
-                bail!("autonomy enable cancelled");
-            }
-            let status: agent_core::AutonomyProfile = client
-                .post(
-                    "/v1/autonomy/enable",
-                    &AutonomyEnableRequest {
-                        mode: Some(mode.into()),
-                        allow_self_edit,
-                    },
-                )
-                .await?;
-            println!(
-                "autonomy={} mode={} unlimited_usage={} full_network={} self_edit={}",
-                autonomy_summary(status.state),
-                agent_policy::autonomy_mode_summary(status.mode),
-                status.unlimited_usage,
-                status.full_network,
-                status.allow_self_edit
-            );
-        }
-        AutonomyCommands::Pause => {
-            let status: agent_core::AutonomyProfile = client
-                .post("/v1/autonomy/pause", &serde_json::json!({}))
-                .await?;
-            println!("autonomy={}", autonomy_summary(status.state));
-        }
-        AutonomyCommands::Resume => {
-            let status: agent_core::AutonomyProfile = client
-                .post("/v1/autonomy/resume", &serde_json::json!({}))
-                .await?;
-            println!("autonomy={}", autonomy_summary(status.state));
-        }
-        AutonomyCommands::Status => {
-            let status: agent_core::AutonomyProfile = client.get("/v1/autonomy/status").await?;
-            println!(
-                "state={} mode={} unlimited_usage={} full_network={} self_edit={} consented_at={:?}",
-                autonomy_summary(status.state),
-                agent_policy::autonomy_mode_summary(status.mode),
-                status.unlimited_usage,
-                status.full_network,
-                status.allow_self_edit,
-                status.consented_at
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn evolve_command(storage: &Storage, command: EvolveCommands) -> Result<()> {
-    let client = ensure_daemon(storage).await?;
-    match command {
-        EvolveCommands::Start {
-            alias,
-            model,
-            budget_friendly,
-        } => {
-            let theme = ColorfulTheme::default();
-            println!(
-                "Evolve mode will let the agent methodically improve its own code with free thinking, self-edit, background shell/network access, and test-gated iterative changes."
-            );
-            let confirmed = Confirm::with_theme(&theme)
-                .with_prompt("Start evolve mode?")
-                .default(false)
-                .interact()?;
-            if !confirmed {
-                bail!("evolve start cancelled");
-            }
-            let status: EvolveConfig = client
-                .post(
-                    "/v1/evolve/start",
-                    &EvolveStartRequest {
-                        alias,
-                        requested_model: model,
-                        budget_friendly: Some(budget_friendly),
-                    },
-                )
-                .await?;
-            println!(
-                "evolve state={} mission={} iteration={} stop_policy={:?}",
-                serde_json::to_value(&status.state)?,
-                status.current_mission_id.as_deref().unwrap_or("-"),
-                status.iteration,
-                status.stop_policy
-            );
-        }
-        EvolveCommands::Pause => {
-            let status: EvolveConfig = client
-                .post("/v1/evolve/pause", &serde_json::json!({}))
-                .await?;
-            println!(
-                "evolve state={} mission={}",
-                serde_json::to_value(&status.state)?,
-                status.current_mission_id.as_deref().unwrap_or("-")
-            );
-        }
-        EvolveCommands::Resume => {
-            let status: EvolveConfig = client
-                .post("/v1/evolve/resume", &serde_json::json!({}))
-                .await?;
-            println!(
-                "evolve state={} mission={}",
-                serde_json::to_value(&status.state)?,
-                status.current_mission_id.as_deref().unwrap_or("-")
-            );
-        }
-        EvolveCommands::Stop => {
-            let status: EvolveConfig = client
-                .post("/v1/evolve/stop", &serde_json::json!({}))
-                .await?;
-            println!(
-                "evolve state={} last_summary={}",
-                serde_json::to_value(&status.state)?,
-                status.last_summary.as_deref().unwrap_or("-")
-            );
-        }
-        EvolveCommands::Status => {
-            let status: EvolveConfig = client.get("/v1/evolve/status").await?;
-            println!(
-                "state={} stop_policy={:?} mission={} iteration={} pending_restart={} alias={} model={} last_goal={} last_summary={}",
-                serde_json::to_value(&status.state)?,
-                status.stop_policy,
-                status.current_mission_id.as_deref().unwrap_or("-"),
-                status.iteration,
-                status.pending_restart,
-                status.alias.as_deref().unwrap_or("-"),
-                status.requested_model.as_deref().unwrap_or("-"),
-                status.last_goal.as_deref().unwrap_or("-"),
-                status.last_summary.as_deref().unwrap_or("-")
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn autopilot_command(storage: &Storage, command: AutopilotCommands) -> Result<()> {
-    let client = ensure_daemon(storage).await?;
-    match command {
-        AutopilotCommands::Enable => {
-            let status: AutopilotConfig = client
-                .put(
-                    "/v1/autopilot/status",
-                    &AutopilotUpdateRequest {
-                        state: Some(AutopilotState::Enabled),
-                        max_concurrent_missions: None,
-                        wake_interval_seconds: None,
-                        allow_background_shell: None,
-                        allow_background_network: None,
-                        allow_background_self_edit: None,
-                    },
-                )
-                .await?;
-            println!("{}", autopilot_summary(&status));
-        }
-        AutopilotCommands::Pause => {
-            let status: AutopilotConfig = client
-                .put(
-                    "/v1/autopilot/status",
-                    &AutopilotUpdateRequest {
-                        state: Some(AutopilotState::Paused),
-                        max_concurrent_missions: None,
-                        wake_interval_seconds: None,
-                        allow_background_shell: None,
-                        allow_background_network: None,
-                        allow_background_self_edit: None,
-                    },
-                )
-                .await?;
-            println!("{}", autopilot_summary(&status));
-        }
-        AutopilotCommands::Resume => {
-            let status: AutopilotConfig = client
-                .put(
-                    "/v1/autopilot/status",
-                    &AutopilotUpdateRequest {
-                        state: Some(AutopilotState::Enabled),
-                        max_concurrent_missions: None,
-                        wake_interval_seconds: None,
-                        allow_background_shell: None,
-                        allow_background_network: None,
-                        allow_background_self_edit: None,
-                    },
-                )
-                .await?;
-            println!("{}", autopilot_summary(&status));
-        }
-        AutopilotCommands::Status => {
-            let status: AutopilotConfig = client.get("/v1/autopilot/status").await?;
-            println!("{}", autopilot_summary(&status));
-        }
-        AutopilotCommands::Config {
-            interval_seconds,
-            max_concurrent,
-            allow_shell,
-            allow_network,
-            allow_self_edit,
-        } => {
-            let status: AutopilotConfig = client
-                .put(
-                    "/v1/autopilot/status",
-                    &AutopilotUpdateRequest {
-                        state: None,
-                        max_concurrent_missions: max_concurrent,
-                        wake_interval_seconds: interval_seconds,
-                        allow_background_shell: allow_shell,
-                        allow_background_network: allow_network,
-                        allow_background_self_edit: allow_self_edit,
-                    },
-                )
-                .await?;
-            println!("{}", autopilot_summary(&status));
-        }
-    }
-    Ok(())
-}
-
-async fn mission_command(storage: &Storage, command: MissionCommands) -> Result<()> {
-    let client = ensure_daemon(storage).await?;
-    match command {
-        MissionCommands::Add {
-            title,
-            details,
-            alias,
-            model,
-            after_seconds,
-            every_seconds,
-            at,
-            watch,
-            watch_nonrecursive,
-        } => {
-            let cwd = current_request_cwd()?;
-            let watch_path = resolve_watch_path(watch.as_deref(), &cwd)?;
-            if watch_path.is_some()
-                && (after_seconds.is_some() || at.is_some() || every_seconds.is_some())
-            {
-                bail!("use either --watch or timer settings (--after-seconds/--at/--every-seconds), not both");
-            }
-            let mut mission = Mission::new(title, details);
-            mission.alias = alias;
-            mission.requested_model = model;
-            mission.repeat_interval_seconds = every_seconds.filter(|seconds| *seconds > 0);
-            mission.wake_at = resolve_mission_wake_at(after_seconds, at.as_deref())?;
-            if mission.wake_at.is_some() || mission.repeat_interval_seconds.is_some() {
-                mission.status = MissionStatus::Scheduled;
-                mission.wake_trigger = Some(WakeTrigger::Timer);
-            }
-            mission.workspace_key = Some(cwd.display().to_string());
-            mission.watch_path = watch_path;
-            mission.watch_recursive = mission.watch_path.is_some() && !watch_nonrecursive;
-            if mission.watch_path.is_some() {
-                mission.status = MissionStatus::Waiting;
-                mission.wake_trigger = Some(WakeTrigger::FileChange);
-                mission.wake_at = None;
-            }
-            let mission: Mission = client.post("/v1/missions", &mission).await?;
-            println!(
-                "mission={} status={:?} created_at={} wake_at={} repeat={} watch={}",
-                mission.id,
-                mission.status,
-                mission.created_at,
-                mission
-                    .wake_at
-                    .map(|value| value.to_rfc3339())
-                    .unwrap_or_else(|| "-".to_string()),
-                mission
-                    .repeat_interval_seconds
-                    .map(|value| format!("{value}s"))
-                    .unwrap_or_else(|| "-".to_string()),
-                mission
-                    .watch_path
-                    .as_deref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "-".to_string())
-            );
-        }
-        MissionCommands::List => {
-            for mission in client.get::<Vec<Mission>>("/v1/missions").await? {
-                println!(
-                    "{} [{:?}] {} wake_at={} repeat={} watch={} retries={}/{}",
-                    mission.id,
-                    mission.status,
-                    mission.title,
-                    mission
-                        .wake_at
-                        .map(|value| value.to_rfc3339())
-                        .unwrap_or_else(|| "-".to_string()),
-                    mission
-                        .repeat_interval_seconds
-                        .map(|value| format!("{value}s"))
-                        .unwrap_or_else(|| "-".to_string()),
-                    mission
-                        .watch_path
-                        .as_deref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                    mission.retries,
-                    mission.max_retries
-                );
-                if !mission.details.is_empty() {
-                    println!("  {}", mission.details);
-                }
-            }
-        }
-        MissionCommands::Pause { id, note } => {
-            let mission: Mission = client
-                .post(
-                    &format!("/v1/missions/{id}/pause"),
-                    &MissionControlRequest {
-                        wake_at: None,
-                        clear_wake_at: false,
-                        repeat_interval_seconds: None,
-                        clear_repeat_interval_seconds: false,
-                        watch_path: None,
-                        clear_watch_path: false,
-                        watch_recursive: None,
-                        clear_session_id: false,
-                        clear_handoff_summary: false,
-                        note,
-                    },
-                )
-                .await?;
-            println!("mission={} status={:?}", mission.id, mission.status);
-        }
-        MissionCommands::Resume {
-            id,
-            after_seconds,
-            every_seconds,
-            at,
-            watch,
-            watch_nonrecursive,
-            note,
-        } => {
-            let cwd = current_request_cwd()?;
-            let watch_path = resolve_watch_path(watch.as_deref(), &cwd)?;
-            if watch_path.is_some()
-                && (after_seconds.is_some() || at.is_some() || every_seconds.is_some())
-            {
-                bail!("use either --watch or timer settings (--after-seconds/--at/--every-seconds), not both");
-            }
-            let wake_at = resolve_mission_wake_at(after_seconds, at.as_deref())?;
-            let watch_recursive = watch_path.as_ref().map(|_| !watch_nonrecursive);
-            let mission: Mission = client
-                .post(
-                    &format!("/v1/missions/{id}/resume"),
-                    &MissionControlRequest {
-                        wake_at,
-                        clear_wake_at: false,
-                        repeat_interval_seconds: every_seconds,
-                        clear_repeat_interval_seconds: false,
-                        watch_path,
-                        clear_watch_path: false,
-                        watch_recursive,
-                        clear_session_id: false,
-                        clear_handoff_summary: false,
-                        note,
-                    },
-                )
-                .await?;
-            println!("mission={} status={:?}", mission.id, mission.status);
-        }
-        MissionCommands::Cancel { id, note } => {
-            let mission: Mission = client
-                .post(
-                    &format!("/v1/missions/{id}/cancel"),
-                    &MissionControlRequest {
-                        wake_at: None,
-                        clear_wake_at: false,
-                        repeat_interval_seconds: None,
-                        clear_repeat_interval_seconds: false,
-                        watch_path: None,
-                        clear_watch_path: false,
-                        watch_recursive: None,
-                        clear_session_id: false,
-                        clear_handoff_summary: false,
-                        note,
-                    },
-                )
-                .await?;
-            println!("mission={} status={:?}", mission.id, mission.status);
-        }
-        MissionCommands::Checkpoints { id, limit } => {
-            let checkpoints: Vec<MissionCheckpoint> = client
-                .get(&format!("/v1/missions/{id}/checkpoints?limit={limit}"))
-                .await?;
-            for checkpoint in checkpoints.into_iter().rev() {
-                println!(
-                    "{} [{:?}] {}",
-                    checkpoint.created_at, checkpoint.status, checkpoint.summary
-                );
-                if let Some(session_id) = checkpoint.session_id {
-                    println!("  session={}", session_id);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn memory_command(storage: &Storage, command: MemoryCommands) -> Result<()> {
-    let client = ensure_daemon(storage).await?;
-    match command {
-        MemoryCommands::List { limit } => {
-            let memories: Vec<MemoryRecord> =
-                client.get(&format!("/v1/memory?limit={limit}")).await?;
-            println!("{}", format_memory_records(&memories));
-        }
-        MemoryCommands::Review { limit } => {
-            let memories: Vec<MemoryRecord> = client
-                .get(&format!("/v1/memory/review?limit={limit}"))
-                .await?;
-            println!("{}", format_memory_records(&memories));
-        }
-        MemoryCommands::Approve { id, note } => {
-            let memory: MemoryRecord = client
-                .post(
-                    &format!("/v1/memory/{id}/approve"),
-                    &MemoryReviewUpdateRequest {
-                        status: MemoryReviewStatus::Accepted,
-                        note,
-                    },
-                )
-                .await?;
-            println!("approved memory={} subject={}", memory.id, memory.subject);
-        }
-        MemoryCommands::Reject { id, note } => {
-            let memory: MemoryRecord = client
-                .post(
-                    &format!("/v1/memory/{id}/reject"),
-                    &MemoryReviewUpdateRequest {
-                        status: MemoryReviewStatus::Rejected,
-                        note,
-                    },
-                )
-                .await?;
-            println!("rejected memory={} subject={}", memory.id, memory.subject);
-        }
-        MemoryCommands::Profile { limit } => {
-            let memories = load_profile_memories(storage, limit).await?;
-            println!("{}", format_memory_records(&memories));
-        }
-        MemoryCommands::Search { query, limit } => {
-            let response: MemorySearchResponse = client
-                .post(
-                    "/v1/memory/search",
-                    &MemorySearchQuery {
-                        query,
-                        limit: Some(limit),
-                        workspace_key: Some(current_request_cwd()?.display().to_string()),
-                        provider_id: None,
-                        review_statuses: Vec::new(),
-                        include_superseded: false,
-                    },
-                )
-                .await?;
-            for memory in response.memories {
-                println!(
-                    "{} [{} {:?}/{:?}] {}",
-                    memory.id, memory.confidence, memory.kind, memory.scope, memory.subject
-                );
-                println!("  {}", memory.content);
-            }
-            for hit in response.transcript_hits {
-                println!(
-                    "session={} [{:?}] {}",
-                    hit.session_id, hit.role, hit.preview
-                );
-            }
-        }
-        MemoryCommands::Remember {
-            subject,
-            content,
-            kind,
-            scope,
-        } => {
-            let memory: MemoryRecord = client
-                .post(
-                    "/v1/memory",
-                    &MemoryUpsertRequest {
-                        kind: kind.into(),
-                        scope: scope.into(),
-                        subject,
-                        content,
-                        confidence: Some(100),
-                        source_session_id: None,
-                        source_message_id: None,
-                        provider_id: None,
-                        workspace_key: Some(current_request_cwd()?.display().to_string()),
-                        tags: vec!["manual".to_string()],
-                        identity_key: None,
-                        observation_source: None,
-                        review_status: Some(MemoryReviewStatus::Accepted),
-                        review_note: None,
-                        reviewed_at: None,
-                        supersedes: None,
-                    },
-                )
-                .await?;
-            println!("memory={} subject={}", memory.id, memory.subject);
-        }
-        MemoryCommands::Forget { id } => {
-            let _: serde_json::Value = client.delete(&format!("/v1/memory/{id}")).await?;
-            println!("forgot memory={}", id);
-        }
-    }
-    Ok(())
-}
-
-async fn logs_command(storage: &Storage, limit: usize, follow: bool) -> Result<()> {
-    if follow {
-        return follow_events_command(storage, limit).await;
-    }
-
-    for entry in storage.list_logs(limit)?.into_iter().rev() {
-        print_log_entry(&entry);
-    }
-    Ok(())
-}
-
-async fn follow_events_command(storage: &Storage, limit: usize) -> Result<()> {
-    let client = ensure_daemon(storage).await?;
-    let mut seen = HashSet::new();
-    let mut cursor = None;
-
-    loop {
-        let path = event_feed_path(cursor.as_ref(), limit, 30);
-        let events: Vec<agent_core::LogEntry> = client.get(&path).await?;
-        if events.is_empty() {
-            continue;
-        }
-
-        for entry in events {
-            if !seen.insert(entry.id.clone()) {
-                continue;
-            }
-            cursor = Some(entry.created_at);
-            print_log_entry(&entry);
-        }
-        io::stdout().flush().ok();
-    }
-}
-
-async fn dashboard_command(storage: &Storage, args: DashboardArgs) -> Result<()> {
-    let ui_url = dashboard_ui_url(storage)?;
-    let launch_url = dashboard_launch_url(storage).await?;
-
-    if args.print_url || args.no_open {
-        println!("Reusable dashboard URL: {ui_url}");
-        println!("Immediate one-time connect URL (expires soon): {launch_url}");
-    }
-
-    if !args.no_open {
-        match webbrowser::open(&launch_url) {
-            Ok(_) => {
-                if !args.print_url {
-                    println!("Reusable dashboard URL: {ui_url}");
-                }
-            }
-            Err(error) => {
-                println!("Reusable dashboard URL: {ui_url}");
-                println!("Immediate one-time connect URL (expires soon): {launch_url}");
-                return Err(anyhow!("failed to open dashboard in browser: {error}"));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-pub(crate) fn dashboard_ui_url(storage: &Storage) -> Result<String> {
-    let config = storage.load_config()?;
-    Ok(format!("http://{}:{}/ui", config.daemon.host, config.daemon.port))
-}
-
-pub(crate) async fn dashboard_launch_url(storage: &Storage) -> Result<String> {
-    let client = ensure_daemon(storage).await?;
-    let launch: DashboardLaunchResponse = client.post("/v1/dashboard/launch", &serde_json::json!({})).await?;
-    Ok(format!("{}{}", dashboard_origin(storage)?, launch.launch_path))
-}
-
-fn dashboard_origin(storage: &Storage) -> Result<String> {
-    let config = storage.load_config()?;
-    Ok(format!("http://{}:{}", config.daemon.host, config.daemon.port))
-}
-
-async fn doctor_command(storage: &Storage) -> Result<()> {
-    let config = storage.load_config()?;
-    let client = build_http_client();
-    let providers = futures::future::join_all(
-        config
-            .providers
-            .iter()
-            .map(|provider| health_check(&client, provider)),
-    )
-    .await;
-    let report = HealthReport {
-        daemon_running: try_daemon(storage).await?.is_some(),
-        config_path: storage.paths().config_path.display().to_string(),
-        data_path: storage.paths().data_dir.display().to_string(),
-        keyring_ok: keyring_available(),
-        providers,
-    };
-    println!("daemon_running={}", report.daemon_running);
-    println!("config_path={}", report.config_path);
-    println!("data_path={}", report.data_path);
-    println!("keyring_ok={}", report.keyring_ok);
-    for provider in report.providers {
-        println!(
-            "{} ok={} detail={}",
-            provider.id, provider.ok, provider.detail
-        );
-    }
-    Ok(())
 }
 
 async fn ensure_daemon(storage: &Storage) -> Result<DaemonClient> {
@@ -6799,7 +4110,10 @@ async fn stop_daemon_for_reset(storage: &Storage) -> Result<()> {
         sleep(Duration::from_millis(250)).await;
     }
 
-    bail!("daemon did not stop in time; run `autism daemon stop` and retry reset")
+    bail!(
+        "daemon did not stop in time; run `{} daemon stop` and retry reset",
+        PRIMARY_COMMAND_NAME
+    )
 }
 
 fn configured_keychain_accounts(config: &AppConfig) -> BTreeSet<String> {
@@ -6819,6 +4133,30 @@ fn configured_keychain_accounts(config: &AppConfig) -> BTreeSet<String> {
             .discord_connectors
             .iter()
             .filter_map(|connector| connector.bot_token_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .slack_connectors
+            .iter()
+            .filter_map(|connector| connector.bot_token_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .home_assistant_connectors
+            .iter()
+            .filter_map(|connector| connector.access_token_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .brave_connectors
+            .iter()
+            .filter_map(|connector| connector.api_key_keychain_account.clone()),
+    );
+    accounts.extend(
+        config
+            .gmail_connectors
+            .iter()
+            .filter_map(|connector| connector.oauth_keychain_account.clone()),
     );
     accounts
 }
@@ -6882,6 +4220,7 @@ async fn execute_prompt(
     session_id: Option<String>,
     cwd: PathBuf,
     thinking_level: Option<ThinkingLevel>,
+    task_mode: Option<TaskMode>,
     attachments: Vec<InputAttachment>,
     permission_preset: Option<PermissionPreset>,
     output_schema_json: Option<String>,
@@ -6897,6 +4236,7 @@ async fn execute_prompt(
                 session_id,
                 cwd: Some(cwd),
                 thinking_level,
+                task_mode,
                 attachments,
                 permission_preset,
                 output_schema_json,
@@ -6919,6 +4259,15 @@ fn load_session_cwd(storage: &Storage, session_id: Option<&str>) -> Result<Optio
         .and_then(|session| session.cwd))
 }
 
+fn load_session_task_mode(storage: &Storage, session_id: Option<&str>) -> Result<Option<TaskMode>> {
+    let Some(session_id) = session_id else {
+        return Ok(None);
+    };
+    Ok(storage
+        .get_session(session_id)?
+        .and_then(|session| session.task_mode))
+}
+
 fn resolve_thinking_level(
     storage: &Storage,
     thinking: Option<ThinkingLevelArg>,
@@ -6933,420 +4282,6 @@ fn persist_thinking_level(storage: &Storage, thinking_level: Option<ThinkingLeve
     let mut config = storage.load_config()?;
     config.thinking_level = thinking_level;
     storage.save_config(&config)
-}
-
-fn parse_interactive_command(line: &str) -> Result<Option<InteractiveCommand>> {
-    if !line.starts_with('/') {
-        return Ok(None);
-    }
-
-    let body = &line[1..];
-    let mut parts = body.splitn(2, char::is_whitespace);
-    let command = parts.next().unwrap_or_default();
-    let args = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    let parsed = match command {
-        "exit" | "quit" => InteractiveCommand::Exit,
-        "help" => InteractiveCommand::Help,
-        "status" => InteractiveCommand::Status,
-        "config" | "settings" => InteractiveCommand::ConfigShow,
-        "dashboard" | "ui" => InteractiveCommand::DashboardOpen,
-        "telegram" | "telegrams" => parse_telegram_interactive_command(args)?,
-        "discord" | "discords" => parse_discord_interactive_command(args)?,
-        "slack" | "slacks" => parse_slack_interactive_command(args)?,
-        "signal" | "signals" => parse_signal_interactive_command(args)?,
-        "home-assistant" | "home-assistants" | "homeassistant" | "homeassistants" | "ha" => {
-            parse_home_assistant_interactive_command(args)?
-        }
-        "webhooks" => InteractiveCommand::WebhooksShow,
-        "inboxes" => InteractiveCommand::InboxesShow,
-        "autopilot" => match args.map(|value| value.to_ascii_lowercase()) {
-            Some(value) if value == "on" || value == "enable" => {
-                InteractiveCommand::AutopilotEnable
-            }
-            Some(value) if value == "pause" => InteractiveCommand::AutopilotPause,
-            Some(value) if value == "resume" => InteractiveCommand::AutopilotResume,
-            Some(value) if value == "status" => InteractiveCommand::AutopilotShow,
-            Some(_) | None => InteractiveCommand::AutopilotShow,
-        },
-        "missions" => InteractiveCommand::MissionsShow,
-        "events" => InteractiveCommand::EventsShow(parse_optional_limit(args, 10)?),
-        "schedule" => {
-            let (after_seconds, title) = parse_schedule_command_args(args)?;
-            InteractiveCommand::Schedule {
-                after_seconds,
-                title,
-            }
-        }
-        "repeat" => {
-            let (every_seconds, title) = parse_repeat_command_args(args)?;
-            InteractiveCommand::Repeat {
-                every_seconds,
-                title,
-            }
-        }
-        "watch" => {
-            let (path, title) = parse_watch_command_args(args)?;
-            InteractiveCommand::Watch { path, title }
-        }
-        "profile" => InteractiveCommand::ProfileShow,
-        "memory" => parse_memory_interactive_command(args)?,
-        "remember" => InteractiveCommand::Remember(
-            args.ok_or_else(|| anyhow!("usage: /remember <text>"))?
-                .to_string(),
-        ),
-        "forget" => InteractiveCommand::Forget(
-            args.ok_or_else(|| anyhow!("usage: /forget <memory-id>"))?
-                .to_string(),
-        ),
-        "skills" => InteractiveCommand::Skills(parse_interactive_skill_command(args)?),
-        "permissions" | "approvals" => match args {
-            Some(value) => {
-                InteractiveCommand::PermissionsSet(Some(parse_permission_preset(value)?))
-            }
-            None => InteractiveCommand::PermissionsShow,
-        },
-        "attach" => InteractiveCommand::Attach(PathBuf::from(
-            args.ok_or_else(|| anyhow!("usage: /attach <path>"))?,
-        )),
-        "attachments" => InteractiveCommand::AttachmentsShow,
-        "detach" | "attachments-clear" => InteractiveCommand::AttachmentsClear,
-        "new" => InteractiveCommand::New,
-        "clear" => InteractiveCommand::Clear,
-        "diff" => InteractiveCommand::Diff,
-        "copy" => InteractiveCommand::Copy,
-        "compact" => InteractiveCommand::Compact,
-        "init" => InteractiveCommand::Init,
-        "onboard" => InteractiveCommand::Onboard,
-        "alias" | "model" => match args {
-            Some(value) => InteractiveCommand::ModelSet(value.to_string()),
-            None => InteractiveCommand::ModelShow,
-        },
-        "provider" | "providers" => match args {
-            Some(value) => InteractiveCommand::ProviderSet(value.to_string()),
-            None => InteractiveCommand::ProviderShow,
-        },
-        "thinking" => match args {
-            Some(value) => InteractiveCommand::ThinkingSet(parse_thinking_setting(value)?),
-            None => InteractiveCommand::ThinkingShow,
-        },
-        "fast" => InteractiveCommand::Fast,
-        "rename" => InteractiveCommand::Rename(args.map(ToOwned::to_owned)),
-        "review" => InteractiveCommand::Review(args.map(ToOwned::to_owned)),
-        "resume" => InteractiveCommand::Resume(args.map(ToOwned::to_owned)),
-        "fork" => InteractiveCommand::Fork(args.map(ToOwned::to_owned)),
-        other => bail!("unknown slash command '/{other}'. Use /help to list commands."),
-    };
-
-    Ok(Some(parsed))
-}
-
-fn parse_telegram_interactive_command(args: Option<&str>) -> Result<InteractiveCommand> {
-    let Some(args) = args else {
-        return Ok(InteractiveCommand::TelegramsShow);
-    };
-    let mut parts = args.splitn(3, char::is_whitespace);
-    let action = parts.next().unwrap_or_default().trim();
-    if action.is_empty() {
-        return Ok(InteractiveCommand::TelegramsShow);
-    }
-    match action.to_ascii_lowercase().as_str() {
-        "approvals" | "approval" => Ok(InteractiveCommand::TelegramApprovalsShow),
-        "approve" => {
-            let id = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("usage: /telegram approve <approval-id> [note]"))?;
-            let note = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            Ok(InteractiveCommand::TelegramApprove {
-                id: id.to_string(),
-                note,
-            })
-        }
-        "reject" => {
-            let id = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("usage: /telegram reject <approval-id> [note]"))?;
-            let note = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            Ok(InteractiveCommand::TelegramReject {
-                id: id.to_string(),
-                note,
-            })
-        }
-        _ => Ok(InteractiveCommand::TelegramsShow),
-    }
-}
-
-fn parse_discord_interactive_command(args: Option<&str>) -> Result<InteractiveCommand> {
-    let Some(args) = args else {
-        return Ok(InteractiveCommand::DiscordsShow);
-    };
-    let mut parts = args.splitn(3, char::is_whitespace);
-    let action = parts.next().unwrap_or_default().trim();
-    if action.is_empty() {
-        return Ok(InteractiveCommand::DiscordsShow);
-    }
-    match action.to_ascii_lowercase().as_str() {
-        "approvals" | "approval" => Ok(InteractiveCommand::DiscordApprovalsShow),
-        "approve" => {
-            let id = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("usage: /discord approve <approval-id> [note]"))?;
-            let note = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            Ok(InteractiveCommand::DiscordApprove {
-                id: id.to_string(),
-                note,
-            })
-        }
-        "reject" => {
-            let id = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("usage: /discord reject <approval-id> [note]"))?;
-            let note = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            Ok(InteractiveCommand::DiscordReject {
-                id: id.to_string(),
-                note,
-            })
-        }
-        _ => Ok(InteractiveCommand::DiscordsShow),
-    }
-}
-
-fn parse_slack_interactive_command(args: Option<&str>) -> Result<InteractiveCommand> {
-    let Some(args) = args else {
-        return Ok(InteractiveCommand::SlacksShow);
-    };
-    let mut parts = args.splitn(3, char::is_whitespace);
-    let action = parts.next().unwrap_or_default().trim();
-    if action.is_empty() {
-        return Ok(InteractiveCommand::SlacksShow);
-    }
-    match action.to_ascii_lowercase().as_str() {
-        "approvals" | "approval" => Ok(InteractiveCommand::SlackApprovalsShow),
-        "approve" => {
-            let id = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("usage: /slack approve <approval-id> [note]"))?;
-            let note = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            Ok(InteractiveCommand::SlackApprove {
-                id: id.to_string(),
-                note,
-            })
-        }
-        "reject" => {
-            let id = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("usage: /slack reject <approval-id> [note]"))?;
-            let note = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            Ok(InteractiveCommand::SlackReject {
-                id: id.to_string(),
-                note,
-            })
-        }
-        _ => Ok(InteractiveCommand::SlacksShow),
-    }
-}
-
-fn parse_home_assistant_interactive_command(_args: Option<&str>) -> Result<InteractiveCommand> {
-    Ok(InteractiveCommand::HomeAssistantsShow)
-}
-
-fn parse_signal_interactive_command(_args: Option<&str>) -> Result<InteractiveCommand> {
-    Ok(InteractiveCommand::SignalsShow)
-}
-
-fn parse_memory_interactive_command(args: Option<&str>) -> Result<InteractiveCommand> {
-    let Some(args) = args else {
-        return Ok(InteractiveCommand::MemoryShow(None));
-    };
-    let mut parts = args.splitn(3, char::is_whitespace);
-    let action = parts.next().unwrap_or_default().trim();
-    if action.is_empty() {
-        return Ok(InteractiveCommand::MemoryShow(None));
-    }
-    match action.to_ascii_lowercase().as_str() {
-        "review" => Ok(InteractiveCommand::MemoryReviewShow),
-        "approve" => {
-            let id = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("usage: /memory approve <memory-id> [note]"))?;
-            let note = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            Ok(InteractiveCommand::MemoryApprove {
-                id: id.to_string(),
-                note,
-            })
-        }
-        "reject" => {
-            let id = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("usage: /memory reject <memory-id> [note]"))?;
-            let note = parts
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            Ok(InteractiveCommand::MemoryReject {
-                id: id.to_string(),
-                note,
-            })
-        }
-        _ => Ok(InteractiveCommand::MemoryShow(Some(args.to_string()))),
-    }
-}
-
-fn parse_interactive_skill_command(args: Option<&str>) -> Result<InteractiveSkillCommand> {
-    let Some(args) = args else {
-        return Ok(InteractiveSkillCommand::Show(None));
-    };
-    let mut parts = args.splitn(2, char::is_whitespace);
-    let action = parts.next().unwrap_or_default().to_ascii_lowercase();
-    let remainder = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    match action.as_str() {
-        "drafts" | "list" => Ok(InteractiveSkillCommand::Show(None)),
-        "published" => Ok(InteractiveSkillCommand::Show(Some(
-            SkillDraftStatus::Published,
-        ))),
-        "rejected" => Ok(InteractiveSkillCommand::Show(Some(
-            SkillDraftStatus::Rejected,
-        ))),
-        "publish" => Ok(InteractiveSkillCommand::Publish(
-            remainder
-                .ok_or_else(|| anyhow!("usage: /skills publish <draft-id>"))?
-                .to_string(),
-        )),
-        "reject" => Ok(InteractiveSkillCommand::Reject(
-            remainder
-                .ok_or_else(|| anyhow!("usage: /skills reject <draft-id>"))?
-                .to_string(),
-        )),
-        _ => Ok(InteractiveSkillCommand::Show(None)),
-    }
-}
-
-fn parse_thinking_setting(value: &str) -> Result<Option<ThinkingLevel>> {
-    if value.eq_ignore_ascii_case("default") {
-        return Ok(None);
-    }
-
-    let normalized = value.to_ascii_lowercase();
-    match normalized.as_str() {
-        "none" => Ok(Some(ThinkingLevel::None)),
-        "minimal" => Ok(Some(ThinkingLevel::Minimal)),
-        "low" => Ok(Some(ThinkingLevel::Low)),
-        "medium" => Ok(Some(ThinkingLevel::Medium)),
-        "high" => Ok(Some(ThinkingLevel::High)),
-        "xhigh" | "x-high" | "extra-high" => Ok(Some(ThinkingLevel::XHigh)),
-        _ => bail!("unknown thinking level '{value}'"),
-    }
-}
-
-fn parse_optional_limit(value: Option<&str>, default: usize) -> Result<usize> {
-    match value {
-        Some(value) => value
-            .parse::<usize>()
-            .with_context(|| format!("invalid limit '{value}'")),
-        None => Ok(default),
-    }
-}
-
-fn parse_schedule_command_args(args: Option<&str>) -> Result<(u64, String)> {
-    let value = args.ok_or_else(|| anyhow!("usage: /schedule <after-seconds> <title>"))?;
-    let mut parts = value.splitn(2, char::is_whitespace);
-    let delay = parts
-        .next()
-        .ok_or_else(|| anyhow!("usage: /schedule <after-seconds> <title>"))?;
-    let title = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("usage: /schedule <after-seconds> <title>"))?;
-    let after_seconds = delay
-        .parse::<u64>()
-        .with_context(|| format!("invalid schedule delay '{delay}'"))?;
-    Ok((after_seconds, title.to_string()))
-}
-
-fn parse_repeat_command_args(args: Option<&str>) -> Result<(u64, String)> {
-    let value = args.ok_or_else(|| anyhow!("usage: /repeat <every-seconds> <title>"))?;
-    let mut parts = value.splitn(2, char::is_whitespace);
-    let interval = parts
-        .next()
-        .ok_or_else(|| anyhow!("usage: /repeat <every-seconds> <title>"))?;
-    let title = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("usage: /repeat <every-seconds> <title>"))?;
-    let every_seconds = interval
-        .parse::<u64>()
-        .with_context(|| format!("invalid repeat interval '{interval}'"))?;
-    Ok((every_seconds, title.to_string()))
-}
-
-fn parse_watch_command_args(args: Option<&str>) -> Result<(PathBuf, String)> {
-    let value = args.ok_or_else(|| anyhow!("usage: /watch <path> <title>"))?;
-    let mut parts = value.splitn(2, char::is_whitespace);
-    let path = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("usage: /watch <path> <title>"))?;
-    let title = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("usage: /watch <path> <title>"))?;
-    Ok((PathBuf::from(path), title.to_string()))
 }
 
 fn resolve_mission_wake_at(
@@ -7414,6 +4349,13 @@ fn thinking_level_label(level: Option<ThinkingLevel>) -> &'static str {
     }
 }
 
+fn task_mode_label(mode: Option<TaskMode>) -> &'static str {
+    match mode {
+        None => "default",
+        Some(mode) => mode.as_str(),
+    }
+}
+
 fn autopilot_summary(config: &AutopilotConfig) -> String {
     format!(
         "autopilot={} interval={}s concurrency={} shell={} network={} self_edit={}",
@@ -7461,72 +4403,6 @@ fn parse_permission_preset(value: &str) -> Result<PermissionPreset> {
     }
 }
 
-fn print_interactive_help() {
-    println!("Available commands:");
-    println!("/help                     show this help");
-    println!("/config                   open the categorized settings menu");
-    println!("/dashboard                open the localhost web control room");
-    println!("/telegrams                list configured Telegram connectors");
-    println!("/discords                 list configured Discord connectors");
-    println!("/slacks                   list configured Slack connectors");
-    println!("/signals                  list configured Signal connectors");
-    println!("/home-assistant           list configured Home Assistant connectors");
-    println!("/telegram approvals       list pending Telegram pairing approvals");
-    println!("/telegram approve <id>    approve a Telegram pairing request");
-    println!("/telegram reject <id>     reject a Telegram pairing request");
-    println!("/discord approvals        list pending Discord pairing approvals");
-    println!("/discord approve <id>     approve a Discord pairing request");
-    println!("/discord reject <id>      reject a Discord pairing request");
-    println!("/slack approvals          list pending Slack pairing approvals");
-    println!("/slack approve <id>       approve a Slack pairing request");
-    println!("/slack reject <id>        reject a Slack pairing request");
-    println!("/webhooks                 list configured webhook connectors");
-    println!("/inboxes                  list configured inbox connectors");
-    println!("/autopilot [on|pause|resume|status] control the background mission runner");
-    println!("/missions                 list background missions");
-    println!("/events [limit]           show recent daemon events");
-    println!("/schedule <seconds> <title> create a scheduled background mission");
-    println!("/repeat <seconds> <title> create a recurring background mission");
-    println!("/watch <path> <title>     create a filesystem-triggered background mission");
-    println!("/profile                  show learned resident profile memory");
-    println!("/memory [query]           list recent memory or search memory/transcripts");
-    println!("/memory review            show candidate memories awaiting review");
-    println!("/memory approve <id>      approve a candidate memory");
-    println!("/memory reject <id>       reject a candidate memory");
-    println!("/remember <text>          store a manual long-term memory note");
-    println!("/forget <memory-id>       delete a stored memory");
-    println!("/skills [drafts|published|rejected] list learned skill drafts");
-    println!("/skills publish <id>      approve a learned skill draft");
-    println!("/skills reject <id>       discard a learned skill draft");
-    println!("/model [name]             open the provider switcher or switch the current alias/model");
-    println!("/provider [name]          list or switch between logged-in providers");
-    println!("/fast                     set thinking to minimal");
-    println!("/thinking [level]         open the thinking picker or set thinking: default, none, minimal, low, medium, high, xhigh");
-    println!("/status                   show session, model, daemon, and thinking state");
-    println!("/permissions [preset]     open the permissions picker or set permissions: suggest, auto-edit, full-auto");
-    println!("/attach <path>            attach an image to the next prompt(s)");
-    println!("/attachments              list current image attachments");
-    println!("/detach                   clear current image attachments");
-    println!("/copy                     copy the latest assistant output to the clipboard");
-    println!("/compact                  summarize the current session into a smaller fork");
-    println!("/init                     create an AGENTS.md starter file in the current directory");
-    println!("/rename [title]           rename the current session");
-    println!("/review [instructions]    review current uncommitted changes");
-    println!("/diff                     print the current uncommitted git diff");
-    println!("/resume [last|session]    resume another recorded session");
-    println!("/fork [last|session]      fork the current or selected session");
-    println!("/onboard                  wipe saved state and restart fresh setup");
-    println!("/new                      start a new chat");
-    println!("/clear                    clear the terminal and start a new chat");
-    println!("!<command>                run a local shell command in the current directory");
-    println!("/exit                     quit the interactive session");
-}
-
-fn clear_terminal() {
-    print!("\x1B[2J\x1B[H");
-    let _ = io::stdout().flush();
-}
-
 fn resolve_active_alias<'a>(
     config: &'a AppConfig,
     alias: Option<&'a str>,
@@ -7544,428 +4420,6 @@ fn resolved_requested_model<'a>(
     requested_model: Option<&'a str>,
 ) -> &'a str {
     requested_model.unwrap_or(active_alias.model.as_str())
-}
-
-fn resolve_requested_model_override(
-    storage: &Storage,
-    alias: Option<&str>,
-    actual_model: &str,
-) -> Result<Option<String>> {
-    let config = storage.load_config()?;
-    let active_alias = resolve_active_alias(&config, alias)?;
-    Ok((actual_model != active_alias.model).then(|| actual_model.to_string()))
-}
-
-fn resolve_session_model_override(
-    storage: &Storage,
-    session_id: Option<&str>,
-    alias: Option<&str>,
-) -> Result<Option<String>> {
-    let Some(session_id) = session_id else {
-        return Ok(None);
-    };
-    let Some(session) = storage.get_session(session_id)? else {
-        return Ok(None);
-    };
-    resolve_requested_model_override(storage, alias, &session.model)
-}
-
-async fn interactive_model_choices_text(
-    storage: &Storage,
-    current_alias: Option<&str>,
-    requested_model: Option<&str>,
-) -> Result<String> {
-    let config = storage.load_config()?;
-    let active_alias = resolve_active_alias(&config, current_alias)?;
-    let provider = config
-        .get_provider(&active_alias.provider_id)
-        .ok_or_else(|| anyhow!("unknown provider '{}'", active_alias.provider_id))?;
-    let selected_model = resolved_requested_model(active_alias, requested_model);
-    let mut lines = vec![
-        format!("current alias: {}", active_alias.alias),
-        format!("provider: {}", provider.display_name),
-        format!("selected model: {}", selected_model),
-    ];
-
-    match timeout(
-        Duration::from_secs(3),
-        list_model_descriptors(&build_http_client(), provider),
-    )
-    .await
-    {
-        Ok(Ok(models)) if !models.is_empty() => {
-            lines.push(String::new());
-            lines.push("provider models:".to_string());
-            for model in models {
-                let marker = if model.id == selected_model { "*" } else { " " };
-                let display_name = model.display_name.as_deref().unwrap_or(model.id.as_str());
-                let suffix = match (model.context_window, model.effective_context_window_percent) {
-                    (Some(window), Some(percent)) => {
-                        format!(" | ctx {} @ {}%", format_tokens_compact(window), percent)
-                    }
-                    (Some(window), None) => {
-                        format!(" | ctx {}", format_tokens_compact(window))
-                    }
-                    _ => String::new(),
-                };
-
-                if display_name == model.id {
-                    lines.push(format!("{marker} {}{}", model.id, suffix));
-                } else {
-                    lines.push(format!(
-                        "{marker} {} ({}){}",
-                        display_name, model.id, suffix
-                    ));
-                }
-            }
-        }
-        Ok(Ok(_)) => {
-            lines.push(String::new());
-            lines.push("provider models: (none returned)".to_string());
-        }
-        Ok(Err(error)) => {
-            lines.push(String::new());
-            lines.push(format!("provider models unavailable: {error:#}"));
-        }
-        Err(_) => {
-            lines.push(String::new());
-            lines.push("provider models unavailable: request timed out".to_string());
-        }
-    }
-
-    if !config.aliases.is_empty() {
-        lines.push(String::new());
-        lines.push("configured aliases:".to_string());
-        for alias in &config.aliases {
-            let marker = if current_alias == Some(alias.alias.as_str()) && requested_model.is_none()
-            {
-                "*"
-            } else {
-                " "
-            };
-            lines.push(format!(
-                "{marker} {} -> {} / {}",
-                alias.alias, alias.provider_id, alias.model
-            ));
-        }
-    }
-
-    Ok(lines.join("\n"))
-}
-
-async fn resolve_interactive_model_selection(
-    storage: &Storage,
-    current_alias: Option<&str>,
-    value: &str,
-) -> Result<InteractiveModelSelection> {
-    let config = storage.load_config()?;
-    if config.get_alias(value).is_some() {
-        return Ok(InteractiveModelSelection::Alias(value.to_string()));
-    }
-
-    let active_alias = resolve_active_alias(&config, current_alias)?;
-    let provider = config
-        .get_provider(&active_alias.provider_id)
-        .ok_or_else(|| anyhow!("unknown provider '{}'", active_alias.provider_id))?;
-    let normalized = normalize_model_selection_value(value);
-
-    let resolved_model = match timeout(
-        Duration::from_secs(3),
-        list_model_descriptors(&build_http_client(), provider),
-    )
-    .await
-    {
-        Ok(Ok(models)) => models
-            .into_iter()
-            .find(|model| {
-                model.id.eq_ignore_ascii_case(value)
-                    || normalize_model_selection_value(&model.id) == normalized
-                    || model.display_name.as_deref().is_some_and(|name| {
-                        name.eq_ignore_ascii_case(value)
-                            || normalize_model_selection_value(name) == normalized
-                    })
-            })
-            .map(|model| model.id)
-            .unwrap_or_else(|| value.to_string()),
-        _ => value.to_string(),
-    };
-
-    Ok(InteractiveModelSelection::Explicit(resolved_model))
-}
-
-pub(crate) fn provider_has_saved_access(provider: &ProviderConfig) -> bool {
-    match provider.auth_mode {
-        AuthMode::None => true,
-        AuthMode::ApiKey => provider
-            .keychain_account
-            .as_deref()
-            .is_some_and(|account| load_api_key(account).is_ok()),
-        AuthMode::OAuth => provider
-            .keychain_account
-            .as_deref()
-            .is_some_and(|account| load_oauth_token(account).is_ok()),
-    }
-}
-
-fn provider_display_label(provider: &ProviderConfig) -> String {
-    if provider.display_name.trim().is_empty() {
-        provider.id.clone()
-    } else {
-        provider.display_name.clone()
-    }
-}
-
-fn preferred_provider_alias<'a>(
-    config: &'a AppConfig,
-    current_alias: Option<&str>,
-    provider_id: &str,
-) -> Option<&'a ModelAlias> {
-    if let Some(alias) = current_alias
-        .and_then(|name| config.get_alias(name))
-        .filter(|alias| alias.provider_id == provider_id)
-    {
-        return Some(alias);
-    }
-
-    if let Some(alias) = config
-        .main_agent_alias
-        .as_deref()
-        .and_then(|name| config.get_alias(name))
-        .filter(|alias| alias.provider_id == provider_id)
-    {
-        return Some(alias);
-    }
-
-    if let Some(alias) = config
-        .get_alias(provider_id)
-        .filter(|alias| alias.provider_id == provider_id)
-    {
-        return Some(alias);
-    }
-
-    config
-        .aliases
-        .iter()
-        .filter(|alias| alias.provider_id == provider_id)
-        .min_by(|left, right| left.alias.cmp(&right.alias))
-}
-
-fn interactive_provider_choices_text(storage: &Storage, current_alias: Option<&str>) -> Result<String> {
-    let config = storage.load_config()?;
-    let active_provider = resolve_active_alias(&config, current_alias)
-        .ok()
-        .map(|alias| alias.provider_id.clone());
-    let mut lines = Vec::new();
-
-    if let Some(provider_id) = &active_provider {
-        if let Some(provider) = config.get_provider(provider_id) {
-            lines.push(format!("current provider: {}", provider_display_label(provider)));
-        }
-    }
-
-    let mut entries = config
-        .providers
-        .iter()
-        .filter(|provider| provider_has_saved_access(provider))
-        .filter_map(|provider| {
-            let alias = preferred_provider_alias(&config, current_alias, &provider.id)?;
-            Some((provider, alias))
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|(left_provider, left_alias), (right_provider, right_alias)| {
-        provider_display_label(left_provider)
-            .cmp(&provider_display_label(right_provider))
-            .then_with(|| left_alias.alias.cmp(&right_alias.alias))
-    });
-
-    if !entries.is_empty() {
-        if !lines.is_empty() {
-            lines.push(String::new());
-        }
-        lines.push("logged-in providers:".to_string());
-        for (provider, alias) in entries {
-            let marker = if active_provider.as_deref() == Some(provider.id.as_str()) {
-                "*"
-            } else {
-                " "
-            };
-            lines.push(format!(
-                "{marker} {} ({}) -> {} / {}",
-                provider_display_label(provider),
-                provider.id,
-                alias.alias,
-                alias.model
-            ));
-        }
-    } else {
-        lines.push("No logged-in providers with usable aliases.".to_string());
-    }
-
-    Ok(lines.join("\n"))
-}
-
-pub(crate) fn resolve_interactive_provider_selection(
-    storage: &Storage,
-    current_alias: Option<&str>,
-    value: &str,
-) -> Result<String> {
-    let config = storage.load_config()?;
-    if let Some(alias) = config
-        .get_alias(value)
-        .filter(|alias| {
-            config
-                .get_provider(&alias.provider_id)
-                .is_some_and(provider_has_saved_access)
-        })
-    {
-        return Ok(alias.alias.clone());
-    }
-
-    let mut exact_matches = Vec::new();
-    let mut normalized_matches = Vec::new();
-    let normalized = normalize_model_selection_value(value);
-    for provider in config
-        .providers
-        .iter()
-        .filter(|provider| provider_has_saved_access(provider))
-    {
-        let Some(alias) = preferred_provider_alias(&config, current_alias, &provider.id) else {
-            continue;
-        };
-        let display = provider_display_label(provider);
-        if provider.id.eq_ignore_ascii_case(value) || display.eq_ignore_ascii_case(value) {
-            exact_matches.push(alias.alias.clone());
-            continue;
-        }
-        if normalize_model_selection_value(&provider.id) == normalized
-            || normalize_model_selection_value(&display) == normalized
-        {
-            normalized_matches.push(alias.alias.clone());
-        }
-    }
-
-    let matches = if exact_matches.is_empty() {
-        normalized_matches
-    } else {
-        exact_matches
-    };
-    let mut matches = matches;
-    matches.sort();
-    matches.dedup();
-
-    match matches.as_slice() {
-        [alias] => Ok(alias.clone()),
-        [] => bail!("unknown logged-in provider '{value}'"),
-        _ => bail!("provider selection '{value}' is ambiguous"),
-    }
-}
-
-fn normalize_model_selection_value(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-fn format_tokens_compact(value: i64) -> String {
-    let value = value.max(0);
-    if value == 0 {
-        return "0".to_string();
-    }
-    if value < 1_000 {
-        return value.to_string();
-    }
-
-    let value_f64 = value as f64;
-    let (scaled, suffix) = if value >= 1_000_000_000_000 {
-        (value_f64 / 1_000_000_000_000.0, "T")
-    } else if value >= 1_000_000_000 {
-        (value_f64 / 1_000_000_000.0, "B")
-    } else if value >= 1_000_000 {
-        (value_f64 / 1_000_000.0, "M")
-    } else {
-        (value_f64 / 1_000.0, "K")
-    };
-
-    let decimals = if scaled < 10.0 {
-        2
-    } else if scaled < 100.0 {
-        1
-    } else {
-        0
-    };
-
-    let mut formatted = format!("{scaled:.decimals$}");
-    if formatted.contains('.') {
-        while formatted.ends_with('0') {
-            formatted.pop();
-        }
-        if formatted.ends_with('.') {
-            formatted.pop();
-        }
-    }
-    format!("{formatted}{suffix}")
-}
-
-fn build_uncommitted_review_prompt(custom_prompt: Option<String>) -> Result<String> {
-    build_review_prompt(&ReviewArgs {
-        uncommitted: true,
-        base: None,
-        commit: None,
-        commit_title: None,
-        prompt: custom_prompt,
-        thinking: None,
-    })
-}
-
-fn build_uncommitted_diff() -> Result<String> {
-    collect_review_target(&ReviewArgs {
-        uncommitted: true,
-        base: None,
-        commit: None,
-        commit_title: None,
-        prompt: None,
-        thinking: None,
-    })
-}
-
-fn load_transcript_for_interactive_resume(
-    storage: &Storage,
-    target: Option<&str>,
-) -> Result<SessionTranscript> {
-    match target {
-        Some("last") => load_session_for_command(storage, None, true, false),
-        Some(session_id) => {
-            load_session_for_command(storage, Some(session_id.to_string()), false, false)
-        }
-        None => load_session_for_command(storage, None, false, true),
-    }
-}
-
-fn load_transcript_for_interactive_fork(
-    storage: &Storage,
-    current_session_id: Option<&str>,
-    target: Option<&str>,
-) -> Result<SessionTranscript> {
-    match target {
-        Some("last") => load_session_for_command(storage, None, true, false),
-        Some(session_id) => {
-            load_session_for_command(storage, Some(session_id.to_string()), false, false)
-        }
-        None => {
-            if let Some(current_session_id) = current_session_id {
-                load_session_for_command(
-                    storage,
-                    Some(current_session_id.to_string()),
-                    false,
-                    false,
-                )
-            } else {
-                load_session_for_command(storage, None, false, true)
-            }
-        }
-    }
 }
 
 async fn print_permissions_status(storage: &Storage, client: &DaemonClient) -> Result<()> {
@@ -7986,6 +4440,7 @@ async fn print_interactive_status(
     requested_model: Option<&str>,
     session_id: Option<&str>,
     thinking_level: Option<ThinkingLevel>,
+    task_mode: Option<TaskMode>,
     permission_preset: Option<PermissionPreset>,
     attachments: &[InputAttachment],
     cwd: &Path,
@@ -7994,7 +4449,7 @@ async fn print_interactive_status(
     let current_session = session_id.and_then(|id| storage.get_session(id).ok().flatten());
     let active_alias = resolve_active_alias(&config, alias)?;
     let provider = config
-        .get_provider(&active_alias.provider_id)
+        .resolve_provider(&active_alias.provider_id)
         .ok_or_else(|| anyhow!("unknown provider '{}'", active_alias.provider_id))?;
     let selected_model = resolved_requested_model(active_alias, requested_model);
     let daemon_status: DaemonStatus = client.get("/v1/status").await?;
@@ -8012,6 +4467,7 @@ async fn print_interactive_status(
         );
     }
     println!("thinking={}", thinking_level_label(thinking_level));
+    println!("mode={}", task_mode_label(task_mode));
     println!(
         "permission_preset={}",
         permission_summary(permission_preset.unwrap_or(config.permission_preset))
@@ -8036,159 +4492,6 @@ async fn print_interactive_status(
     );
     println!("{}", trust_summary(&config.trust_policy));
     Ok(())
-}
-
-fn load_last_assistant_output(
-    storage: &Storage,
-    session_id: Option<&str>,
-) -> Result<Option<String>> {
-    let Some(session_id) = session_id else {
-        return Ok(None);
-    };
-    let messages = storage.list_session_messages(session_id)?;
-    Ok(latest_nonempty_assistant_message(messages.iter()))
-}
-
-fn latest_assistant_output_from_transcript(transcript: &SessionTranscript) -> Option<String> {
-    latest_nonempty_assistant_message(transcript.messages.iter())
-}
-
-fn latest_nonempty_assistant_message<'a>(
-    messages: impl DoubleEndedIterator<Item = &'a agent_core::SessionMessage>,
-) -> Option<String> {
-    let mut fallback = None;
-    for message in messages.rev() {
-        if message.role != MessageRole::Assistant {
-            continue;
-        }
-        if !message.content.trim().is_empty() {
-            return Some(message.content.clone());
-        }
-        if fallback.is_none() {
-            fallback = Some(message.content.clone());
-        }
-    }
-    fallback
-}
-
-fn copy_to_clipboard(text: &str) -> Result<()> {
-    let mut clipboard = Clipboard::new().context("failed to access system clipboard")?;
-    clipboard
-        .set_text(text.to_string())
-        .context("failed to write to system clipboard")
-}
-
-fn init_agents_file(path: &Path) -> Result<bool> {
-    if path.exists() {
-        return Ok(false);
-    }
-    std::fs::write(path, build_agents_template(path.parent()))
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(true)
-}
-
-fn build_agents_template(parent: Option<&Path>) -> String {
-    let location = parent
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| ".".to_string());
-    format!(
-        "# AGENTS.md\n\n## Project Guidance\n- Describe what lives under {location}.\n- List the most important build, test, and run commands.\n- Call out code style, review expectations, and risky areas.\n\n## Guardrails\n- Document paths or systems the agent should avoid editing.\n- Note approval expectations for destructive changes.\n\n## Verification\n- List the commands the agent should run before considering work complete.\n"
-    )
-}
-
-fn build_compact_prompt(transcript: &SessionTranscript) -> Result<String> {
-    let mut history = String::new();
-    for message in &transcript.messages {
-        let role = match message.role {
-            MessageRole::System => "system",
-            MessageRole::User => "user",
-            MessageRole::Assistant => "assistant",
-            MessageRole::Tool => "tool",
-        };
-        history.push_str(&format!(
-            "[{role}]\n{}\n\n",
-            format_session_message_for_display(message)
-        ));
-    }
-
-    if history.trim().is_empty() {
-        bail!("current session has no transcript to compact");
-    }
-
-    let history = truncate_for_prompt(history, 100_000);
-    Ok(format!(
-        "Summarize this coding session so a fresh agent can continue it with minimal context loss. Preserve the user's goals, decisions, current status, important files, unresolved questions, and any concrete next steps. Be concise but complete.\n\nTranscript:\n```text\n{history}\n```"
-    ))
-}
-
-fn format_session_message_for_display(message: &agent_core::SessionMessage) -> String {
-    let mut lines = Vec::new();
-    if message.role == MessageRole::Tool {
-        let label = match (&message.tool_name, &message.tool_call_id) {
-            (Some(name), Some(call_id)) => format!("[tool:{name} id={call_id}]"),
-            (Some(name), None) => format!("[tool:{name}]"),
-            (None, Some(call_id)) => format!("[tool id={call_id}]"),
-            (None, None) => "[tool]".to_string(),
-        };
-        lines.push(label);
-    }
-    if !message.content.trim().is_empty() {
-        lines.push(message.content.trim().to_string());
-    }
-    for tool_call in &message.tool_calls {
-        lines.push(format!(
-            "[tool_call:{} id={}]",
-            tool_call.name, tool_call.id
-        ));
-    }
-    if !message.attachments.is_empty() {
-        let attachments = message
-            .attachments
-            .iter()
-            .map(|attachment| attachment.path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        lines.push(format!("[images: {attachments}]"));
-    }
-    if lines.is_empty() {
-        "(empty)".to_string()
-    } else {
-        lines.join("\n")
-    }
-}
-
-fn compact_session(
-    storage: &Storage,
-    transcript: &SessionTranscript,
-    summary: &str,
-) -> Result<String> {
-    let new_session_id = Uuid::new_v4().to_string();
-    let alias = ModelAlias {
-        alias: transcript.session.alias.clone(),
-        provider_id: transcript.session.provider_id.clone(),
-        model: transcript.session.model.clone(),
-        description: None,
-    };
-    storage.ensure_session_with_title(
-        &new_session_id,
-        transcript.session.title.as_deref(),
-        &alias,
-        &transcript.session.provider_id,
-        &transcript.session.model,
-        transcript.session.cwd.as_deref(),
-    )?;
-    storage.append_message(&agent_core::SessionMessage::new(
-        new_session_id.clone(),
-        MessageRole::User,
-        format!(
-            "This session is a compacted continuation of session {}.\nUse the following summary as prior context:\n\n{}",
-            transcript.session.id,
-            summary.trim()
-        ),
-        Some(transcript.session.provider_id.clone()),
-        Some(transcript.session.model.clone()),
-    ))?;
-    Ok(new_session_id)
 }
 
 async fn run_bang_command(storage: &Storage, command: &str, cwd: &mut PathBuf) -> Result<String> {
@@ -8309,88 +4612,6 @@ fn normalize_prompt_input(prompt: Option<String>) -> Result<Option<String>> {
     Ok(Some(prompt))
 }
 
-fn build_review_prompt(args: &ReviewArgs) -> Result<String> {
-    let review_target = collect_review_target(args)?;
-    let custom_prompt = normalize_prompt_input(args.prompt.clone())?;
-    let instructions = custom_prompt.unwrap_or_else(|| {
-        "Review these code changes. Focus on bugs, regressions, security issues, and missing tests. Put findings first, ordered by severity, and be concise.".to_string()
-    });
-    Ok(format!(
-        "{instructions}\n\nReview target:\n```\n{review_target}\n```"
-    ))
-}
-
-fn collect_review_target(args: &ReviewArgs) -> Result<String> {
-    if let Some(base) = &args.base {
-        return capture_git_output(
-            &[
-                "diff",
-                "--no-ext-diff",
-                "--stat",
-                "--patch",
-                &format!("{base}...HEAD"),
-            ],
-            120_000,
-        );
-    }
-    if let Some(commit) = &args.commit {
-        let mut output = capture_git_output(
-            &["show", "--stat", "--patch", "--format=medium", commit],
-            120_000,
-        )?;
-        if let Some(title) = &args.commit_title {
-            output = format!("Commit title: {title}\n\n{output}");
-        }
-        return Ok(output);
-    }
-
-    let staged = capture_git_output(&["diff", "--no-ext-diff", "--cached"], 60_000)
-        .unwrap_or_else(|_| String::new());
-    let unstaged =
-        capture_git_output(&["diff", "--no-ext-diff"], 60_000).unwrap_or_else(|_| String::new());
-    let untracked = capture_git_output(&["ls-files", "--others", "--exclude-standard"], 10_000)
-        .unwrap_or_else(|_| String::new());
-
-    let combined = format!(
-        "Staged changes:\n{staged}\n\nUnstaged changes:\n{unstaged}\n\nUntracked files:\n{untracked}"
-    );
-    if combined.trim().is_empty() {
-        bail!("no reviewable git changes found");
-    }
-    Ok(truncate_for_prompt(combined, 120_000))
-}
-
-fn capture_git_output(args: &[&str], max_len: usize) -> Result<String> {
-    async fn run_git_capture(args: Vec<String>) -> Result<std::process::Output> {
-        let mut command = TokioCommand::new("git");
-        command.kill_on_drop(true);
-        command.args(&args);
-        timeout(DEFAULT_GIT_CAPTURE_TIMEOUT, command.output())
-            .await
-            .with_context(|| format!("git {} timed out", args.join(" ")))?
-            .with_context(|| format!("failed to run git {}", args.join(" ")))
-    }
-
-    let args_vec = args
-        .iter()
-        .map(|arg| (*arg).to_string())
-        .collect::<Vec<_>>();
-    let output = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(run_git_capture(args_vec))),
-        Err(_) => tokio::runtime::Runtime::new()
-            .context("failed to create runtime for git capture")?
-            .block_on(run_git_capture(args_vec)),
-    }?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
-    }
-    Ok(truncate_for_prompt(
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        max_len,
-    ))
-}
-
 fn truncate_for_prompt(mut text: String, max_len: usize) -> String {
     if text.len() <= max_len {
         return text;
@@ -8398,130 +4619,6 @@ fn truncate_for_prompt(mut text: String, max_len: usize) -> String {
     text.truncate(max_len);
     text.push_str("\n\n[truncated]");
     text
-}
-
-fn load_session_for_command(
-    storage: &Storage,
-    requested_id: Option<String>,
-    last: bool,
-    show_all: bool,
-) -> Result<SessionTranscript> {
-    const SESSION_PICKER_LIMIT: usize = 5_000;
-    let session = if let Some(session_id) = requested_id {
-        storage
-            .get_session(&session_id)?
-            .ok_or_else(|| anyhow!("unknown session"))?
-    } else if last {
-        storage
-            .list_sessions(1)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no recorded sessions found"))?
-    } else {
-        let sessions =
-            rank_sessions_for_picker(storage.list_sessions(SESSION_PICKER_LIMIT)?, show_all)?;
-        if sessions.is_empty() {
-            bail!("no recorded sessions found");
-        }
-        select_session_interactively(&sessions, show_all)?
-    };
-
-    Ok(SessionTranscript {
-        messages: storage.list_session_messages(&session.id)?,
-        session,
-    })
-}
-
-fn select_session_interactively(
-    sessions: &[agent_core::SessionSummary],
-    show_all: bool,
-) -> Result<agent_core::SessionSummary> {
-    let theme = ColorfulTheme::default();
-    let items = sessions
-        .iter()
-        .map(|session| {
-            let title = session.title.as_deref().unwrap_or("(untitled)");
-            let cwd = session
-                .cwd
-                .as_deref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "-".to_string());
-            if show_all {
-                format!(
-                    "{} | {} | {} | {} | {} | {}",
-                    session.id, title, session.alias, session.provider_id, cwd, session.updated_at
-                )
-            } else {
-                format!(
-                    "{} | {} | {} | {} | {}",
-                    session.id, title, session.alias, cwd, session.updated_at
-                )
-            }
-        })
-        .collect::<Vec<_>>();
-    let choice = if items.len() > 8 {
-        FuzzySelect::with_theme(&theme)
-            .with_prompt("Select a session")
-            .items(&items)
-            .default(0)
-            .interact()?
-    } else {
-        Select::with_theme(&theme)
-            .with_prompt("Select a session")
-            .items(&items)
-            .default(0)
-            .interact()?
-    };
-    Ok(sessions[choice].clone())
-}
-
-fn rank_sessions_for_picker(
-    mut sessions: Vec<agent_core::SessionSummary>,
-    show_all: bool,
-) -> Result<Vec<agent_core::SessionSummary>> {
-    if show_all {
-        return Ok(sessions);
-    }
-    let cwd = current_request_cwd().ok();
-    if let Some(cwd) = cwd {
-        let matching = sessions
-            .iter()
-            .filter(|session| {
-                session
-                    .cwd
-                    .as_deref()
-                    .is_some_and(|value| value.starts_with(&cwd) || cwd.starts_with(value))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if !matching.is_empty() {
-            return Ok(matching);
-        }
-    }
-    sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    Ok(sessions)
-}
-
-fn fork_session(storage: &Storage, transcript: &SessionTranscript) -> Result<String> {
-    let new_session_id = Uuid::new_v4().to_string();
-    let alias = ModelAlias {
-        alias: transcript.session.alias.clone(),
-        provider_id: transcript.session.provider_id.clone(),
-        model: transcript.session.model.clone(),
-        description: None,
-    };
-    storage.ensure_session_with_title(
-        &new_session_id,
-        transcript.session.title.as_deref(),
-        &alias,
-        &transcript.session.provider_id,
-        &transcript.session.model,
-        transcript.session.cwd.as_deref(),
-    )?;
-    for message in &transcript.messages {
-        storage.append_message(&message.fork_to_session(new_session_id.clone()))?;
-    }
-    Ok(new_session_id)
 }
 
 fn determine_logout_targets(config: &AppConfig, args: &LogoutArgs) -> Result<Vec<String>> {
@@ -8543,1794 +4640,6 @@ fn determine_logout_targets(config: &AppConfig, args: &LogoutArgs) -> Result<Vec
     bail!("no provider specified and no main provider configured")
 }
 
-async fn interactive_provider_setup(
-    theme: &ColorfulTheme,
-    config: &AppConfig,
-) -> Result<(ProviderUpsertRequest, ModelAlias)> {
-    let choice = Select::with_theme(theme)
-        .with_prompt("Choose a provider type")
-        .items([
-            "OpenAI hosted",
-            "Anthropic hosted",
-            "Moonshot hosted",
-            "OpenRouter hosted",
-            "Venice AI hosted",
-            "Ollama local",
-            "Local OpenAI-compatible endpoint (Kobold-style)",
-        ])
-        .default(0)
-        .interact()?;
-
-    let (default_id, default_name) = match choice {
-        0 => ("openai", "OpenAI"),
-        1 => ("anthropic", "Anthropic"),
-        2 => ("moonshot", "Moonshot"),
-        3 => ("openrouter", "OpenRouter"),
-        4 => ("venice", "Venice AI"),
-        5 => ("ollama-local", "Ollama"),
-        6 => ("local-openai", "Local OpenAI-compatible"),
-        _ => unreachable!("invalid provider selection"),
-    };
-
-    let id = next_available_provider_id(config, default_id);
-    let name = default_name.to_string();
-
-    let (request, model) = match choice {
-        0 => {
-            interactive_hosted_provider_request(
-                theme,
-                id.clone(),
-                name,
-                HostedKindArg::OpenaiCompatible,
-            )
-            .await?
-        }
-        1 => {
-            interactive_hosted_provider_request(theme, id.clone(), name, HostedKindArg::Anthropic)
-                .await?
-        }
-        2 => {
-            interactive_hosted_provider_request(theme, id.clone(), name, HostedKindArg::Moonshot)
-                .await?
-        }
-        3 => {
-            interactive_hosted_provider_request(theme, id.clone(), name, HostedKindArg::Openrouter)
-                .await?
-        }
-        4 => {
-            interactive_hosted_provider_request(theme, id.clone(), name, HostedKindArg::Venice)
-                .await?
-        }
-        5 => {
-            let base_url = ask_url(theme, DEFAULT_OLLAMA_URL)?;
-            let mut provider = ProviderConfig {
-                id: id.clone(),
-                display_name: name,
-                kind: ProviderKind::Ollama,
-                base_url,
-                auth_mode: AuthMode::None,
-                default_model: None,
-                keychain_account: None,
-                oauth: None,
-                local: true,
-            };
-            let model = determine_local_model(&provider, None, Some(theme)).await?;
-            provider.default_model = Some(model.clone());
-            (
-                ProviderUpsertRequest {
-                    provider,
-                    api_key: None,
-                    oauth_token: None,
-                },
-                model,
-            )
-        }
-        6 => {
-            let requires_key = Confirm::with_theme(theme)
-                .with_prompt("Does the local endpoint require an API key?")
-                .default(false)
-                .interact()?;
-            let base_url = ask_url(theme, DEFAULT_LOCAL_OPENAI_URL)?;
-            if requires_key {
-                let api_key = Password::with_theme(theme)
-                    .with_prompt("API key")
-                    .allow_empty_password(false)
-                    .interact()?;
-                let mut request = ProviderUpsertRequest {
-                    provider: ProviderConfig {
-                        id: id.clone(),
-                        display_name: name,
-                        kind: ProviderKind::OpenAiCompatible,
-                        base_url,
-                        auth_mode: AuthMode::ApiKey,
-                        default_model: None,
-                        keychain_account: None,
-                        oauth: None,
-                        local: true,
-                    },
-                    api_key: Some(api_key),
-                    oauth_token: None,
-                };
-                let model = resolve_hosted_model_after_auth(theme, &request, None).await?;
-                request.provider.default_model = Some(model.clone());
-                (request, model)
-            } else {
-                let mut provider = ProviderConfig {
-                    id: id.clone(),
-                    display_name: name,
-                    kind: ProviderKind::OpenAiCompatible,
-                    base_url,
-                    auth_mode: AuthMode::None,
-                    default_model: None,
-                    keychain_account: None,
-                    oauth: None,
-                    local: true,
-                };
-                let model = determine_local_model(&provider, None, Some(theme)).await?;
-                provider.default_model = Some(model.clone());
-                (
-                    ProviderUpsertRequest {
-                        provider,
-                        api_key: None,
-                        oauth_token: None,
-                    },
-                    model,
-                )
-            }
-        }
-        _ => unreachable!("invalid provider selection"),
-    };
-
-    let alias_name: String = Input::with_theme(theme)
-        .with_prompt("Alias for this model")
-        .with_initial_text(default_alias_name(config, &request.provider, &model))
-        .interact_text()?;
-
-    let alias = ModelAlias {
-        alias: alias_name,
-        provider_id: id,
-        model,
-        description: None,
-    };
-    Ok((request, alias))
-}
-
-fn ask_url(theme: &ColorfulTheme, default_url: &str) -> Result<String> {
-    Ok(Input::with_theme(theme)
-        .with_prompt("Base URL")
-        .with_initial_text(default_url)
-        .interact_text()?)
-}
-
-fn prompt_for_model(theme: &ColorfulTheme) -> Result<String> {
-    Ok(Input::with_theme(theme)
-        .with_prompt("Default model")
-        .interact_text()?)
-}
-
-async fn interactive_hosted_provider_request(
-    theme: &ColorfulTheme,
-    id: String,
-    name: String,
-    kind: HostedKindArg,
-) -> Result<(ProviderUpsertRequest, String)> {
-    let auth_method = select_auth_method(theme, kind)?;
-    let base_url = match auth_method {
-        AuthMethodArg::Browser => default_browser_hosted_url(kind).to_string(),
-        AuthMethodArg::ApiKey | AuthMethodArg::Oauth => default_hosted_url(kind).to_string(),
-    };
-    let mut request = match auth_method {
-        AuthMethodArg::Browser => match complete_browser_login(kind, &name).await? {
-            BrowserLoginResult::ApiKey(api_key) => ProviderUpsertRequest {
-                provider: ProviderConfig {
-                    id,
-                    display_name: name,
-                    kind: hosted_kind_to_provider_kind(kind),
-                    base_url,
-                    auth_mode: AuthMode::ApiKey,
-                    default_model: None,
-                    keychain_account: None,
-                    oauth: None,
-                    local: false,
-                },
-                api_key: Some(api_key),
-                oauth_token: None,
-            },
-            BrowserLoginResult::OAuthToken(token) => ProviderUpsertRequest {
-                provider: ProviderConfig {
-                    id,
-                    display_name: name,
-                    kind: browser_hosted_kind_to_provider_kind(kind),
-                    base_url,
-                    auth_mode: AuthMode::OAuth,
-                    default_model: None,
-                    keychain_account: None,
-                    oauth: Some(openai_browser_oauth_config()),
-                    local: false,
-                },
-                api_key: None,
-                oauth_token: Some(token),
-            },
-        },
-        AuthMethodArg::ApiKey => ProviderUpsertRequest {
-            provider: ProviderConfig {
-                id,
-                display_name: name,
-                kind: hosted_kind_to_provider_kind(kind),
-                base_url,
-                auth_mode: AuthMode::ApiKey,
-                default_model: None,
-                keychain_account: None,
-                oauth: None,
-                local: false,
-            },
-            api_key: Some(
-                Password::with_theme(theme)
-                    .with_prompt("API key")
-                    .allow_empty_password(false)
-                    .interact()?,
-            ),
-            oauth_token: None,
-        },
-        AuthMethodArg::Oauth => {
-            let provider = build_oauth_provider(
-                theme,
-                id,
-                name,
-                hosted_kind_to_provider_kind(kind),
-                &base_url,
-            )?;
-            let token = complete_oauth_login(&provider).await?;
-            ProviderUpsertRequest {
-                provider,
-                api_key: None,
-                oauth_token: Some(token),
-            }
-        }
-    };
-
-    let model = resolve_hosted_model_after_auth(theme, &request, None).await?;
-    request.provider.default_model = Some(model.clone());
-
-    Ok((request, model))
-}
-
-fn hosted_kind_defaults(kind: HostedKindArg) -> (&'static str, &'static str) {
-    match kind {
-        HostedKindArg::OpenaiCompatible => ("openai", "OpenAI"),
-        HostedKindArg::Anthropic => ("anthropic", "Anthropic"),
-        HostedKindArg::Moonshot => ("moonshot", "Moonshot"),
-        HostedKindArg::Openrouter => ("openrouter", "OpenRouter"),
-        HostedKindArg::Venice => ("venice", "Venice AI"),
-    }
-}
-
-fn next_available_provider_id(config: &AppConfig, preferred: &str) -> String {
-    config.next_available_provider_id(preferred)
-}
-
-fn default_alias_name(config: &AppConfig, provider: &ProviderConfig, model: &str) -> String {
-    config.default_alias_name_for(&provider.id, model)
-}
-
-async fn resolve_hosted_model_after_auth(
-    theme: &ColorfulTheme,
-    request: &ProviderUpsertRequest,
-    provided: Option<String>,
-) -> Result<String> {
-    let discovered = provider_list_models_with_overrides(
-        &build_http_client(),
-        &request.provider,
-        request.api_key.as_deref(),
-        request.oauth_token.as_ref(),
-    )
-    .await;
-
-    if let Some(model) = provided {
-        if let Ok(models) = &discovered {
-            if !models.is_empty() && !models.iter().any(|candidate| candidate == &model) {
-                bail!(
-                    "model '{}' is not available for provider '{}'",
-                    model,
-                    request.provider.id
-                );
-            }
-        }
-        return Ok(model);
-    }
-
-    match discovered {
-        Ok(models) if !models.is_empty() => {
-            if models.len() == 1 {
-                println!("Detected model '{}'.", models[0]);
-                return Ok(models[0].clone());
-            }
-            let selection = FuzzySelect::with_theme(theme)
-                .with_prompt("Choose a model")
-                .items(&models)
-                .default(0)
-                .interact()?;
-            Ok(models[selection].clone())
-        }
-        Ok(_) => {
-            println!("No models were returned automatically for this provider.");
-            prompt_for_model(theme)
-        }
-        Err(error) => {
-            if should_abort_after_auth_discovery_error(request, &error) {
-                return Err(error);
-            }
-            println!("Could not load models automatically after authentication: {error}");
-            prompt_for_model(theme)
-        }
-    }
-}
-
-fn should_abort_after_auth_discovery_error(
-    request: &ProviderUpsertRequest,
-    error: &anyhow::Error,
-) -> bool {
-    request.provider.auth_mode == AuthMode::OAuth
-        && request
-            .provider
-            .oauth
-            .as_ref()
-            .is_some_and(|oauth| oauth.authorization_url.contains(OPENAI_BROWSER_AUTH_ISSUER))
-        && error
-            .to_string()
-            .contains("missing the organization access required to mint a platform API key")
-}
-
-async fn determine_local_model(
-    provider: &ProviderConfig,
-    provided: Option<String>,
-    theme: Option<&ColorfulTheme>,
-) -> Result<String> {
-    if let Some(model) = provided {
-        return Ok(model);
-    }
-
-    match provider_list_models(&build_http_client(), provider).await {
-        Ok(models) if !models.is_empty() => {
-            if let Some(theme) = theme {
-                if models.len() == 1 {
-                    println!("Detected local model '{}'.", models[0]);
-                    return Ok(models[0].clone());
-                }
-                let index = Select::with_theme(theme)
-                    .with_prompt("Choose a model")
-                    .items(&models)
-                    .default(0)
-                    .interact()?;
-                return Ok(models[index].clone());
-            }
-
-            println!("Detected local model '{}'.", models[0]);
-            Ok(models[0].clone())
-        }
-        Ok(_) => {
-            if let Some(theme) = theme {
-                prompt_for_model(theme)
-            } else {
-                bail!("local provider returned no models; pass --model explicitly")
-            }
-        }
-        Err(error) => {
-            if let Some(theme) = theme {
-                println!("Could not detect models automatically: {error}");
-                prompt_for_model(theme)
-            } else {
-                Err(error).context("could not detect a local model; pass --model explicitly")
-            }
-        }
-    }
-}
-
-fn build_oauth_provider(
-    theme: &ColorfulTheme,
-    id: String,
-    name: String,
-    kind: ProviderKind,
-    default_url: &str,
-) -> Result<ProviderConfig> {
-    let client_id = Input::with_theme(theme)
-        .with_prompt("OAuth client id")
-        .interact_text()?;
-    let authorization_url = Input::with_theme(theme)
-        .with_prompt("OAuth authorization URL")
-        .interact_text()?;
-    let token_url = Input::with_theme(theme)
-        .with_prompt("OAuth token URL")
-        .interact_text()?;
-    let scopes_input: String = Input::with_theme(theme)
-        .with_prompt("Scopes (space or comma separated, optional)")
-        .allow_empty(true)
-        .interact_text()?;
-    let auth_params_input: String = Input::with_theme(theme)
-        .with_prompt("Extra authorization params k=v,k=v (optional)")
-        .allow_empty(true)
-        .interact_text()?;
-    let token_params_input: String = Input::with_theme(theme)
-        .with_prompt("Extra token params k=v,k=v (optional)")
-        .allow_empty(true)
-        .interact_text()?;
-
-    Ok(ProviderConfig {
-        id,
-        display_name: name,
-        kind,
-        base_url: ask_url(theme, default_url)?,
-        auth_mode: AuthMode::OAuth,
-        default_model: None,
-        keychain_account: None,
-        oauth: Some(OAuthConfig {
-            client_id,
-            authorization_url,
-            token_url,
-            scopes: split_scopes(&scopes_input),
-            extra_authorize_params: parse_key_value_list(&auth_params_input)?,
-            extra_token_params: parse_key_value_list(&token_params_input)?,
-        }),
-        local: false,
-    })
-}
-
-async fn complete_browser_login(
-    kind: HostedKindArg,
-    provider_name: &str,
-) -> Result<BrowserLoginResult> {
-    match kind {
-        HostedKindArg::OpenaiCompatible => Ok(BrowserLoginResult::OAuthToken(
-            complete_openai_browser_login().await?,
-        )),
-        HostedKindArg::Openrouter => Ok(BrowserLoginResult::ApiKey(
-            complete_openrouter_browser_login().await?,
-        )),
-        HostedKindArg::Anthropic => complete_claude_browser_login().await,
-        HostedKindArg::Moonshot | HostedKindArg::Venice => Ok(BrowserLoginResult::ApiKey(
-            capture_browser_api_key(kind, provider_name).await?,
-        )),
-    }
-}
-
-fn openai_browser_oauth_config() -> OAuthConfig {
-    OAuthConfig {
-        client_id: OPENAI_BROWSER_CLIENT_ID.to_string(),
-        authorization_url: format!("{OPENAI_BROWSER_AUTH_ISSUER}/oauth/authorize"),
-        token_url: format!("{OPENAI_BROWSER_AUTH_ISSUER}/oauth/token"),
-        scopes: vec![
-            "openid".to_string(),
-            "profile".to_string(),
-            "email".to_string(),
-            "offline_access".to_string(),
-            "api.connectors.read".to_string(),
-            "api.connectors.invoke".to_string(),
-        ],
-        extra_authorize_params: vec![
-            KeyValuePair {
-                key: "id_token_add_organizations".to_string(),
-                value: "true".to_string(),
-            },
-            KeyValuePair {
-                key: "codex_cli_simplified_flow".to_string(),
-                value: "true".to_string(),
-            },
-            KeyValuePair {
-                key: "originator".to_string(),
-                value: OPENAI_BROWSER_ORIGINATOR.to_string(),
-            },
-        ],
-        extra_token_params: Vec::new(),
-    }
-}
-
-async fn complete_openai_browser_login() -> Result<OAuthToken> {
-    let provider = ProviderConfig {
-        id: "openai-browser".to_string(),
-        display_name: "OpenAI Browser Session".to_string(),
-        kind: ProviderKind::ChatGptCodex,
-        base_url: DEFAULT_CHATGPT_CODEX_URL.to_string(),
-        auth_mode: AuthMode::OAuth,
-        default_model: None,
-        keychain_account: None,
-        oauth: Some(openai_browser_oauth_config()),
-        local: false,
-    };
-    let client = build_http_client();
-    let verifier = generate_code_verifier();
-    let challenge = pkce_challenge(&verifier);
-    let state = Uuid::new_v4().to_string();
-    let listener = bind_openai_browser_listener(OPENAI_BROWSER_CALLBACK_PORT).await?;
-    let redirect_uri = format!(
-        "http://localhost:{}{OPENAI_BROWSER_CALLBACK_PATH}",
-        listener
-            .local_addr()
-            .context("failed to inspect OpenAI browser callback listener")?
-            .port()
-    );
-    let authorization_url =
-        build_oauth_authorization_url(&provider, &redirect_uri, &state, &challenge)?;
-
-    match webbrowser::open(&authorization_url) {
-        Ok(_) => println!("Opened browser for OpenAI sign-in."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
-    }
-    println!("If needed, open this URL manually:\n{authorization_url}\n");
-
-    timeout(
-        OAUTH_TIMEOUT,
-        run_openai_browser_callback_loop(
-            &client,
-            &provider,
-            listener,
-            &state,
-            &verifier,
-            &redirect_uri,
-        ),
-    )
-    .await
-    .context("timed out waiting for OpenAI browser callback")?
-}
-
-async fn bind_openai_browser_listener(port: u16) -> Result<TcpListener> {
-    let bind_address = format!("127.0.0.1:{port}");
-    let mut cancel_attempted = false;
-
-    for _ in 0..10 {
-        match TcpListener::bind(&bind_address).await {
-            Ok(listener) => return Ok(listener),
-            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
-                if !cancel_attempted {
-                    cancel_attempted = true;
-                    if let Err(cancel_error) = send_openai_browser_cancel_request(port) {
-                        eprintln!(
-                            "Failed to cancel previous OpenAI browser login server: {cancel_error}"
-                        );
-                    }
-                }
-                sleep(Duration::from_millis(200)).await;
-            }
-            Err(error) => {
-                return Err(error).context("failed to bind OpenAI browser callback server");
-            }
-        }
-    }
-
-    bail!("OpenAI browser callback port {bind_address} is already in use")
-}
-
-fn send_openai_browser_cancel_request(port: u16) -> Result<()> {
-    let address = format!("127.0.0.1:{port}");
-    let mut stream = std::net::TcpStream::connect(&address).with_context(|| {
-        format!("failed to connect to existing OpenAI browser callback server at {address}")
-    })?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .context("failed to set OpenAI browser callback read timeout")?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .context("failed to set OpenAI browser callback write timeout")?;
-    stream
-        .write_all(
-            format!(
-                "GET {OPENAI_BROWSER_CANCEL_PATH} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
-            )
-            .as_bytes(),
-        )
-        .context("failed to send OpenAI browser cancel request")?;
-    let mut buffer = [0_u8; 64];
-    let _ = stream.read(&mut buffer);
-    Ok(())
-}
-
-async fn run_openai_browser_callback_loop(
-    client: &Client,
-    provider: &ProviderConfig,
-    listener: TcpListener,
-    expected_state: &str,
-    verifier: &str,
-    redirect_uri: &str,
-) -> Result<OAuthToken> {
-    let success_url = format!(
-        "http://localhost:{}{OPENAI_BROWSER_SUCCESS_PATH}",
-        listener
-            .local_addr()
-            .context("failed to inspect OpenAI browser callback listener")?
-            .port()
-    );
-    let mut pending_token = None;
-
-    loop {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .context("failed to accept OpenAI browser callback connection")?;
-        let request = read_local_http_request(&mut stream).await?;
-        let url = parse_callback_request_url(&request, "OpenAI browser callback")?;
-
-        match url.path() {
-            OPENAI_BROWSER_CALLBACK_PATH => {
-                let code = match parse_openai_browser_callback(&url, expected_state) {
-                    Ok(code) => code,
-                    Err(error) => {
-                        write_html_response(
-                            &mut stream,
-                            "400 Bad Request",
-                            &render_openai_browser_error_page(&error.to_string()),
-                        )
-                        .await?;
-                        return Err(error);
-                    }
-                };
-
-                let token = match exchange_oauth_code(
-                    client,
-                    provider,
-                    &code,
-                    verifier,
-                    redirect_uri,
-                )
-                .await
-                {
-                    Ok(token) => token,
-                    Err(error) => {
-                        write_html_response(
-                            &mut stream,
-                            "500 Internal Server Error",
-                            &render_openai_browser_error_page(&error.to_string()),
-                        )
-                        .await?;
-                        return Err(
-                            error.context("OpenAI browser sign-in failed during token exchange")
-                        );
-                    }
-                };
-
-                write_redirect_response(&mut stream, &success_url).await?;
-                pending_token = Some(token);
-            }
-            OPENAI_BROWSER_SUCCESS_PATH => {
-                write_html_response(&mut stream, "200 OK", &render_openai_browser_success_page())
-                    .await?;
-
-                if let Some(token) = pending_token.take() {
-                    return Ok(token);
-                }
-            }
-            OPENAI_BROWSER_CANCEL_PATH => {
-                write_html_response(
-                    &mut stream,
-                    "200 OK",
-                    "<html><body><h1>Login cancelled</h1><p>You can return to the terminal.</p></body></html>",
-                )
-                .await?;
-                bail!("OpenAI browser sign-in was cancelled");
-            }
-            _ => {
-                write_html_response(
-                    &mut stream,
-                    "404 Not Found",
-                    "<html><body><h1>Not found</h1></body></html>",
-                )
-                .await?;
-            }
-        }
-    }
-}
-
-fn parse_openai_browser_callback(url: &Url, expected_state: &str) -> Result<String> {
-    let mut code = None;
-    let mut state = None;
-    let mut error = None;
-    let mut error_description = None;
-
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "state" => state = Some(value.into_owned()),
-            "error" => error = Some(value.into_owned()),
-            "error_description" => error_description = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-
-    if state.as_deref() != Some(expected_state) {
-        bail!("OpenAI browser callback state did not match expected login state");
-    }
-
-    if let Some(error_code) = error {
-        bail!(
-            "{}",
-            oauth_callback_error_message(&error_code, error_description.as_deref())
-        );
-    }
-
-    code.ok_or_else(|| anyhow!("OpenAI browser callback missing authorization code"))
-}
-
-fn render_openai_browser_success_page() -> String {
-    "<html><body><h1>Signed in to OpenAI</h1><p>You can return to the terminal.</p></body></html>"
-        .to_string()
-}
-
-fn render_openai_browser_error_page(message: &str) -> String {
-    format!(
-        "<html><body><h1>OpenAI sign-in failed</h1><p>{}</p></body></html>",
-        escape_html(message)
-    )
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeSettingsFile {
-    #[serde(default)]
-    primary_api_key: Option<String>,
-    #[serde(default)]
-    oauth_account: Option<ClaudeOauthAccount>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeOauthAccount {
-    #[serde(default)]
-    email_address: Option<String>,
-    #[serde(default)]
-    organization_uuid: Option<String>,
-    #[serde(default)]
-    organization_name: Option<String>,
-}
-
-struct ClaudeBrowserCredentials {
-    api_key: String,
-    email: Option<String>,
-    org_id: Option<String>,
-    org_name: Option<String>,
-    subscription_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClaudeBrowserTokenResponse {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    expires_in: Option<serde_json::Value>,
-    #[serde(default)]
-    token_type: Option<String>,
-    #[serde(default)]
-    scope: Option<String>,
-    #[serde(default)]
-    id_token: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ClaudeBrowserApiKeyResponse {
-    #[serde(default)]
-    raw_key: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ClaudeBrowserRolesResponse {
-    #[serde(default)]
-    organization_name: Option<String>,
-}
-
-async fn complete_claude_browser_login() -> Result<BrowserLoginResult> {
-    if let Some(credentials) = try_load_claude_browser_credentials().await? {
-        print_claude_browser_credentials(&credentials, true);
-        return Ok(BrowserLoginResult::ApiKey(credentials.api_key));
-    }
-
-    let provider = ProviderConfig {
-        id: "claude-browser".to_string(),
-        display_name: "Claude Browser Session".to_string(),
-        kind: ProviderKind::Anthropic,
-        base_url: DEFAULT_ANTHROPIC_URL.to_string(),
-        auth_mode: AuthMode::OAuth,
-        default_model: None,
-        keychain_account: None,
-        oauth: Some(claude_browser_oauth_config()),
-        local: false,
-    };
-    let client = build_http_client();
-    let verifier = generate_code_verifier();
-    let challenge = pkce_challenge(&verifier);
-    let state = Uuid::new_v4().to_string();
-    let listener =
-        bind_preferred_callback_listener(CLAUDE_BROWSER_CALLBACK_PORT, "Claude browser callback")
-            .await?;
-    let redirect_uri = format!(
-        "http://localhost:{}{CLAUDE_BROWSER_CALLBACK_PATH}",
-        listener
-            .local_addr()
-            .context("failed to inspect Claude browser callback listener")?
-            .port()
-    );
-    let authorization_url =
-        build_oauth_authorization_url(&provider, &redirect_uri, &state, &challenge)?;
-
-    let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
-    match webbrowser::open(&authorization_url) {
-        Ok(_) => println!("Opened browser for Claude sign-in."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
-    }
-    println!("If needed, open this URL manually:\n{authorization_url}\n");
-
-    let callback = timeout(OAUTH_TIMEOUT, callback_task)
-        .await
-        .context("timed out waiting for Claude browser callback")?
-        .context("Claude browser callback task failed")??;
-    if callback.state != state {
-        bail!("Claude browser callback state did not match expected login state");
-    }
-
-    let token = exchange_claude_browser_code(
-        &client,
-        &callback.code,
-        &callback.state,
-        &verifier,
-        &redirect_uri,
-    )
-    .await?;
-    let roles = fetch_claude_browser_roles(&client, &token.access_token)
-        .await
-        .ok();
-    match create_claude_browser_api_key(&client, &token.access_token).await {
-        Ok(api_key) => {
-            let credentials = ClaudeBrowserCredentials {
-                api_key,
-                email: token.display_email,
-                org_id: token.org_id,
-                org_name: roles
-                    .as_ref()
-                    .and_then(|roles| roles.organization_name.clone()),
-                subscription_type: token.subscription_type,
-            };
-            print_claude_browser_credentials(&credentials, false);
-            Ok(BrowserLoginResult::ApiKey(credentials.api_key))
-        }
-        Err(error) if should_fallback_to_claude_browser_oauth(&error.to_string()) => {
-            print_claude_browser_oauth_fallback(roles.as_ref());
-            Ok(BrowserLoginResult::OAuthToken(token))
-        }
-        Err(error) => Err(error),
-    }
-}
-
-async fn try_load_claude_browser_credentials() -> Result<Option<ClaudeBrowserCredentials>> {
-    let settings_path = claude_settings_path()
-        .ok_or_else(|| anyhow!("failed to resolve home directory for Claude settings"))?;
-    if !settings_path.exists() {
-        return Ok(None);
-    }
-
-    let raw = fs::read_to_string(&settings_path)
-        .with_context(|| format!("failed to read {}", settings_path.display()))?;
-    parse_claude_browser_credentials_from_settings(&raw)
-}
-
-fn parse_claude_browser_credentials_from_settings(
-    raw: &str,
-) -> Result<Option<ClaudeBrowserCredentials>> {
-    let settings: ClaudeSettingsFile =
-        serde_json::from_str(raw).context("failed to parse Claude settings file")?;
-    let Some(api_key) = settings
-        .primary_api_key
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let oauth_account = settings.oauth_account;
-    Ok(Some(ClaudeBrowserCredentials {
-        api_key,
-        email: oauth_account
-            .as_ref()
-            .and_then(|account| account.email_address.clone()),
-        org_id: oauth_account
-            .as_ref()
-            .and_then(|account| account.organization_uuid.clone()),
-        org_name: oauth_account
-            .as_ref()
-            .and_then(|account| account.organization_name.clone()),
-        subscription_type: None,
-    }))
-}
-
-fn claude_browser_oauth_config() -> OAuthConfig {
-    OAuthConfig {
-        client_id: CLAUDE_BROWSER_CLIENT_ID.to_string(),
-        authorization_url: CLAUDE_BROWSER_AUTHORIZE_URL.to_string(),
-        token_url: CLAUDE_BROWSER_TOKEN_URL.to_string(),
-        scopes: CLAUDE_BROWSER_SCOPES
-            .iter()
-            .map(|scope| (*scope).to_string())
-            .collect(),
-        extra_authorize_params: vec![KeyValuePair {
-            key: "code".to_string(),
-            value: "true".to_string(),
-        }],
-        extra_token_params: Vec::new(),
-    }
-}
-
-async fn bind_preferred_callback_listener(preferred_port: u16, label: &str) -> Result<TcpListener> {
-    match TcpListener::bind(("127.0.0.1", preferred_port)).await {
-        Ok(listener) => Ok(listener),
-        Err(error) => {
-            println!(
-                "{label} could not bind port {preferred_port} ({error}); falling back to an ephemeral local port."
-            );
-            TcpListener::bind(("127.0.0.1", 0))
-                .await
-                .with_context(|| format!("failed to bind local {label} listener"))
-        }
-    }
-}
-
-async fn exchange_claude_browser_code(
-    client: &Client,
-    code: &str,
-    state: &str,
-    code_verifier: &str,
-    redirect_uri: &str,
-) -> Result<OAuthToken> {
-    let response = client
-        .post(CLAUDE_BROWSER_TOKEN_URL)
-        .json(&serde_json::json!({
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "client_id": CLAUDE_BROWSER_CLIENT_ID,
-            "code_verifier": code_verifier,
-            "state": state,
-        }))
-        .send()
-        .await
-        .context("failed to exchange Claude browser authorization code")?;
-    let status = response.status();
-    let raw = response
-        .text()
-        .await
-        .context("failed to read Claude token response")?;
-    if !status.is_success() {
-        bail!(
-            "Claude browser token exchange failed: {}",
-            parse_service_error_text(&raw)
-        );
-    }
-
-    let token: ClaudeBrowserTokenResponse =
-        serde_json::from_str(&raw).context("failed to parse Claude token response")?;
-    Ok(OAuthToken {
-        access_token: token.access_token,
-        refresh_token: token.refresh_token,
-        expires_at: parse_optional_expires_at(token.expires_in.as_ref())?,
-        token_type: token.token_type,
-        scopes: token
-            .scope
-            .map(|scope| split_scopes(&scope))
-            .unwrap_or_else(|| {
-                CLAUDE_BROWSER_SCOPES
-                    .iter()
-                    .map(|scope| (*scope).to_string())
-                    .collect()
-            }),
-        id_token: token.id_token,
-        account_id: None,
-        user_id: None,
-        org_id: None,
-        project_id: None,
-        display_email: None,
-        subscription_type: None,
-    })
-}
-
-async fn create_claude_browser_api_key(client: &Client, access_token: &str) -> Result<String> {
-    let response = client
-        .post(CLAUDE_BROWSER_API_KEY_URL)
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .context("failed to mint Claude managed API key")?;
-    let status = response.status();
-    let raw = response
-        .text()
-        .await
-        .context("failed to read Claude managed key response")?;
-    if !status.is_success() {
-        bail!(
-            "Claude browser API key mint failed: {}",
-            parse_service_error_text(&raw)
-        );
-    }
-
-    let body: ClaudeBrowserApiKeyResponse =
-        serde_json::from_str(&raw).context("failed to parse Claude managed key response")?;
-    body.raw_key
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("Claude browser login returned no managed API key"))
-}
-
-fn should_fallback_to_claude_browser_oauth(error: &str) -> bool {
-    let normalized = error.trim().to_ascii_lowercase();
-    normalized.contains("org:create_api_key")
-        && (normalized.contains("scope requirement") || normalized.contains("does not meet scope"))
-}
-
-async fn fetch_claude_browser_roles(
-    client: &Client,
-    access_token: &str,
-) -> Result<ClaudeBrowserRolesResponse> {
-    let response = client
-        .get(CLAUDE_BROWSER_ROLES_URL)
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .context("failed to fetch Claude organization metadata")?;
-    let status = response.status();
-    let raw = response
-        .text()
-        .await
-        .context("failed to read Claude organization metadata response")?;
-    if !status.is_success() {
-        bail!(
-            "Claude browser org metadata request failed: {}",
-            parse_service_error_text(&raw)
-        );
-    }
-    serde_json::from_str(&raw).context("failed to parse Claude organization metadata")
-}
-
-fn parse_optional_expires_at(
-    value: Option<&serde_json::Value>,
-) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let seconds = match value {
-        serde_json::Value::Number(number) => number
-            .as_i64()
-            .ok_or_else(|| anyhow!("expires_in was not an integer"))?,
-        serde_json::Value::String(text) => text
-            .parse::<i64>()
-            .with_context(|| format!("invalid expires_in value '{text}'"))?,
-        _ => bail!("expires_in was not a string or integer"),
-    };
-    Ok(chrono::Utc::now().checked_add_signed(chrono::Duration::seconds(seconds)))
-}
-
-fn parse_service_error_text(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "unknown authentication error".to_string();
-    }
-
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        for candidate in [
-            value.get("error_description"),
-            value.get("detail"),
-            value.get("message"),
-            value
-                .get("error")
-                .and_then(|error| error.as_str().map(|_| error)),
-        ] {
-            if let Some(text) = candidate.and_then(serde_json::Value::as_str) {
-                let text = text.trim();
-                if !text.is_empty() {
-                    return text.to_string();
-                }
-            }
-        }
-        if let Some(error) = value.get("error") {
-            if let Some(text) = error
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-            {
-                return text.to_string();
-            }
-        }
-    }
-
-    trimmed.to_string()
-}
-
-fn claude_settings_path() -> Option<PathBuf> {
-    home_dir().map(|home| home.join(".claude.json"))
-}
-
-fn print_claude_browser_credentials(credentials: &ClaudeBrowserCredentials, reused: bool) {
-    if reused {
-        println!("Using existing Claude credentials from ~/.claude.json.");
-    } else {
-        println!("Created a Claude managed API key from the browser session.");
-    }
-    if let Some(email) = credentials.email.as_deref() {
-        println!("Claude account: {email}");
-    }
-    if let Some(subscription_type) = credentials.subscription_type.as_deref() {
-        println!("Claude plan: {subscription_type}");
-    }
-    if let Some(org_name) = credentials.org_name.as_deref() {
-        println!("Claude org: {org_name}");
-    } else if let Some(org_id) = credentials.org_id.as_deref() {
-        println!("Claude org id: {org_id}");
-    }
-}
-
-fn print_claude_browser_oauth_fallback(roles: Option<&ClaudeBrowserRolesResponse>) {
-    println!(
-        "Claude browser sign-in completed without managed API key scope; storing the OAuth session directly."
-    );
-    if let Some(org_name) = roles.and_then(|item| item.organization_name.as_deref()) {
-        println!("Claude org: {org_name}");
-    }
-}
-
-#[cfg(test)]
-fn jwt_expiry(token: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    let payload = token.split('.').nth(1)?;
-    let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    let value = serde_json::from_slice::<serde_json::Value>(&decoded).ok()?;
-    let exp = value.get("exp")?.as_i64()?;
-    chrono::DateTime::<chrono::Utc>::from_timestamp(exp, 0)
-}
-
-async fn complete_openrouter_browser_login() -> Result<String> {
-    let client = build_http_client();
-    let verifier = generate_code_verifier();
-    let challenge = pkce_challenge(&verifier);
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .context("failed to bind local OpenRouter callback server")?;
-    let redirect_uri = format!(
-        "http://127.0.0.1:{}/callback",
-        listener
-            .local_addr()
-            .context("failed to inspect OpenRouter callback listener")?
-            .port()
-    );
-
-    let mut authorization_url =
-        Url::parse("https://openrouter.ai/auth").context("failed to parse OpenRouter auth URL")?;
-    {
-        let mut query = authorization_url.query_pairs_mut();
-        query.append_pair("callback_url", &redirect_uri);
-        query.append_pair("code_challenge", &challenge);
-        query.append_pair("code_challenge_method", "S256");
-    }
-
-    let callback_task = tokio::spawn(wait_for_code_callback(listener));
-    match webbrowser::open(authorization_url.as_str()) {
-        Ok(_) => println!("Opened browser for OpenRouter login."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
-    }
-    println!(
-        "If needed, open this URL manually:\n{}\n",
-        authorization_url.as_str()
-    );
-
-    let callback = timeout(OAUTH_TIMEOUT, callback_task)
-        .await
-        .context("timed out waiting for OpenRouter callback")?
-        .context("OpenRouter callback task failed")??;
-
-    let response = client
-        .post("https://openrouter.ai/api/v1/auth/keys")
-        .json(&serde_json::json!({
-            "code": callback.code,
-            "code_verifier": verifier,
-            "code_challenge_method": "S256"
-        }))
-        .send()
-        .await
-        .context("failed to exchange OpenRouter browser code for an API key")?;
-    let status = response.status();
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .context("failed to parse OpenRouter browser login response")?;
-    if !status.is_success() {
-        bail!(
-            "OpenRouter browser login failed: {}",
-            body.get("error")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| body.get("message").and_then(serde_json::Value::as_str))
-                .unwrap_or("unknown error")
-        );
-    }
-
-    body.get("key")
-        .and_then(serde_json::Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| anyhow!("OpenRouter browser login response did not contain an API key"))
-}
-
-async fn capture_browser_api_key(kind: HostedKindArg, provider_name: &str) -> Result<String> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .context("failed to bind local browser capture server")?;
-    let helper_url = format!(
-        "http://127.0.0.1:{}/",
-        listener
-            .local_addr()
-            .context("failed to inspect browser capture listener")?
-            .port()
-    );
-
-    let capture_task = tokio::spawn(wait_for_browser_api_key_submission(
-        listener,
-        kind,
-        provider_name.to_string(),
-    ));
-    match webbrowser::open(&helper_url) {
-        Ok(_) => println!("Opened browser helper for {} login.", provider_name),
-        Err(error) => println!("Could not open browser automatically: {error}"),
-    }
-    println!("If needed, open this URL manually:\n{helper_url}\n");
-
-    timeout(OAUTH_TIMEOUT, capture_task)
-        .await
-        .context("timed out waiting for browser credential submission")?
-        .context("browser credential capture task failed")?
-}
-
-async fn wait_for_browser_api_key_submission(
-    listener: TcpListener,
-    kind: HostedKindArg,
-    provider_name: String,
-) -> Result<String> {
-    loop {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .context("failed to accept browser credential connection")?;
-        let request = read_local_http_request(&mut stream).await?;
-        let Some(first_line) = request.lines().next() else {
-            write_html_response(
-                &mut stream,
-                "400 Bad Request",
-                "<html><body><h1>Bad request</h1></body></html>",
-            )
-            .await?;
-            continue;
-        };
-        let mut parts = first_line.split_whitespace();
-        let method = parts.next().unwrap_or_default();
-        let target = parts.next().unwrap_or("/");
-
-        match (method, target) {
-            ("GET", "/") => {
-                let html = browser_capture_page(kind, &provider_name);
-                write_html_response(&mut stream, "200 OK", &html).await?;
-            }
-            ("GET", "/favicon.ico") => {
-                stream
-                    .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                    .await
-                    .context("failed to write favicon response")?;
-            }
-            ("POST", "/submit") => {
-                let body = request.split("\r\n\r\n").nth(1).unwrap_or_default();
-                let fields = url::form_urlencoded::parse(body.as_bytes())
-                    .into_owned()
-                    .collect::<Vec<_>>();
-                let credential = fields
-                    .iter()
-                    .find(|(key, _)| key == "credential")
-                    .map(|(_, value)| value.trim().to_string())
-                    .unwrap_or_default();
-                if credential.is_empty() {
-                    write_html_response(
-                        &mut stream,
-                        "400 Bad Request",
-                        "<html><body><h1>Missing credential</h1><p>Return to the previous tab and paste the credential before submitting.</p></body></html>",
-                    )
-                    .await?;
-                    continue;
-                }
-
-                write_html_response(
-                    &mut stream,
-                    "200 OK",
-                    "<html><body><h1>Credential captured</h1><p>You can close this tab and return to the terminal.</p></body></html>",
-                )
-                .await?;
-                return Ok(credential);
-            }
-            _ => {
-                write_html_response(
-                    &mut stream,
-                    "404 Not Found",
-                    "<html><body><h1>Not Found</h1></body></html>",
-                )
-                .await?;
-            }
-        }
-    }
-}
-
-fn browser_capture_page(kind: HostedKindArg, provider_name: &str) -> String {
-    let title = escape_html(provider_name);
-    let portal_url = escape_html(hosted_kind_browser_portal_url(kind));
-    let instructions = escape_html(hosted_kind_browser_instructions(kind));
-    format!(
-        "<html><body style=\"font-family: sans-serif; max-width: 760px; margin: 40px auto; line-height: 1.5;\">\
-         <h1>{title} browser setup</h1>\
-         <p>{instructions}</p>\
-         <p><a href=\"{portal_url}\" target=\"_blank\" rel=\"noreferrer\">Open {title}</a></p>\
-         <form method=\"POST\" action=\"/submit\">\
-         <label for=\"credential\"><strong>Paste credential</strong></label><br/>\
-         <input id=\"credential\" name=\"credential\" type=\"password\" style=\"width: 100%; padding: 10px; margin: 12px 0;\" autofocus />\
-         <button type=\"submit\" style=\"padding: 10px 18px;\">Save credential</button>\
-         </form>\
-         <p>This sends the credential only to the local CLI callback on this machine.</p>\
-         </body></html>"
-    )
-}
-
-fn hosted_kind_browser_portal_url(kind: HostedKindArg) -> &'static str {
-    match kind {
-        HostedKindArg::OpenaiCompatible => "https://platform.openai.com/",
-        HostedKindArg::Anthropic => "https://console.anthropic.com/",
-        HostedKindArg::Moonshot => "https://platform.moonshot.ai/",
-        HostedKindArg::Openrouter => "https://openrouter.ai/",
-        HostedKindArg::Venice => "https://venice.ai/",
-    }
-}
-
-fn hosted_kind_browser_instructions(kind: HostedKindArg) -> &'static str {
-    match kind {
-        HostedKindArg::OpenaiCompatible => {
-            "Sign in to the OpenAI platform in another tab, generate or copy an API key, then paste it below."
-        }
-        HostedKindArg::Anthropic => {
-            "Sign in to Anthropic Console in another tab, create or copy an API key, then paste it below."
-        }
-        HostedKindArg::Moonshot => {
-            "Sign in to the Moonshot platform in another tab, create or copy an API key, then paste it below."
-        }
-        HostedKindArg::Openrouter => {
-            "OpenRouter browser login is automatic and should not use the manual browser helper."
-        }
-        HostedKindArg::Venice => {
-            "Sign in to Venice in another tab, create or copy an API key, then paste it below."
-        }
-    }
-}
-
-async fn read_local_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
-    let mut buffer = vec![0_u8; 16_384];
-    let bytes_read = timeout(OAUTH_TIMEOUT, stream.read(&mut buffer))
-        .await
-        .context("timed out reading local browser callback")?
-        .context("failed to read local browser callback")?;
-    Ok(String::from_utf8_lossy(&buffer[..bytes_read]).to_string())
-}
-
-async fn write_html_response(
-    stream: &mut tokio::net::TcpStream,
-    status: &str,
-    body: &str,
-) -> Result<()> {
-    let body_len = body.len();
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body_len,
-        body
-    );
-    stream
-        .write_all(response.as_bytes())
-        .await
-        .context("failed to write local browser response")
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\"', "&quot;")
-}
-
-fn parse_callback_request_url(request: &str, label: &str) -> Result<Url> {
-    let first_line = request
-        .lines()
-        .next()
-        .ok_or_else(|| anyhow!("{label} contained no request line"))?;
-    let path = first_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow!("{label} request line was invalid"))?;
-    Url::parse(&format!("http://127.0.0.1{path}"))
-        .with_context(|| format!("failed to parse {label} URL"))
-}
-
-async fn write_redirect_response(stream: &mut tokio::net::TcpStream, location: &str) -> Result<()> {
-    let response = format!(
-        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    );
-    stream
-        .write_all(response.as_bytes())
-        .await
-        .context("failed to write local browser redirect")
-}
-
-fn is_missing_codex_entitlement_error(error_code: &str, error_description: Option<&str>) -> bool {
-    error_code == "access_denied"
-        && error_description.is_some_and(|description| {
-            description
-                .to_ascii_lowercase()
-                .contains("missing_codex_entitlement")
-        })
-}
-
-fn oauth_callback_error_message(error_code: &str, error_description: Option<&str>) -> String {
-    if is_missing_codex_entitlement_error(error_code, error_description) {
-        return "OpenAI browser sign-in is not enabled for this workspace account yet.".to_string();
-    }
-
-    if let Some(description) = error_description {
-        if !description.trim().is_empty() {
-            return format!("Sign-in failed: {description}");
-        }
-    }
-
-    format!("Sign-in failed: {error_code}")
-}
-
-async fn complete_oauth_login(provider: &ProviderConfig) -> Result<OAuthToken> {
-    let client = build_http_client();
-    let verifier = generate_code_verifier();
-    let challenge = pkce_challenge(&verifier);
-    let state = Uuid::new_v4().to_string();
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .context("failed to bind local OAuth callback server")?;
-    let redirect_uri = format!(
-        "http://127.0.0.1:{}/callback",
-        listener
-            .local_addr()
-            .context("failed to inspect OAuth callback listener")?
-            .port()
-    );
-    let authorization_url =
-        build_oauth_authorization_url(provider, &redirect_uri, &state, &challenge)?;
-
-    let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
-    match webbrowser::open(&authorization_url) {
-        Ok(_) => println!("Opened browser for OAuth login."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
-    }
-    println!("If needed, open this URL manually:\n{authorization_url}\n");
-
-    let callback = timeout(OAUTH_TIMEOUT, callback_task)
-        .await
-        .context("timed out waiting for OAuth callback")?
-        .context("OAuth callback task failed")??;
-    if callback.state != state {
-        bail!("OAuth callback state did not match expected login state");
-    }
-
-    exchange_oauth_code(&client, provider, &callback.code, &verifier, &redirect_uri).await
-}
-
-async fn wait_for_code_callback(listener: TcpListener) -> Result<BrowserCodeCallback> {
-    let (mut stream, _) = listener
-        .accept()
-        .await
-        .context("failed to accept browser code callback connection")?;
-    let request = read_local_http_request(&mut stream).await?;
-    let url = parse_callback_request_url(&request, "browser callback")?;
-
-    let mut code = None;
-    let mut error = None;
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "error" => error = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-
-    let body = if let Some(error) = error.clone() {
-        format!(
-            "<html><body><h1>Browser login failed</h1><p>{}</p></body></html>",
-            html_escape(&error)
-        )
-    } else {
-        "<html><body><h1>Login complete</h1><p>You can return to the terminal.</p></body></html>"
-            .to_string()
-    };
-    let status = if error.is_some() {
-        "400 Bad Request"
-    } else {
-        "200 OK"
-    };
-    write_html_response(&mut stream, status, &body).await?;
-
-    if let Some(error) = error {
-        bail!("browser login failed: {error}");
-    }
-
-    Ok(BrowserCodeCallback {
-        code: code.ok_or_else(|| anyhow!("browser callback missing authorization code"))?,
-    })
-}
-
-async fn wait_for_oauth_callback(listener: TcpListener) -> Result<OAuthCallback> {
-    let (mut stream, _) = listener
-        .accept()
-        .await
-        .context("failed to accept OAuth callback connection")?;
-    let mut buffer = vec![0_u8; 8192];
-    let bytes_read = timeout(OAUTH_TIMEOUT, stream.read(&mut buffer))
-        .await
-        .context("timed out reading OAuth callback")?
-        .context("failed to read OAuth callback request")?;
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    let url = parse_callback_request_url(&request, "OAuth callback")?;
-
-    let mut code = None;
-    let mut state = None;
-    let mut error = None;
-    let mut error_description = None;
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "state" => state = Some(value.into_owned()),
-            "error" => error = Some(value.into_owned()),
-            "error_description" => error_description = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-
-    let (status_line, body) = if let Some(error) = error.clone() {
-        let message = oauth_callback_error_message(&error, error_description.as_deref());
-        (
-            "HTTP/1.1 400 Bad Request",
-            format!(
-                "<html><body><h1>OAuth login failed</h1><p>{}</p></body></html>",
-                html_escape(&message)
-            ),
-        )
-    } else {
-        (
-            "HTTP/1.1 200 OK",
-            "<html><body><h1>Login complete</h1><p>You can return to the terminal.</p></body></html>"
-                .to_string(),
-        )
-    };
-    let response = format!(
-        "{status_line}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    stream
-        .write_all(response.as_bytes())
-        .await
-        .context("failed to write OAuth callback response")?;
-
-    if let Some(error) = error {
-        bail!(
-            "{}",
-            oauth_callback_error_message(&error, error_description.as_deref())
-        );
-    }
-
-    Ok(OAuthCallback {
-        code: code.ok_or_else(|| anyhow!("OAuth callback missing authorization code"))?,
-        state: state.ok_or_else(|| anyhow!("OAuth callback missing state"))?,
-    })
-}
-
-fn generate_code_verifier() -> String {
-    let mut verifier = String::new();
-    while verifier.len() < 64 {
-        verifier.push_str(&Uuid::new_v4().simple().to_string());
-    }
-    verifier.truncate(96);
-    verifier
-}
-
-fn pkce_challenge(verifier: &str) -> String {
-    let digest = Sha256::digest(verifier.as_bytes());
-    URL_SAFE_NO_PAD.encode(digest)
-}
-
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn prompt_or_value(
-    theme: &ColorfulTheme,
-    prompt: &str,
-    current: Option<String>,
-    initial_text: Option<String>,
-) -> Result<String> {
-    if let Some(current) = current {
-        return Ok(current);
-    }
-
-    let mut input = Input::with_theme(theme).with_prompt(prompt);
-    if let Some(initial_text) = initial_text {
-        input = input.with_initial_text(initial_text);
-    }
-    Ok(input.interact_text()?)
-}
-
-fn select_hosted_kind(theme: &ColorfulTheme) -> Result<HostedKindArg> {
-    Ok(
-        match Select::with_theme(theme)
-            .with_prompt("Provider type")
-            .items(["OpenAI", "Anthropic", "Moonshot", "OpenRouter", "Venice AI"])
-            .default(0)
-            .interact()?
-        {
-            0 => HostedKindArg::OpenaiCompatible,
-            1 => HostedKindArg::Anthropic,
-            2 => HostedKindArg::Moonshot,
-            3 => HostedKindArg::Openrouter,
-            _ => HostedKindArg::Venice,
-        },
-    )
-}
-
-fn select_auth_method(theme: &ColorfulTheme, kind: HostedKindArg) -> Result<AuthMethodArg> {
-    let browser_label = if hosted_kind_supports_automatic_browser_capture(kind) {
-        match kind {
-            HostedKindArg::OpenaiCompatible => {
-                "Browser sign-in (use your OpenAI account, Recommended)"
-            }
-            HostedKindArg::Anthropic => "Browser sign-in (use your Claude account, Recommended)",
-            HostedKindArg::Openrouter => "Browser sign-in (automatic capture, Recommended)",
-            HostedKindArg::Moonshot | HostedKindArg::Venice => {
-                unreachable!("non-native browser login provider was routed incorrectly")
-            }
-        }
-    } else {
-        "Browser portal (open provider site, then paste credential)"
-    };
-
-    Ok(
-        match Select::with_theme(theme)
-            .with_prompt("Authentication method")
-            .items([browser_label, "OAuth (advanced custom flow)", "API key"])
-            .default(0)
-            .interact()?
-        {
-            0 => AuthMethodArg::Browser,
-            1 => AuthMethodArg::Oauth,
-            _ => AuthMethodArg::ApiKey,
-        },
-    )
-}
-
-fn hosted_kind_to_provider_kind(kind: HostedKindArg) -> ProviderKind {
-    match kind {
-        HostedKindArg::OpenaiCompatible
-        | HostedKindArg::Moonshot
-        | HostedKindArg::Openrouter
-        | HostedKindArg::Venice => ProviderKind::OpenAiCompatible,
-        HostedKindArg::Anthropic => ProviderKind::Anthropic,
-    }
-}
-
-fn browser_hosted_kind_to_provider_kind(kind: HostedKindArg) -> ProviderKind {
-    match kind {
-        HostedKindArg::OpenaiCompatible => ProviderKind::ChatGptCodex,
-        _ => hosted_kind_to_provider_kind(kind),
-    }
-}
-
-fn default_hosted_url(kind: HostedKindArg) -> &'static str {
-    match kind {
-        HostedKindArg::OpenaiCompatible => DEFAULT_OPENAI_URL,
-        HostedKindArg::Anthropic => DEFAULT_ANTHROPIC_URL,
-        HostedKindArg::Moonshot => DEFAULT_MOONSHOT_URL,
-        HostedKindArg::Openrouter => DEFAULT_OPENROUTER_URL,
-        HostedKindArg::Venice => DEFAULT_VENICE_URL,
-    }
-}
-
-fn default_browser_hosted_url(kind: HostedKindArg) -> &'static str {
-    match kind {
-        HostedKindArg::OpenaiCompatible => DEFAULT_CHATGPT_CODEX_URL,
-        _ => default_hosted_url(kind),
-    }
-}
-
-fn hosted_kind_supports_automatic_browser_capture(kind: HostedKindArg) -> bool {
-    matches!(
-        kind,
-        HostedKindArg::Anthropic | HostedKindArg::Openrouter | HostedKindArg::OpenaiCompatible
-    )
-}
-
-fn collect_scopes(theme: &ColorfulTheme, scopes: Vec<String>) -> Result<Vec<String>> {
-    if !scopes.is_empty() {
-        return Ok(scopes);
-    }
-    let input: String = Input::with_theme(theme)
-        .with_prompt("Scopes (space or comma separated, optional)")
-        .allow_empty(true)
-        .interact_text()?;
-    Ok(split_scopes(&input))
-}
-
-fn split_scopes(input: &str) -> Vec<String> {
-    input
-        .replace(',', " ")
-        .split_whitespace()
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn collect_key_value_params(
-    theme: &ColorfulTheme,
-    prompt: &str,
-    params: Vec<String>,
-) -> Result<Vec<KeyValuePair>> {
-    if !params.is_empty() {
-        let pairs = params
-            .into_iter()
-            .map(parse_key_value_pair)
-            .collect::<Result<Vec<_>>>()?;
-        reject_plaintext_oauth_secrets(&pairs)?;
-        return Ok(pairs);
-    }
-    let input: String = Input::with_theme(theme)
-        .with_prompt(prompt)
-        .allow_empty(true)
-        .interact_text()?;
-    let pairs = parse_key_value_list(&input)?;
-    reject_plaintext_oauth_secrets(&pairs)?;
-    Ok(pairs)
-}
-
-fn parse_key_value_list(input: &str) -> Result<Vec<KeyValuePair>> {
-    if input.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    input
-        .split(',')
-        .map(|entry| parse_key_value_pair(entry.trim().to_string()))
-        .collect()
-}
-
-fn parse_key_value_pair(value: String) -> Result<KeyValuePair> {
-    let (key, value) = value
-        .split_once('=')
-        .ok_or_else(|| anyhow!("expected key=value"))?;
-    Ok(KeyValuePair {
-        key: key.trim().to_string(),
-        value: value.trim().to_string(),
-    })
-}
-
-fn reject_plaintext_oauth_secrets(params: &[KeyValuePair]) -> Result<()> {
-    let Some(secret_key) = params.iter().find_map(|param| {
-        let key = param.key.trim().to_ascii_lowercase();
-        ["secret", "password", "private_key", "api_key"]
-            .iter()
-            .any(|fragment| key.contains(fragment))
-            .then_some(param.key.as_str())
-    }) else {
-        return Ok(());
-    };
-    bail!(
-        "OAuth parameter '{}' looks secret and would be stored in plaintext config; browser/API-key flows are supported, but secret OAuth params are not",
-        secret_key
-    )
-}
-
 fn parse_task(value: String) -> Result<SubAgentTask> {
     let (target, prompt) = value
         .split_once('=')
@@ -10343,6 +4652,7 @@ fn parse_task(value: String) -> Result<SubAgentTask> {
         requested_model: None,
         cwd: None,
         thinking_level: None,
+        task_mode: None,
         output_schema_json: None,
         strategy: None,
     })
@@ -10516,7 +4826,8 @@ impl DaemonClient {
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.with_context(|| format!("failed to read streamed response from {url}"))?;
+            let chunk =
+                chunk.with_context(|| format!("failed to read streamed response from {url}"))?;
             buffer.extend_from_slice(&chunk);
             drain_ndjson_buffer(&mut buffer, false, &mut on_event)
                 .with_context(|| format!("failed to parse streamed daemon response from {url}"))?;
@@ -10553,7 +4864,11 @@ impl DaemonClient {
     }
 }
 
-fn drain_ndjson_buffer<T, F>(buffer: &mut Vec<u8>, flush_trailing: bool, on_event: &mut F) -> Result<()>
+fn drain_ndjson_buffer<T, F>(
+    buffer: &mut Vec<u8>,
+    flush_trailing: bool,
+    on_event: &mut F,
+) -> Result<()>
 where
     T: DeserializeOwned,
     F: FnMut(T) -> Result<()>,
@@ -10591,9 +4906,13 @@ where
 mod tests {
     use super::*;
     use agent_core::{
-        AppConfig, AutonomyProfile, DashboardLaunchResponse, DiscordSendResponse,
-        DelegationConfig, HomeAssistantServiceCallResponse, MainTargetSummary, MemorySearchResponse,
-        PermissionPreset, RunTaskResponse, SignalSendResponse, SlackSendResponse,
+        plugin_provider_id, AppConfig, AutonomyProfile, BraveConnectorConfig,
+        DashboardLaunchResponse, DelegationConfig, DiscordSendResponse, GmailConnectorConfig,
+        HomeAssistantServiceCallResponse, InstalledPluginConfig, MainTargetSummary,
+        MemorySearchResponse, PermissionPreset, PluginCompatibility, PluginManifest,
+        PluginPermissions, PluginProviderAdapterManifest, PluginSourceKind, ProviderKind,
+        RunTaskResponse, SessionMessage, SessionSummary, SignalSendResponse, SlackSendResponse,
+        PLUGIN_SCHEMA_VERSION,
     };
     use clap::Parser;
     use serde::Deserialize;
@@ -10606,11 +4925,74 @@ mod tests {
     use uuid::Uuid;
 
     fn temp_storage() -> Storage {
-        Storage::open_at(std::env::temp_dir().join(format!(
-            "autism-cli-test-{}",
-            Uuid::new_v4()
-        )))
-        .unwrap()
+        Storage::open_at(std::env::temp_dir().join(format!("nuclear-cli-test-{}", Uuid::new_v4())))
+            .unwrap()
+    }
+
+    fn session_transcript_with_mode(storage: &Storage, task_mode: TaskMode) -> SessionTranscript {
+        let alias = ModelAlias {
+            alias: "main".to_string(),
+            provider_id: "local".to_string(),
+            model: "qwen".to_string(),
+            description: None,
+        };
+        storage
+            .ensure_session("session-1", &alias, "local", "qwen", Some(task_mode))
+            .unwrap();
+        storage
+            .append_message(&SessionMessage::new(
+                "session-1".to_string(),
+                MessageRole::User,
+                "hello".to_string(),
+                Some("local".to_string()),
+                Some("qwen".to_string()),
+            ))
+            .unwrap();
+        SessionTranscript {
+            session: storage.get_session("session-1").unwrap().unwrap(),
+            messages: storage.list_session_messages("session-1").unwrap(),
+        }
+    }
+
+    #[test]
+    fn load_session_task_mode_returns_persisted_mode() {
+        let storage = temp_storage();
+        let alias = ModelAlias {
+            alias: "main".to_string(),
+            provider_id: "local".to_string(),
+            model: "qwen".to_string(),
+            description: None,
+        };
+        storage
+            .ensure_session("session-1", &alias, "local", "qwen", Some(TaskMode::Daily))
+            .unwrap();
+
+        assert_eq!(
+            load_session_task_mode(&storage, Some("session-1")).unwrap(),
+            Some(TaskMode::Daily)
+        );
+    }
+
+    #[test]
+    fn compact_session_preserves_task_mode() {
+        let storage = temp_storage();
+        let transcript = session_transcript_with_mode(&storage, TaskMode::Daily);
+
+        let compacted_id = compact_session(&storage, &transcript, "Carry this forward").unwrap();
+        let compacted = storage.get_session(&compacted_id).unwrap().unwrap();
+
+        assert_eq!(compacted.task_mode, Some(TaskMode::Daily));
+    }
+
+    #[test]
+    fn fork_session_preserves_task_mode() {
+        let storage = temp_storage();
+        let transcript = session_transcript_with_mode(&storage, TaskMode::Build);
+
+        let forked_id = fork_session(&storage, &transcript).unwrap();
+        let forked = storage.get_session(&forked_id).unwrap().unwrap();
+
+        assert_eq!(forked.task_mode, Some(TaskMode::Build));
     }
 
     #[derive(Debug, Clone)]
@@ -10674,10 +5056,7 @@ mod tests {
                 assert_eq!(captured.path, expected.path);
                 if let Some(expected_auth) = expected_auth_clone.as_deref() {
                     assert_eq!(
-                        captured
-                            .headers
-                            .get("authorization")
-                            .map(String::as_str),
+                        captured.headers.get("authorization").map(String::as_str),
                         Some(expected_auth)
                     );
                 }
@@ -10773,6 +5152,7 @@ mod tests {
             delegation: DelegationConfig::default(),
             providers: 1,
             aliases: 1,
+            plugins: 0,
             delegation_targets: 1,
             webhook_connectors: 0,
             inbox_connectors: 0,
@@ -10845,6 +5225,56 @@ mod tests {
             providers: vec![provider],
             aliases: vec![alias.clone()],
             main_agent_alias: Some(alias.alias),
+            ..AppConfig::default()
+        }
+    }
+
+    fn projected_plugin_config(alias: &str, adapter_id: &str, model: &str) -> AppConfig {
+        let plugin = InstalledPluginConfig {
+            id: "echo-toolkit".to_string(),
+            manifest: PluginManifest {
+                schema_version: PLUGIN_SCHEMA_VERSION,
+                id: "echo-toolkit".to_string(),
+                name: "Echo Toolkit".to_string(),
+                version: "0.1.0".to_string(),
+                description: "test plugin".to_string(),
+                homepage: None,
+                compatibility: PluginCompatibility::default(),
+                permissions: PluginPermissions::default(),
+                tools: Vec::new(),
+                connectors: Vec::new(),
+                provider_adapters: vec![PluginProviderAdapterManifest {
+                    id: adapter_id.to_string(),
+                    provider_kind: ProviderKind::OpenAiCompatible,
+                    description: "projected provider".to_string(),
+                    command: "plugin-host".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                    permissions: PluginPermissions::default(),
+                    default_model: Some(model.to_string()),
+                    timeout_seconds: None,
+                }],
+            },
+            source_kind: PluginSourceKind::LocalPath,
+            install_dir: std::env::temp_dir().join(format!("plugin-install-{}", Uuid::new_v4())),
+            source_reference: String::new(),
+            source_path: std::env::temp_dir().join(format!("plugin-source-{}", Uuid::new_v4())),
+            integrity_sha256: "reviewed".to_string(),
+            enabled: true,
+            trusted: true,
+            granted_permissions: PluginPermissions::default(),
+            reviewed_integrity_sha256: "reviewed".to_string(),
+            reviewed_at: Some(chrono::Utc::now()),
+            pinned: false,
+            installed_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let provider_id = plugin_provider_id(&plugin.id, adapter_id);
+        AppConfig {
+            onboarding_complete: true,
+            plugins: vec![plugin],
+            aliases: vec![sample_alias(alias, &provider_id, model)],
+            main_agent_alias: Some(alias.to_string()),
             ..AppConfig::default()
         }
     }
@@ -10936,7 +5366,10 @@ mod tests {
         let requests = server.finish().await.unwrap();
         let provider_body: ProviderUpsertRequest = serde_json::from_str(&requests[1].body).unwrap();
         assert_eq!(provider_body.provider.id, "openai");
-        assert_eq!(provider_body.provider.default_model.as_deref(), Some("gpt-5"));
+        assert_eq!(
+            provider_body.provider.default_model.as_deref(),
+            Some("gpt-5")
+        );
         assert_eq!(provider_body.api_key.as_deref(), Some("secret-api-key"));
 
         let alias_body: AliasUpsertRequest = serde_json::from_str(&requests[2].body).unwrap();
@@ -11037,7 +5470,11 @@ mod tests {
     async fn alias_command_add_persists_locally_without_daemon() {
         let storage = temp_storage();
         let config = AppConfig {
-            providers: vec![sample_local_provider("http://localhost:11434", "local", "qwen")],
+            providers: vec![sample_local_provider(
+                "http://localhost:11434",
+                "local",
+                "qwen",
+            )],
             ..AppConfig::default()
         };
         storage.save_config(&config).unwrap();
@@ -11059,6 +5496,31 @@ mod tests {
         assert_eq!(config.main_agent_alias.as_deref(), Some("main"));
         assert_eq!(config.aliases.len(), 1);
         assert_eq!(config.aliases[0].description.as_deref(), Some("Primary"));
+    }
+
+    #[tokio::test]
+    async fn alias_command_add_accepts_projected_plugin_provider_without_daemon() {
+        let storage = temp_storage();
+        let config = projected_plugin_config("main", "echo-provider", "echo-1");
+        let provider_id = config.aliases[0].provider_id.clone();
+        storage.save_config(&config).unwrap();
+
+        alias_command(
+            &storage,
+            AliasCommands::Add(AliasAddArgs {
+                alias: "assistant".to_string(),
+                provider: provider_id,
+                model: "echo-1".to_string(),
+                description: Some("Plugin-backed".to_string()),
+                main: false,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let config = storage.load_config().unwrap();
+        assert_eq!(config.aliases.len(), 2);
+        assert_eq!(config.aliases[1].alias, "assistant");
     }
 
     #[tokio::test]
@@ -11204,32 +5666,140 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn autonomy_evolve_and_autopilot_status_commands_hit_daemon() {
+    async fn memory_command_rebuild_posts_request() {
         let storage = temp_storage();
-        let token = "test-status-token";
+        let token = "test-memory-rebuild-token";
         let server = spawn_mock_http_server(
             vec![
                 MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
-                MockHttpExpectation::json("GET", "/v1/autonomy/status", &AutonomyProfile::default()),
-                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
-                MockHttpExpectation::json("GET", "/v1/evolve/status", &EvolveConfig::default()),
-                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
-                MockHttpExpectation::json("GET", "/v1/autopilot/status", &AutopilotConfig::default()),
+                MockHttpExpectation::json(
+                    "POST",
+                    "/v1/memory/rebuild",
+                    &MemoryRebuildResponse {
+                        generated_at: chrono::Utc::now(),
+                        session_id: Some("session-1".to_string()),
+                        sessions_scanned: 1,
+                        observations_scanned: 4,
+                        memories_upserted: 2,
+                        embeddings_refreshed: 2,
+                    },
+                ),
             ],
             Some(format!("Bearer {token}")),
         )
         .await;
         save_daemon_config(&storage, &server.origin, token);
 
-        autonomy_command(&storage, AutonomyCommands::Status).await.unwrap();
-        evolve_command(&storage, EvolveCommands::Status).await.unwrap();
-        autopilot_command(&storage, AutopilotCommands::Status).await.unwrap();
+        memory_command(
+            &storage,
+            MemoryCommands::Rebuild {
+                session_id: Some("session-1".to_string()),
+                recompute_embeddings: true,
+            },
+        )
+        .await
+        .unwrap();
 
         let requests = server.finish().await.unwrap();
-        assert_eq!(requests.iter().filter(|req| req.path == "/v1/status").count(), 3);
+        let body: MemoryRebuildRequest = serde_json::from_str(&requests[1].body).unwrap();
+        assert_eq!(body.session_id.as_deref(), Some("session-1"));
+        assert!(body.recompute_embeddings);
+    }
+
+    #[tokio::test]
+    async fn session_resume_packet_command_requests_resume_packet_from_daemon() {
+        let storage = temp_storage();
+        let token = "test-session-resume-packet-token";
+        let packet = SessionResumePacket {
+            session: SessionSummary {
+                id: "session-1".to_string(),
+                title: Some("Resume me".to_string()),
+                alias: "main".to_string(),
+                provider_id: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                task_mode: Some(TaskMode::Daily),
+                message_count: 2,
+                cwd: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            generated_at: chrono::Utc::now(),
+            recent_messages: Vec::new(),
+            linked_memories: Vec::new(),
+            related_transcript_hits: Vec::new(),
+        };
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json("GET", "/v1/sessions/session-1/resume-packet", &packet),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        session_command(
+            &storage,
+            SessionCommands::ResumePacket {
+                id: "session-1".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        assert_eq!(requests[1].path, "/v1/sessions/session-1/resume-packet");
+    }
+
+    #[tokio::test]
+    async fn autonomy_evolve_and_autopilot_status_commands_hit_daemon() {
+        let storage = temp_storage();
+        let token = "test-status-token";
+        let server = spawn_mock_http_server(
+            vec![
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "GET",
+                    "/v1/autonomy/status",
+                    &AutonomyProfile::default(),
+                ),
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json("GET", "/v1/evolve/status", &EvolveConfig::default()),
+                MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+                MockHttpExpectation::json(
+                    "GET",
+                    "/v1/autopilot/status",
+                    &AutopilotConfig::default(),
+                ),
+            ],
+            Some(format!("Bearer {token}")),
+        )
+        .await;
+        save_daemon_config(&storage, &server.origin, token);
+
+        autonomy_command(&storage, AutonomyCommands::Status)
+            .await
+            .unwrap();
+        evolve_command(&storage, EvolveCommands::Status)
+            .await
+            .unwrap();
+        autopilot_command(&storage, AutopilotCommands::Status)
+            .await
+            .unwrap();
+
+        let requests = server.finish().await.unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|req| req.path == "/v1/status")
+                .count(),
+            3
+        );
         assert!(requests.iter().any(|req| req.path == "/v1/autonomy/status"));
         assert!(requests.iter().any(|req| req.path == "/v1/evolve/status"));
-        assert!(requests.iter().any(|req| req.path == "/v1/autopilot/status"));
+        assert!(requests
+            .iter()
+            .any(|req| req.path == "/v1/autopilot/status"));
     }
 
     #[tokio::test]
@@ -11371,7 +5941,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_and_inbox_add_commands_persist_locally_without_daemon() {
         let storage = temp_storage();
-        let inbox_path = std::env::temp_dir().join(format!("autism-inbox-{}", Uuid::new_v4()));
+        let inbox_path = std::env::temp_dir().join(format!("nuclear-inbox-{}", Uuid::new_v4()));
         fs::create_dir_all(&inbox_path).unwrap();
 
         webhook_command(
@@ -11419,7 +5989,7 @@ mod tests {
     #[tokio::test]
     async fn skills_enable_and_disable_update_local_config() {
         let storage = temp_storage();
-        let home_dir = std::env::temp_dir().join(format!("autism-home-{}", Uuid::new_v4()));
+        let home_dir = std::env::temp_dir().join(format!("nuclear-home-{}", Uuid::new_v4()));
         let skill_dir = home_dir.join(".codex").join("skills").join("test-skill");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
@@ -11466,7 +6036,7 @@ mod tests {
         let storage = temp_storage();
         let alias = sample_alias("main", "local", "qwen");
         storage
-            .ensure_session("session-1", &alias, "local", "qwen")
+            .ensure_session("session-1", &alias, "local", "qwen", None)
             .unwrap();
 
         session_command(
@@ -11522,6 +6092,7 @@ mod tests {
                 alias: Some("main".to_string()),
                 tasks: Vec::new(),
                 thinking: None,
+                mode: None,
                 images: Vec::new(),
                 output_schema: None,
                 output_last_message: None,
@@ -11544,7 +6115,7 @@ mod tests {
     fn drain_ndjson_buffer_handles_split_utf8_boundaries() {
         let mut buffer = Vec::new();
         let mut values = Vec::new();
-        let first = br#"{"value":"snowman "#.to_vec();
+        let first = b"{\"value\":\"snowman ".to_vec();
         let second = vec![0xE2, 0x98];
         let mut third = vec![0x83];
         third.extend_from_slice(b"\"}\n");
@@ -11575,7 +6146,7 @@ mod tests {
         assert_eq!(
             values,
             vec![StreamFixture {
-                value: "snowman ☃".to_string()
+                value: "snowman \u{2603}".to_string()
             }]
         );
         assert!(buffer.is_empty());
@@ -11829,8 +6400,9 @@ mod tests {
             oauth: Some(openai_browser_oauth_config()),
             local: false,
         };
-        let redirect_uri =
-            format!("http://localhost:{OPENAI_BROWSER_CALLBACK_PORT}{OPENAI_BROWSER_CALLBACK_PATH}");
+        let redirect_uri = format!(
+            "http://localhost:{OPENAI_BROWSER_CALLBACK_PORT}{OPENAI_BROWSER_CALLBACK_PATH}"
+        );
         let authorization_url = build_oauth_authorization_url(
             &provider,
             &redirect_uri,
@@ -11894,8 +6466,9 @@ mod tests {
             oauth: Some(claude_browser_oauth_config()),
             local: false,
         };
-        let redirect_uri =
-            format!("http://localhost:{CLAUDE_BROWSER_CALLBACK_PORT}{CLAUDE_BROWSER_CALLBACK_PATH}");
+        let redirect_uri = format!(
+            "http://localhost:{CLAUDE_BROWSER_CALLBACK_PORT}{CLAUDE_BROWSER_CALLBACK_PATH}"
+        );
         let authorization_url = build_oauth_authorization_url(
             &provider,
             &redirect_uri,
@@ -11992,9 +6565,21 @@ mod tests {
 
     #[test]
     fn cli_uses_default_prompt_without_subcommand() {
-        let cli = Cli::parse_from(["autism", "write a summary"]);
+        let cli = Cli::parse_from([PRIMARY_COMMAND_NAME, "write a summary"]);
         assert_eq!(cli.prompt.as_deref(), Some("write a summary"));
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn legacy_command_alias_still_parses() {
+        let cli = Cli::parse_from([agent_core::LEGACY_COMMAND_NAME, "resume", "--last"]);
+        match cli.command {
+            Some(Commands::Resume(args)) => {
+                assert!(args.last);
+                assert!(args.session_id.is_none());
+            }
+            _ => panic!("expected resume command"),
+        }
     }
 
     #[test]
@@ -12012,7 +6597,7 @@ mod tests {
     #[test]
     fn cli_parses_exec_subcommand() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "exec",
             "--alias",
             "claude",
@@ -12032,7 +6617,7 @@ mod tests {
 
     #[test]
     fn cli_parses_resume_last() {
-        let cli = Cli::parse_from(["autism", "resume", "--last"]);
+        let cli = Cli::parse_from([PRIMARY_COMMAND_NAME, "resume", "--last"]);
         match cli.command {
             Some(Commands::Resume(args)) => {
                 assert!(args.last);
@@ -12045,7 +6630,7 @@ mod tests {
     #[test]
     fn cli_parses_browser_auth_for_login() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "login",
             "--id",
             "openrouter",
@@ -12070,7 +6655,7 @@ mod tests {
     #[test]
     fn cli_parses_daemon_config_bool_value() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "daemon",
             "config",
             "--mode",
@@ -12092,7 +6677,7 @@ mod tests {
     #[test]
     fn cli_parses_trust_bool_values() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "trust",
             "--allow-shell",
             "true",
@@ -12109,7 +6694,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_interactive_command_supports_model_and_thinking() {
+    fn parse_interactive_command_supports_model_mode_and_thinking() {
         assert_eq!(
             parse_interactive_command("/model claude").unwrap(),
             Some(InteractiveCommand::ModelSet("claude".to_string()))
@@ -12133,6 +6718,14 @@ mod tests {
         assert_eq!(
             parse_interactive_command("/thinking default").unwrap(),
             Some(InteractiveCommand::ThinkingSet(None))
+        );
+        assert_eq!(
+            parse_interactive_command("/mode daily").unwrap(),
+            Some(InteractiveCommand::ModeSet(Some(TaskMode::Daily)))
+        );
+        assert_eq!(
+            parse_interactive_command("/mode default").unwrap(),
+            Some(InteractiveCommand::ModeSet(None))
         );
     }
 
@@ -12325,6 +6918,12 @@ mod tests {
             Some(InteractiveCommand::MemoryReviewShow)
         );
         assert_eq!(
+            parse_interactive_command("/memory rebuild session-1").unwrap(),
+            Some(InteractiveCommand::MemoryRebuild {
+                session_id: Some("session-1".to_string()),
+            })
+        );
+        assert_eq!(
             parse_interactive_command("/memory approve mem-1 looks good").unwrap(),
             Some(InteractiveCommand::MemoryApprove {
                 id: "mem-1".to_string(),
@@ -12365,7 +6964,7 @@ mod tests {
     #[test]
     fn cli_parses_mission_schedule_flags() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "mission",
             "add",
             "Follow up",
@@ -12393,7 +6992,7 @@ mod tests {
     #[test]
     fn cli_parses_mission_watch_flags() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "mission",
             "add",
             "Watch repo",
@@ -12418,9 +7017,35 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_run_and_chat_modes() {
+        let cli = Cli::parse_from([
+            PRIMARY_COMMAND_NAME,
+            "run",
+            "--mode",
+            "daily",
+            "plan my week",
+        ]);
+        match cli.command {
+            Some(Commands::Run(args)) => {
+                assert_eq!(args.mode, Some(TaskModeArg::Daily));
+                assert_eq!(args.prompt.as_deref(), Some("plan my week"));
+            }
+            _ => panic!("expected run command"),
+        }
+
+        let cli = Cli::parse_from([PRIMARY_COMMAND_NAME, "chat", "--mode", "build"]);
+        match cli.command {
+            Some(Commands::Chat(args)) => {
+                assert_eq!(args.mode, Some(TaskModeArg::Build));
+            }
+            _ => panic!("expected chat command"),
+        }
+    }
+
+    #[test]
     fn cli_parses_skill_draft_listing() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "skills",
             "drafts",
             "--status",
@@ -12441,7 +7066,7 @@ mod tests {
 
     #[test]
     fn cli_parses_memory_profile_command() {
-        let cli = Cli::parse_from(["autism", "memory", "profile", "--limit", "7"]);
+        let cli = Cli::parse_from([PRIMARY_COMMAND_NAME, "memory", "profile", "--limit", "7"]);
         match cli.command {
             Some(Commands::Memory {
                 command: MemoryCommands::Profile { limit },
@@ -12453,9 +7078,52 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_memory_rebuild_command() {
+        let cli = Cli::parse_from([
+            PRIMARY_COMMAND_NAME,
+            "memory",
+            "rebuild",
+            "--session-id",
+            "session-1",
+            "--recompute-embeddings",
+        ]);
+        match cli.command {
+            Some(Commands::Memory {
+                command:
+                    MemoryCommands::Rebuild {
+                        session_id,
+                        recompute_embeddings,
+                    },
+            }) => {
+                assert_eq!(session_id.as_deref(), Some("session-1"));
+                assert!(recompute_embeddings);
+            }
+            _ => panic!("expected memory rebuild command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_session_resume_packet_command() {
+        let cli = Cli::parse_from([
+            PRIMARY_COMMAND_NAME,
+            "session",
+            "resume-packet",
+            "session-1",
+        ]);
+        match cli.command {
+            Some(Commands::Session {
+                command: SessionCommands::ResumePacket { id },
+            }) => {
+                assert_eq!(id, "session-1");
+            }
+            _ => panic!("expected session resume-packet command"),
+        }
+    }
+
+    #[test]
     fn cli_parses_telegram_add_command() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "telegram",
             "add",
             "--id",
@@ -12487,7 +7155,7 @@ mod tests {
     #[test]
     fn cli_parses_webhook_add_command() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "webhook",
             "add",
             "--id",
@@ -12513,7 +7181,7 @@ mod tests {
     #[test]
     fn cli_parses_discord_add_command() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "discord",
             "add",
             "--id",
@@ -12548,7 +7216,7 @@ mod tests {
     #[test]
     fn cli_parses_inbox_add_command() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "inbox",
             "add",
             "--id",
@@ -12585,6 +7253,10 @@ mod tests {
         assert_eq!(
             parse_interactive_command("/thinking default").unwrap(),
             Some(InteractiveCommand::ThinkingSet(None))
+        );
+        assert_eq!(
+            parse_interactive_command("/mode").unwrap(),
+            Some(InteractiveCommand::ModeShow)
         );
     }
 
@@ -12635,6 +7307,7 @@ mod tests {
                 alias: "main".to_string(),
                 provider_id: "openai".to_string(),
                 model: "gpt-4.1".to_string(),
+                task_mode: None,
                 message_count: 0,
                 cwd: None,
                 created_at: chrono::Utc::now(),
@@ -12769,20 +7442,78 @@ mod tests {
                 requested_model: None,
                 cwd: None,
             }],
+            slack_connectors: vec![SlackConnectorConfig {
+                id: "ops-slack".to_string(),
+                name: "Ops Slack".to_string(),
+                description: String::new(),
+                enabled: true,
+                bot_token_keychain_account: Some("slack-account".to_string()),
+                require_pairing_approval: true,
+                monitored_channel_ids: vec!["C123".to_string()],
+                allowed_channel_ids: Vec::new(),
+                allowed_user_ids: Vec::new(),
+                channel_cursors: Vec::new(),
+                alias: None,
+                requested_model: None,
+                cwd: None,
+            }],
+            home_assistant_connectors: vec![HomeAssistantConnectorConfig {
+                id: "ops-home".to_string(),
+                name: "Ops Home".to_string(),
+                description: String::new(),
+                enabled: true,
+                base_url: "http://ha.local".to_string(),
+                access_token_keychain_account: Some("home-account".to_string()),
+                monitored_entity_ids: vec!["light.office".to_string()],
+                allowed_service_domains: Vec::new(),
+                allowed_service_entity_ids: Vec::new(),
+                entity_cursors: Vec::new(),
+                alias: None,
+                requested_model: None,
+                cwd: None,
+            }],
+            brave_connectors: vec![BraveConnectorConfig {
+                id: "brave-search".to_string(),
+                name: "Brave Search".to_string(),
+                description: String::new(),
+                enabled: true,
+                api_key_keychain_account: Some("brave-account".to_string()),
+                alias: None,
+                requested_model: None,
+                cwd: None,
+            }],
+            gmail_connectors: vec![GmailConnectorConfig {
+                id: "gmail-ops".to_string(),
+                name: "Ops Gmail".to_string(),
+                description: String::new(),
+                enabled: true,
+                oauth_keychain_account: Some("gmail-account".to_string()),
+                require_pairing_approval: true,
+                allowed_sender_addresses: Vec::new(),
+                label_filter: Some("INBOX".to_string()),
+                last_history_id: None,
+                alias: None,
+                requested_model: None,
+                cwd: None,
+            }],
             ..AppConfig::default()
         };
 
         let accounts = configured_keychain_accounts(&config);
 
-        assert_eq!(accounts.len(), 3);
+        assert_eq!(accounts.len(), 7);
         assert!(accounts.contains("shared-account"));
         assert!(accounts.contains("telegram-account"));
         assert!(accounts.contains("discord-account"));
+        assert!(accounts.contains("slack-account"));
+        assert!(accounts.contains("home-account"));
+        assert!(accounts.contains("brave-account"));
+        assert!(accounts.contains("gmail-account"));
     }
 
     #[test]
     fn cli_parses_reset_yes() {
-        let cli = Cli::parse_from(["autism", "reset", "--yes"]);
+        let cli = Cli::parse_from([PRIMARY_COMMAND_NAME, "reset", "--yes"]);
 
         match cli.command {
             Some(Commands::Reset(args)) => assert!(args.yes),
@@ -12793,7 +7524,7 @@ mod tests {
     #[test]
     fn cli_parses_openrouter_provider_add() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "provider",
             "add",
             "--id",
@@ -12822,7 +7553,7 @@ mod tests {
     #[test]
     fn cli_parses_openai_provider_add_alias() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "provider",
             "add",
             "--id",
@@ -12851,7 +7582,7 @@ mod tests {
     #[test]
     fn cli_parses_venice_provider_add() {
         let cli = Cli::parse_from([
-            "autism",
+            PRIMARY_COMMAND_NAME,
             "provider",
             "add",
             "--id",
@@ -12907,6 +7638,14 @@ mod tests {
             ..AppConfig::default()
         };
 
+        assert!(!needs_onboarding(&config));
+    }
+
+    #[test]
+    fn onboarding_not_needed_when_projected_plugin_provider_resolves() {
+        let config = projected_plugin_config("main", "echo-provider", "echo-1");
+
+        assert!(has_usable_main_alias(&config));
         assert!(!needs_onboarding(&config));
     }
 

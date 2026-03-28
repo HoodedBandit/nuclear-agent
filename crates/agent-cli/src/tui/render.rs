@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use agent_core::{PermissionPreset, SessionMessage, ToolCall};
 
-use crate::{permission_summary, thinking_level_label};
+use crate::{permission_summary, task_mode_label, thinking_level_label};
 
 use super::app::{OverlayState, PickerMode, TuiApp};
 
@@ -187,8 +187,13 @@ pub(super) fn draw_app(frame: &mut Frame<'_>, app: &TuiApp<'_>) {
                             " "
                         };
                         ListItem::new(format!(
-                            "{} {:<20} {:<12} {:<28} {}",
-                            marker, title, session.alias, cwd, session.updated_at
+                            "{} {:<20} {:<12} {:<8} {:<24} {}",
+                            marker,
+                            title,
+                            session.alias,
+                            task_mode_label(session.task_mode),
+                            cwd,
+                            session.updated_at
                         ))
                     })
                     .collect::<Vec<_>>();
@@ -315,7 +320,10 @@ pub(super) fn draw_app(frame: &mut Frame<'_>, app: &TuiApp<'_>) {
     }
 }
 
-fn render_transcript_lines(messages: &[SessionMessage], pending_tool_calls: &[ToolCall]) -> Vec<Line<'static>> {
+fn render_transcript_lines(
+    messages: &[SessionMessage],
+    pending_tool_calls: &[ToolCall],
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for message in messages {
         if !lines.is_empty() {
@@ -356,7 +364,9 @@ fn render_message_card(message: &SessionMessage, lines: &mut Vec<Line<'static>>)
         lines.push(indented_line(
             Line::from(Span::styled(
                 "Planning next actions...",
-                Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::ITALIC),
             )),
             2,
         ));
@@ -404,17 +414,26 @@ fn message_card_label(message: &SessionMessage) -> (&'static str, Color, String)
         agent_core::MessageRole::User => (
             "YOU",
             Color::Cyan,
-            message.provider_id.clone().unwrap_or_else(|| "user prompt".to_string()),
+            message
+                .provider_id
+                .clone()
+                .unwrap_or_else(|| "user prompt".to_string()),
         ),
         agent_core::MessageRole::Assistant if !message.tool_calls.is_empty() => (
             "THINKING",
             Color::LightBlue,
-            message.model.clone().unwrap_or_else(|| "planning".to_string()),
+            message
+                .model
+                .clone()
+                .unwrap_or_else(|| "planning".to_string()),
         ),
         agent_core::MessageRole::Assistant => (
             "ASSISTANT",
             Color::Blue,
-            message.model.clone().unwrap_or_else(|| "assistant".to_string()),
+            message
+                .model
+                .clone()
+                .unwrap_or_else(|| "assistant".to_string()),
         ),
         agent_core::MessageRole::Tool => {
             let failed = message.content.starts_with("ERROR:");
@@ -446,7 +465,12 @@ fn body_style_for_message(message: &SessionMessage) -> Style {
     }
 }
 
-fn render_rich_block(content: &str, base_style: Style, lines: &mut Vec<Line<'static>>, indent: usize) {
+fn render_rich_block(
+    content: &str,
+    base_style: Style,
+    lines: &mut Vec<Line<'static>>,
+    indent: usize,
+) {
     let mut in_code_block = false;
     for raw_line in content.lines() {
         let trimmed = raw_line.trim_start();
@@ -462,7 +486,10 @@ fn render_rich_block(content: &str, base_style: Style, lines: &mut Vec<Line<'sta
             } else {
                 "END CODE".to_string()
             };
-            lines.push(indented_line(Line::from(badge_span(&label, Color::Magenta)), indent));
+            lines.push(indented_line(
+                Line::from(badge_span(&label, Color::Magenta)),
+                indent,
+            ));
             continue;
         }
 
@@ -481,11 +508,12 @@ fn render_rich_block(content: &str, base_style: Style, lines: &mut Vec<Line<'sta
         } else {
             base_style
         };
-        let text = if raw_line.is_empty() { " ".to_string() } else { raw_line.to_string() };
-        lines.push(indented_line(
-            Line::from(Span::styled(text, style)),
-            indent,
-        ));
+        let text = if raw_line.is_empty() {
+            " ".to_string()
+        } else {
+            raw_line.to_string()
+        };
+        lines.push(indented_line(Line::from(Span::styled(text, style)), indent));
     }
 }
 
@@ -536,12 +564,14 @@ fn summarize_tool_call(tool_call: &ToolCall) -> String {
         "apply_patch" => json_field(&tool_call.arguments, &["patch"])
             .map(|patch| {
                 let hunks = patch.matches("@@").count();
-                format!("apply patch{}",
+                format!(
+                    "apply patch{}",
                     if hunks == 0 {
                         String::new()
                     } else {
                         format!(" ({hunks} hunk{})", if hunks == 1 { "" } else { "s" })
-                    })
+                    }
+                )
             })
             .unwrap_or_else(|| "apply patch".to_string()),
         "write_file" | "append_file" => json_field(&tool_call.arguments, &["path"])
@@ -586,7 +616,11 @@ fn preview_code_lines(content: &str, language_hint: Option<&str>) -> Vec<Line<'s
     lines.push(Line::from(badge_span(&badge, Color::Magenta)));
     for raw_line in content.lines().take(14) {
         lines.push(Line::from(Span::styled(
-            if raw_line.is_empty() { " ".to_string() } else { raw_line.to_string() },
+            if raw_line.is_empty() {
+                " ".to_string()
+            } else {
+                raw_line.to_string()
+            },
             code_line_style(raw_line),
         )));
     }
@@ -616,10 +650,7 @@ fn section_label_line(label: &str, color: Color) -> Line<'static> {
     Line::from(vec![
         badge_span(label, color),
         Span::raw(" "),
-        Span::styled(
-            "live operator feed",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("live operator feed", Style::default().fg(Color::DarkGray)),
     ])
 }
 
@@ -807,9 +838,10 @@ fn render_empty_header(app: &TuiApp<'_>) -> Vec<Line<'static>> {
         Line::from(format!(" >_ Autism CLI (v{})", env!("CARGO_PKG_VERSION"))),
         Line::from(String::new()),
         Line::from(format!(
-            " model:     {} {}   /model or ctrl+p to switch",
+            " model:     {} {} mode={}   /model or ctrl+p to switch",
             model_label,
-            thinking_level_label(app.thinking_level)
+            thinking_level_label(app.thinking_level),
+            task_mode_label(app.task_mode),
         )),
         Line::from(format!(" directory: {}", app.cwd.display())),
     ]
@@ -846,8 +878,9 @@ fn render_footer_left(app: &TuiApp<'_>) -> String {
 
 fn render_footer_right(app: &TuiApp<'_>) -> String {
     format!(
-        "{} | {} att. | {}",
+        "{} | mode={} | {} att. | {}",
         permission_summary(app.permission_preset.unwrap_or(PermissionPreset::AutoEdit)),
+        task_mode_label(app.task_mode),
         app.attachments.len(),
         app.alias.as_deref().unwrap_or("main"),
     )
@@ -1160,7 +1193,7 @@ fn format_tokens_compact(value: i64) -> String {
 }
 
 pub(super) fn help_text() -> &'static str {
-    "/help\n/status\n/config\n/dashboard\n/telegrams\n/discords\n/slacks\n/signals\n/home-assistant\n/telegram approvals\n/discord approvals\n/slack approvals\n/webhooks\n/inboxes\n/autopilot [on|pause|resume|status]\n/missions\n/events [limit]\n/schedule <seconds> <title>\n/repeat <seconds> <title>\n/watch <path> <title>\n/profile\n/memory [query]\n/remember <text>\n/forget <memory-id>\n/skills [drafts|published|rejected]\n/skills publish <draft-id>\n/skills reject <draft-id>\n/model [name]\n/provider [name]\n/onboard\n/permissions [preset]\n/attach <path>\n/attachments\n/detach\n/thinking [level]\n/fast\n/review [instructions]\n/compact\n/resume\n/fork\n/rename <title>\n/new\n/clear\n!<command>\n/exit\n\nMain view:\n  Enter send\n  Ctrl+J or Shift+Enter newline\n  Ctrl+P provider and main switcher\n  Ctrl+T transcript overlay\n  Up/Down scroll transcript when composer is empty\n  PageUp/PageDown jump transcript\n  Ctrl+A / Ctrl+E line start/end\n\nSettings:\n  /config opens a simple settings home with categories\n  /dashboard opens the localhost web control room\n  /model opens the provider/alias switcher or accepts a direct alias/model\n  /provider lists logged-in providers or switches the current provider\n  /onboard wipes saved state and restarts setup\n\nOverlays:\n  Esc or q close\n  Up/Down or j/k scroll\n  PageUp/PageDown jump\n  Home/End top or bottom\n\nPickers:\n  Type to filter\n  Up/Down move selection\n  Enter select\n  Esc cancel\n  PageUp/PageDown jump\n  Mouse wheel scroll"
+    "/help\n/status\n/config\n/dashboard\n/telegrams\n/discords\n/slacks\n/signals\n/home-assistant\n/telegram approvals\n/discord approvals\n/slack approvals\n/webhooks\n/inboxes\n/autopilot [on|pause|resume|status]\n/missions\n/events [limit]\n/schedule <seconds> <title>\n/repeat <seconds> <title>\n/watch <path> <title>\n/profile\n/memory [query]\n/memory rebuild [session]\n/remember <text>\n/forget <memory-id>\n/skills [drafts|published|rejected]\n/skills publish <draft-id>\n/skills reject <draft-id>\n/model [name]\n/provider [name]\n/mode [build|daily|default]\n/onboard\n/permissions [preset]\n/attach <path>\n/attachments\n/detach\n/thinking [level]\n/fast\n/review [instructions]\n/compact\n/resume\n/fork\n/rename <title>\n/new\n/clear\n!<command>\n/exit\n\nMain view:\n  Enter send\n  Ctrl+J or Shift+Enter newline\n  Ctrl+P provider and main switcher\n  Ctrl+T transcript overlay\n  Up/Down scroll transcript when composer is empty\n  PageUp/PageDown jump transcript\n  Ctrl+A / Ctrl+E line start/end\n\nSettings:\n  /config opens a simple settings home with categories\n  /dashboard opens the localhost web control room\n  /model opens the provider/alias switcher or accepts a direct alias/model\n  /provider lists logged-in providers or switches the current provider\n  /mode flips between build and daily task presets\n  /onboard wipes saved state and restarts setup\n\nOverlays:\n  Esc or q close\n  Up/Down or j/k scroll\n  PageUp/PageDown jump\n  Home/End top or bottom\n\nPickers:\n  Type to filter\n  Up/Down move selection\n  Enter select\n  Esc cancel\n  PageUp/PageDown jump\n  Mouse wheel scroll"
 }
 
 fn centered_rect(horizontal: u16, vertical: u16, area: Rect) -> Rect {
