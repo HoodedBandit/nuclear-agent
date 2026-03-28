@@ -28,8 +28,22 @@ resolve_source_root() {
   exit 1
 }
 
+cargo_target_root() {
+  root="$1"
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    case "$CARGO_TARGET_DIR" in
+      /*) printf '%s\n' "$CARGO_TARGET_DIR" ;;
+      *) printf '%s\n' "$root/$CARGO_TARGET_DIR" ;;
+    esac
+    return
+  fi
+
+  printf '%s\n' "$root/target"
+}
+
 resolve_bundled_binary() {
   binary_root="$1"
+  cargo_target_root_value="$(cargo_target_root "$binary_root")"
   machine_arch="$(uname -m)"
   case "$machine_arch" in
     x86_64|amd64)
@@ -56,13 +70,13 @@ resolve_bundled_binary() {
     return
   fi
 
-  if [ -x "$binary_root/target/release/nuclear" ]; then
-    printf '%s\n' "$binary_root/target/release/nuclear"
+  if [ -x "$cargo_target_root_value/release/nuclear" ]; then
+    printf '%s\n' "$cargo_target_root_value/release/nuclear"
     return
   fi
 
-  if [ -x "$binary_root/target/release/autism" ]; then
-    printf '%s\n' "$binary_root/target/release/autism"
+  if [ -x "$cargo_target_root_value/release/autism" ]; then
+    printf '%s\n' "$cargo_target_root_value/release/autism"
     return
   fi
 
@@ -222,15 +236,16 @@ build_binary_from_source() {
   build_source_root="$1"
   install_target_binary="$2"
   install_legacy_binary="$3"
+  cargo_target_root_value="$(cargo_target_root "$build_source_root")"
   ensure_cargo
   step "Building Nuclear Agent from source"
   cargo build --release --bin nuclear --bin autism --manifest-path "$build_source_root/Cargo.toml"
-  built_binary="$build_source_root/target/release/nuclear"
+  built_binary="$cargo_target_root_value/release/nuclear"
   if [ ! -x "$built_binary" ]; then
     echo "Cargo reported success but $built_binary was not found." >&2
     exit 1
   fi
-  built_legacy_binary="$build_source_root/target/release/autism"
+  built_legacy_binary="$cargo_target_root_value/release/autism"
   if [ ! -x "$built_legacy_binary" ]; then
     echo "Cargo reported success but $built_legacy_binary was not found." >&2
     exit 1

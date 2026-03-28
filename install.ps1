@@ -151,14 +151,28 @@ function Resolve-SourceRoot {
     throw "Could not locate the project source directory."
 }
 
+function Get-CargoTargetRoot {
+    param([string]$Root)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+        if ([System.IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) {
+            return $env:CARGO_TARGET_DIR
+        }
+        return [System.IO.Path]::GetFullPath((Join-Path $Root $env:CARGO_TARGET_DIR))
+    }
+
+    return (Join-Path $Root "target")
+}
+
 function Resolve-BundledBinary {
     param([string]$Root)
 
+    $cargoTargetRoot = Get-CargoTargetRoot -Root $Root
     $candidates = @(
         (Join-Path $Root "bin\windows-x64\nuclear.exe"),
         (Join-Path $Root "bin\windows-x64\autism.exe"),
-        (Join-Path $Root "target\release\nuclear.exe"),
-        (Join-Path $Root "target\release\autism.exe")
+        (Join-Path $cargoTargetRoot "release\nuclear.exe"),
+        (Join-Path $cargoTargetRoot "release\autism.exe")
     )
 
     foreach ($candidate in $candidates) {
@@ -989,12 +1003,13 @@ function Build-BinaryFromSource {
         Pop-Location
     }
 
-    $builtBinary = Join-Path $SourceRoot "target\release\nuclear.exe"
+    $cargoTargetRoot = Get-CargoTargetRoot -Root $SourceRoot
+    $builtBinary = Join-Path $cargoTargetRoot "release\nuclear.exe"
     if (-not (Test-Path $builtBinary)) {
         throw "Cargo reported success but $builtBinary was not found."
     }
 
-    $builtLegacyBinary = Join-Path $SourceRoot "target\release\autism.exe"
+    $builtLegacyBinary = Join-Path $cargoTargetRoot "release\autism.exe"
     if (-not (Test-Path $builtLegacyBinary)) {
         throw "Cargo reported success but $builtLegacyBinary was not found."
     }

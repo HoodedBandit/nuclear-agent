@@ -1,0 +1,46 @@
+{
+  "type": "object",
+  "properties": {
+    "crates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "release_risk": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "release_risk"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "primary_interfaces": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "release_risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "crates",
+    "primary_interfaces",
+    "release_risks"
+  ],
+  "additionalProperties": false
+}

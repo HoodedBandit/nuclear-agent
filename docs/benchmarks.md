@@ -1,6 +1,9 @@
 # Benchmarks
 
-The repo now includes a lightweight benchmark harness for repeatable coding-agent smoke runs.
+The repo includes two benchmark layers:
+
+- `benchmarks/coding-smoke/tasks.jsonl`: fast smoke coverage for CI and local verification
+- `benchmarks/release-eval/tasks.jsonl`: broader prerelease coverage for coding-agent quality and operator-surface regression checks
 
 ## Inputs
 
@@ -22,16 +25,28 @@ Example:
 
 ## Running
 
-Windows:
+Windows smoke run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run-bench.ps1 -TaskFile .\benchmarks\coding-smoke\tasks.jsonl
 ```
 
-Linux:
+Linux smoke run:
 
 ```bash
 ./scripts/run-bench.sh ./benchmarks/coding-smoke/tasks.jsonl
+```
+
+Windows prerelease run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-bench.ps1 -TaskFile .\benchmarks\release-eval\tasks.jsonl
+```
+
+Linux prerelease run:
+
+```bash
+./scripts/run-bench.sh ./benchmarks/release-eval/tasks.jsonl
 ```
 
 Both scripts write results under `target/benchmarks/<timestamp>/`.
@@ -61,4 +76,6 @@ Per-task results now include:
 
 - Build the CLI first so the benchmark script can invoke the binary directly.
 - Use a configured local profile and provider state that can satisfy the requested commands.
-- Treat this harness as a repeatable operator and product benchmark surface, not a CI gate.
+- Treat `coding-smoke` as the CI-safe benchmark layer.
+- Treat `release-eval` as the prerelease benchmark layer for deeper repo understanding, structured output, review, patch-planning, and tool-use checks.
+- Compare `summary.json` and `summary.md` across runs instead of relying on anecdotal quality impressions.
