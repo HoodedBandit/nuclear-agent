@@ -279,13 +279,14 @@ test("rebuilds memory from session ledger and surfaces it in search and resume v
   await page.fill("#memory-search-query", memorySubject);
   await page.click("#memory-search-form button[type='submit']");
   await expect(page.locator("#memory-search-results")).toContainText(memorySubject);
-  await expect(page.locator("#memory-search-results")).toContainText("session:");
   await expect(page.locator("#memory-search-results")).toContainText("evidence:");
 
   await openTab(page, "chat");
   await page.locator("#sessions-body tr").first().getByRole("button", { name: "View" }).click();
   await expect(page.locator("#session-detail")).toContainText("Linked memories");
   await expect(page.locator("#session-detail")).toContainText("Recent messages");
+  await expect(page.locator("#session-detail")).not.toContainText("No linked memories.");
+  await expect(page.locator("#session-detail")).toContainText("evidence:");
 });
 
 test("runs slash commands and shell commands from the dashboard chat console", async ({ page }) => {

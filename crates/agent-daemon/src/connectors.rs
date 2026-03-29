@@ -33,6 +33,23 @@ mod slack;
 mod telegram;
 mod webhook;
 
+pub(crate) fn connector_service_base_url(default_base_url: &str, env_var: &str) -> String {
+    std::env::var(env_var)
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_base_url.trim_end_matches('/').to_string())
+}
+
+pub(crate) fn connector_service_url(default_base_url: &str, env_var: &str, path: &str) -> String {
+    let base = connector_service_base_url(default_base_url, env_var);
+    if path.starts_with('/') {
+        format!("{base}{path}")
+    } else {
+        format!("{base}/{path}")
+    }
+}
+
 pub(crate) use admin::{
     delete_app_connector, delete_brave_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_signal_connector,

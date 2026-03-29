@@ -177,7 +177,11 @@ async fn fetch_gmail_messages(
 ) -> Result<Vec<GmailMessageStub>, ApiError> {
     let label = connector.label_filter.as_deref().unwrap_or("INBOX");
     let query = format!("is:unread label:{}", label);
-    let url = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
+    let url = super::connector_service_url(
+        "https://gmail.googleapis.com",
+        "NUCLEAR_GMAIL_API_BASE_URL",
+        "/gmail/v1/users/me/messages",
+    );
     let response = state
         .http_client
         .get(url)
@@ -219,8 +223,12 @@ pub(super) async fn fetch_gmail_message_detail(
     message_id: &str,
 ) -> Result<GmailMessageDetail, ApiError> {
     let url = format!(
-        "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}",
-        message_id
+        "{}",
+        super::connector_service_url(
+            "https://gmail.googleapis.com",
+            "NUCLEAR_GMAIL_API_BASE_URL",
+            &format!("/gmail/v1/users/me/messages/{message_id}"),
+        )
     );
     let response = state
         .http_client
@@ -273,7 +281,11 @@ pub(super) async fn send_gmail_message(
         to, subject, body_text
     );
     let encoded = URL_SAFE_NO_PAD.encode(rfc2822.as_bytes());
-    let url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
+    let url = super::connector_service_url(
+        "https://gmail.googleapis.com",
+        "NUCLEAR_GMAIL_API_BASE_URL",
+        "/gmail/v1/users/me/messages/send",
+    );
     let response = client
         .post(url)
         .bearer_auth(token)

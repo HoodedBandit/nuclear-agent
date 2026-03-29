@@ -209,7 +209,11 @@ async fn fetch_slack_messages(
 ) -> Result<Vec<SlackMessage>, ApiError> {
     let mut request = state
         .http_client
-        .get("https://slack.com/api/conversations.history")
+        .get(super::connector_service_url(
+            "https://slack.com",
+            "NUCLEAR_SLACK_API_BASE_URL",
+            "/api/conversations.history",
+        ))
         .bearer_auth(token)
         .query(&[("channel", channel_id), ("limit", "50")]);
     if let Some(oldest) = oldest.filter(|value| !value.trim().is_empty()) {
@@ -252,7 +256,11 @@ pub(super) async fn send_slack_message(
     payload: &SlackSendRequest,
 ) -> Result<(Option<String>, Option<String>), ApiError> {
     let response = client
-        .post("https://slack.com/api/chat.postMessage")
+        .post(super::connector_service_url(
+            "https://slack.com",
+            "NUCLEAR_SLACK_API_BASE_URL",
+            "/api/chat.postMessage",
+        ))
         .bearer_auth(token)
         .json(&serde_json::json!({
             "channel": payload.channel_id,

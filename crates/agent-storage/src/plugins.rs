@@ -530,14 +530,15 @@ fn resolve_git_plugin_source(
         })?;
     }
 
-    run_git_command(
-        None,
-        &[
-            "clone",
-            &git.repository,
-            &checkout_dir.display().to_string(),
-        ],
-    )?;
+    let checkout_dir_text = checkout_dir.display().to_string();
+    if local_git_repository(&git.repository) {
+        run_git_command(
+            None,
+            &["clone", "--no-local", &git.repository, &checkout_dir_text],
+        )?;
+    } else {
+        run_git_command(None, &["clone", &git.repository, &checkout_dir_text])?;
+    }
     if let Some(reference) = git.reference.as_deref() {
         run_git_command(Some(&checkout_dir), &["checkout", reference])?;
     }
@@ -683,6 +684,10 @@ fn stable_hash(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn local_git_repository(repository: &str) -> bool {
+    Path::new(repository).exists()
 }
 
 fn run_git_command(current_dir: Option<&Path>, args: &[&str]) -> Result<()> {

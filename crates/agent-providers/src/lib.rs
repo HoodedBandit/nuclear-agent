@@ -626,9 +626,14 @@ async fn run_chatgpt_codex(
         && oauth_token_override.is_none()
         && should_retry_chatgpt_codex_auth(status, &body)
     {
+        let auth_error = parse_chatgpt_codex_error(&body);
         let refreshed = force_refresh_oauth_token_for_request(client, provider)
             .await
-            .context("ChatGPT/Codex session refresh failed after backend auth rejection")?;
+            .with_context(|| {
+                format!(
+                    "ChatGPT/Codex session refresh failed after backend auth rejection: {auth_error}"
+                )
+            })?;
         send_chatgpt_codex_response_request(client, provider, &refreshed, &payload, session_id)
             .await?
     } else {
@@ -1150,9 +1155,14 @@ async fn load_chatgpt_codex_model_descriptors(
         && allow_refresh
         && should_retry_chatgpt_codex_auth(status, &raw_body)
     {
+        let auth_error = parse_chatgpt_codex_error(&raw_body);
         let refreshed = force_refresh_oauth_token_for_request(client, provider)
             .await
-            .context("ChatGPT/Codex session refresh failed after model auth rejection")?;
+            .with_context(|| {
+                format!(
+                    "ChatGPT/Codex session refresh failed after model auth rejection: {auth_error}"
+                )
+            })?;
         let (status, raw_body) =
             send_chatgpt_codex_models_request(client, provider, &refreshed).await?;
         (status, raw_body, refreshed.subscription_type.clone())

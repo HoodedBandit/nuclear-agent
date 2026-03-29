@@ -209,7 +209,11 @@ async fn fetch_discord_messages(
     channel_id: &str,
     after: Option<&str>,
 ) -> Result<Vec<DiscordMessage>, ApiError> {
-    let url = format!("https://discord.com/api/v10/channels/{channel_id}/messages");
+    let url = super::connector_service_url(
+        "https://discord.com",
+        "NUCLEAR_DISCORD_API_BASE_URL",
+        &format!("/api/v10/channels/{channel_id}/messages"),
+    );
     let mut request = state
         .http_client
         .get(url)
@@ -256,9 +260,10 @@ pub(super) async fn send_discord_message(
     token: &str,
     payload: &DiscordSendRequest,
 ) -> Result<String, ApiError> {
-    let url = format!(
-        "https://discord.com/api/v10/channels/{}/messages",
-        payload.channel_id
+    let url = super::connector_service_url(
+        "https://discord.com",
+        "NUCLEAR_DISCORD_API_BASE_URL",
+        &format!("/api/v10/channels/{}/messages", payload.channel_id),
     );
     let response = client
         .post(url)
