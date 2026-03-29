@@ -71,6 +71,7 @@ dependencies = [
  "anyhow",
  "base64",
  "chrono",
+ "directories",
  "keyring",
  "reqwest",
  "serde",

@@ -1,21 +1,28 @@
 use anyhow::{anyhow, bail, Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use directories::ProjectDirs;
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    fs,
+    path::PathBuf,
     sync::{Arc, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
+use tracing::warn;
 
 use super::{
     AuthMode, OAuthToken, ProviderConfig, ProviderKind, KEYCHAIN_SERVICE,
     OPENAI_BROWSER_AUTH_ISSUER,
 };
+use agent_core::APP_NAME;
 
 pub(crate) const KEYCHAIN_SECRET_SAFE_UTF16_UNITS: usize = 1024;
 const SEGMENTED_SECRET_STORAGE_FORMAT: &str = "segmented_secret_v1";
 const SEGMENTED_OAUTH_TOKEN_STORAGE_FORMAT: &str = "segmented_oauth_token_v1";
+const FILE_SECRET_STORE_DIR_NAME: &str = "secrets";
 
 fn oauth_refresh_locks() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> {
     static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -34,36 +41,32 @@ pub fn keychain_account(provider_id: &str) -> String {
 }
 
 pub fn store_api_key(provider_id: &str, api_key: &str) -> Result<String> {
-    initialize_keyring()?;
+    let _ = initialize_keyring();
     let account = keychain_account(provider_id);
     set_secret(&account, api_key)?;
     Ok(account)
 }
 
 pub fn store_oauth_token(provider_id: &str, token: &OAuthToken) -> Result<String> {
-    initialize_keyring()?;
+    let _ = initialize_keyring();
     let account = keychain_account(provider_id);
     store_oauth_token_for_account(&account, token)?;
     Ok(account)
 }
 
 pub fn load_api_key(account: &str) -> Result<String> {
-    initialize_keyring()?;
-    let entry = Entry::new(KEYCHAIN_SERVICE, account)?;
-    entry
-        .get_password()
-        .context("failed to read API key from keychain")
-        .and_then(|raw| deserialize_secret_storage(account, &raw, get_secret_raw))
+    let _ = initialize_keyring();
+    get_secret(account).context("failed to read API key from secret store")
 }
 
 pub fn load_oauth_token(account: &str) -> Result<OAuthToken> {
-    initialize_keyring()?;
+    let _ = initialize_keyring();
     let raw = get_secret(account)?;
     deserialize_oauth_token_secret(account, &raw, get_secret)
 }
 
 pub fn delete_secret(account: &str) -> Result<()> {
-    initialize_keyring()?;
+    let _ = initialize_keyring();
     if let Ok(raw_stored) = get_secret_raw(account) {
         if let Some(metadata) = parse_segmented_secret_metadata(&raw_stored) {
             delete_segmented_secret_entries(account, &metadata);
@@ -74,10 +77,7 @@ pub fn delete_secret(account: &str) -> Result<()> {
             delete_segmented_oauth_entries(account, &metadata);
         }
     }
-    let entry = Entry::new(KEYCHAIN_SERVICE, account)?;
-    entry
-        .delete_credential()
-        .context("failed to delete secret from keychain")
+    delete_secret_raw_entry(account)
 }
 
 pub fn keyring_available() -> bool {
@@ -363,17 +363,34 @@ fn get_secret(account: &str) -> Result<String> {
 }
 
 fn set_secret_raw(account: &str, secret: &str) -> Result<()> {
-    let entry = Entry::new(KEYCHAIN_SERVICE, account)?;
-    entry
-        .set_password(secret)
-        .context("failed to store secret in keychain")
+    match set_keyring_secret_raw(account, secret) {
+        Ok(()) => {
+            let _ = delete_fallback_secret(account);
+            Ok(())
+        }
+        Err(error) => {
+            warn!(
+                "keychain write failed for account '{}'; using file-backed secret fallback: {error}",
+                account
+            );
+            write_fallback_secret(account, secret).with_context(|| {
+                format!("failed to store secret in file fallback after keychain failure: {error}")
+            })
+        }
+    }
 }
 
 fn get_secret_raw(account: &str) -> Result<String> {
-    let entry = Entry::new(KEYCHAIN_SERVICE, account)?;
-    entry
-        .get_password()
-        .context("failed to read secret from keychain")
+    if fallback_secret_exists(account) {
+        match read_fallback_secret(account) {
+            Ok(secret) => return Ok(secret),
+            Err(error) => warn!(
+                "failed to read fallback secret for account '{}'; retrying keychain: {error}",
+                account
+            ),
+        }
+    }
+    get_keyring_secret_raw(account)
 }
 
 fn parse_segmented_secret_metadata(raw: &str) -> Option<SegmentedSecretMetadata> {
@@ -514,9 +531,7 @@ fn delete_segmented_secret_entries(account: &str, metadata: &SegmentedSecretMeta
     for index in 0..metadata.chunks {
         let segment_account =
             secret_segment_account_with_base(account, &metadata.segment_id, index);
-        if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, &segment_account) {
-            let _ = entry.delete_credential();
-        }
+        let _ = delete_secret_raw_entry(&segment_account);
     }
 }
 
@@ -549,9 +564,7 @@ fn delete_segmented_field_entries(
 ) {
     for index in 0..chunk_count {
         let segment_account = oauth_segment_account_with_base(account, segment_id, field, index);
-        if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, &segment_account) {
-            let _ = entry.delete_credential();
-        }
+        let _ = delete_secret_raw_entry(&segment_account);
     }
 }
 
@@ -610,4 +623,139 @@ fn initialize_keyring() -> Result<()> {
         .as_ref()
         .map_err(|message| anyhow!(message.clone()))
         .map(|_| ())
+}
+
+fn set_keyring_secret_raw(account: &str, secret: &str) -> Result<()> {
+    let entry = Entry::new(KEYCHAIN_SERVICE, account)?;
+    entry
+        .set_password(secret)
+        .context("failed to store secret in keychain")
+}
+
+fn get_keyring_secret_raw(account: &str) -> Result<String> {
+    let entry = Entry::new(KEYCHAIN_SERVICE, account)?;
+    entry
+        .get_password()
+        .context("failed to read secret from keychain")
+}
+
+fn delete_secret_raw_entry(account: &str) -> Result<()> {
+    let fallback_removed = delete_fallback_secret(account)?;
+    match Entry::new(KEYCHAIN_SERVICE, account) {
+        Ok(entry) => match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(error)
+                if fallback_removed || is_missing_keyring_delete_error(&error.to_string()) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(anyhow!(error).context("failed to delete secret from keychain")),
+        },
+        Err(_error) if fallback_removed => Ok(()),
+        Err(error) => Err(anyhow!(error).context("failed to open secret entry")),
+    }
+}
+
+fn fallback_secret_exists(account: &str) -> bool {
+    fallback_secret_path(account)
+        .map(|path| path.exists())
+        .unwrap_or(false)
+}
+
+fn write_fallback_secret(account: &str, secret: &str) -> Result<()> {
+    let path = fallback_secret_path(account)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create fallback secret directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(&path, secret)
+        .with_context(|| format!("failed to write fallback secret file {}", path.display()))
+}
+
+fn read_fallback_secret(account: &str) -> Result<String> {
+    let path = fallback_secret_path(account)?;
+    fs::read_to_string(&path)
+        .with_context(|| format!("failed to read fallback secret file {}", path.display()))
+}
+
+fn delete_fallback_secret(account: &str) -> Result<bool> {
+    let path = fallback_secret_path(account)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to delete fallback secret file {}", path.display())),
+    }
+}
+
+fn fallback_secret_path(account: &str) -> Result<PathBuf> {
+    Ok(fallback_secret_root()?.join(format!(
+        "{}.secret",
+        URL_SAFE_NO_PAD.encode(account.as_bytes())
+    )))
+}
+
+fn fallback_secret_root() -> Result<PathBuf> {
+    if let Some(dirs) = ProjectDirs::from("com", "NuclearAI", APP_NAME) {
+        return Ok(dirs.data_local_dir().join(FILE_SECRET_STORE_DIR_NAME));
+    }
+
+    fallback_secret_root_from_env()
+}
+
+#[cfg(windows)]
+fn fallback_secret_root_from_env() -> Result<PathBuf> {
+    let user_profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
+    let app_data = std::env::var_os("APPDATA").map(PathBuf::from).or_else(|| {
+        user_profile
+            .as_ref()
+            .map(|path| path.join("AppData").join("Roaming"))
+    });
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| {
+            user_profile
+                .as_ref()
+                .map(|path| path.join("AppData").join("Local"))
+        })
+        .or(app_data.clone());
+    local_app_data
+        .map(|root| {
+            root.join("NuclearAI")
+                .join(APP_NAME)
+                .join(FILE_SECRET_STORE_DIR_NAME)
+        })
+        .ok_or_else(|| anyhow!("failed to resolve fallback secret storage directory"))
+}
+
+#[cfg(not(windows))]
+fn fallback_secret_root_from_env() -> Result<PathBuf> {
+    if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        return Ok(xdg_data_home
+            .join("NuclearAI")
+            .join(APP_NAME)
+            .join(FILE_SECRET_STORE_DIR_NAME));
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| {
+            home.join(".local")
+                .join("share")
+                .join("NuclearAI")
+                .join(APP_NAME)
+                .join(FILE_SECRET_STORE_DIR_NAME)
+        })
+        .ok_or_else(|| anyhow!("failed to resolve fallback secret storage directory"))
+}
+
+fn is_missing_keyring_delete_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("no entry")
+        || error.contains("not found")
+        || error.contains("cannot find")
+        || error.contains("element not found")
 }

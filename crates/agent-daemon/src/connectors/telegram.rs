@@ -188,7 +188,11 @@ async fn fetch_telegram_updates(
     token: &str,
     offset: Option<i64>,
 ) -> Result<TelegramGetUpdatesResponse, ApiError> {
-    let url = format!("https://api.telegram.org/bot{token}/getUpdates");
+    let url = super::connector_service_url(
+        "https://api.telegram.org",
+        "NUCLEAR_TELEGRAM_API_BASE_URL",
+        &format!("/bot{token}/getUpdates"),
+    );
     let mut request = state
         .http_client
         .get(url)
@@ -234,7 +238,11 @@ pub(super) async fn send_telegram_message(
     text: &str,
     disable_notification: bool,
 ) -> Result<Option<i64>, ApiError> {
-    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let url = super::connector_service_url(
+        "https://api.telegram.org",
+        "NUCLEAR_TELEGRAM_API_BASE_URL",
+        &format!("/bot{token}/sendMessage"),
+    );
     let response = client
         .post(url)
         .json(&serde_json::json!({

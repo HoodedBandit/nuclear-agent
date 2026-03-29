@@ -10,6 +10,7 @@ use super::super::argument_helpers::{
 use super::*;
 
 const BRAVE_API_BASE_URL: &str = "https://api.search.brave.com";
+const BRAVE_API_BASE_URL_ENV: &str = "NUCLEAR_BRAVE_API_BASE_URL";
 const DEFAULT_RESULT_COUNT: usize = 5;
 const MAX_RESULT_COUNT: usize = 10;
 
@@ -166,7 +167,7 @@ async fn run_brave_search_tool(
 
     let response = search_brave(
         &context.http_client,
-        BRAVE_API_BASE_URL,
+        &crate::connectors::connector_service_base_url(BRAVE_API_BASE_URL, BRAVE_API_BASE_URL_ENV),
         &api_key,
         query,
         args,

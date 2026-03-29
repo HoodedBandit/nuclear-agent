@@ -85,6 +85,7 @@ pub(crate) async fn telegram_command(storage: &Storage, command: TelegramCommand
             let previous_account = existing
                 .as_ref()
                 .and_then(|connector| connector.bot_token_keychain_account.clone());
+            let daemon_managed_secret = daemon.is_some() && args.bot_token.is_some();
             let bot_token_keychain_account = match (daemon.as_ref(), args.bot_token.as_deref()) {
                 (Some(_), _) => previous_account.clone(),
                 (None, Some(bot_token)) => Some(store_api_key(
@@ -93,7 +94,7 @@ pub(crate) async fn telegram_command(storage: &Storage, command: TelegramCommand
                 )?),
                 (None, None) => previous_account.clone(),
             };
-            if bot_token_keychain_account.is_none() {
+            if bot_token_keychain_account.is_none() && !daemon_managed_secret {
                 bail!("--bot-token is required for new telegram connectors");
             }
             let connector = TelegramConnectorConfig {
@@ -343,6 +344,7 @@ pub(crate) async fn discord_command(storage: &Storage, command: DiscordCommands)
             let previous_account = existing
                 .as_ref()
                 .and_then(|connector| connector.bot_token_keychain_account.clone());
+            let daemon_managed_secret = daemon.is_some() && args.bot_token.is_some();
             let bot_token_keychain_account = match (daemon.as_ref(), args.bot_token.as_deref()) {
                 (Some(_), _) => previous_account.clone(),
                 (None, Some(bot_token)) => Some(store_api_key(
@@ -351,7 +353,7 @@ pub(crate) async fn discord_command(storage: &Storage, command: DiscordCommands)
                 )?),
                 (None, None) => previous_account.clone(),
             };
-            if bot_token_keychain_account.is_none() {
+            if bot_token_keychain_account.is_none() && !daemon_managed_secret {
                 bail!("--bot-token is required for new discord connectors");
             }
             let connector = DiscordConnectorConfig {
@@ -598,6 +600,7 @@ pub(crate) async fn slack_command(storage: &Storage, command: SlackCommands) -> 
             let previous_account = existing
                 .as_ref()
                 .and_then(|connector| connector.bot_token_keychain_account.clone());
+            let daemon_managed_secret = daemon.is_some() && args.bot_token.is_some();
             let bot_token_keychain_account = match (daemon.as_ref(), args.bot_token.as_deref()) {
                 (Some(_), _) => previous_account.clone(),
                 (None, Some(bot_token)) => Some(store_api_key(
@@ -606,7 +609,7 @@ pub(crate) async fn slack_command(storage: &Storage, command: SlackCommands) -> 
                 )?),
                 (None, None) => previous_account.clone(),
             };
-            if bot_token_keychain_account.is_none() {
+            if bot_token_keychain_account.is_none() && !daemon_managed_secret {
                 bail!("--bot-token is required for new slack connectors");
             }
             let connector = SlackConnectorConfig {
@@ -1080,6 +1083,7 @@ pub(crate) async fn home_assistant_command(
             let previous_account = existing
                 .as_ref()
                 .and_then(|connector| connector.access_token_keychain_account.clone());
+            let daemon_managed_secret = daemon.is_some() && args.access_token.is_some();
             let access_token_keychain_account =
                 match (daemon.as_ref(), args.access_token.as_deref()) {
                     (Some(_), _) => previous_account.clone(),
@@ -1089,7 +1093,7 @@ pub(crate) async fn home_assistant_command(
                     )?),
                     (None, None) => previous_account.clone(),
                 };
-            if access_token_keychain_account.is_none() {
+            if access_token_keychain_account.is_none() && !daemon_managed_secret {
                 bail!("--access-token is required for new home assistant connectors");
             }
             let connector = HomeAssistantConnectorConfig {
@@ -1324,7 +1328,7 @@ pub(crate) async fn webhook_command(storage: &Storage, command: WebhookCommands)
                         "/v1/webhooks",
                         &WebhookConnectorUpsertRequest {
                             connector: connector.clone(),
-                            webhook_token: None,
+                            webhook_token: Some(token.clone()),
                             clear_webhook_token: false,
                         },
                     )
