@@ -308,7 +308,7 @@ pub(crate) fn interactive_provider_choices_text(
     let mut entries = config
         .all_providers()
         .into_iter()
-        .filter(|provider| provider_has_saved_access(provider))
+        .filter(provider_has_saved_access)
         .filter_map(|provider| {
             let alias = preferred_provider_alias(&config, current_alias, &provider.id)?;
             Some((provider, alias))
@@ -368,7 +368,7 @@ pub(crate) fn resolve_interactive_provider_selection(
     for provider in config
         .all_providers()
         .into_iter()
-        .filter(|provider| provider_has_saved_access(provider))
+        .filter(provider_has_saved_access)
     {
         let Some(alias) = preferred_provider_alias(&config, current_alias, &provider.id) else {
             continue;

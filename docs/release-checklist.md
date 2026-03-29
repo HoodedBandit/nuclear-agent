@@ -60,17 +60,33 @@ Linux compatibility:
 
 - Rust workspace check, test, and release build
 - installer smoke for fresh install and legacy upgrade
+- packaged installer smoke for fresh install and legacy upgrade
 - isolated Phase 1 runtime smoke for daemon lifecycle, prompt execution, session recovery, dashboard launch auth, restart persistence, and reset recovery
 - isolated Phase 2 operator surface smoke for provider and alias management, plugin doctor lifecycle, inbox connector recovery, memory and mission workflows, MCP/apps, autopilot status/config, and restart persistence
 - isolated Phase 2 certification matrix for every shipped provider path, delegation controls, webhook delivery, Telegram/Discord/Slack/Signal approvals and sends, Home Assistant polling and service restrictions, Gmail approval and send flows, Brave tool routing, dashboard bootstrap counts, and restart persistence
 - benchmark smoke artifact validation
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - dependency duplicate/audit/deny/outdated checks when the optional cargo tools are installed
 - dashboard Playwright E2E
 - prerelease `release-eval` benchmarks
 
 ### Additional release records
 
-Run the soak harness and keep the emitted benchmark artifacts with the release record.
+Windows final signoff:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-phase3.ps1 -Token "<daemon-token>" -Workspace .
+```
+
+Linux compatibility signoff:
+
+```bash
+./scripts/verify-phase3.sh --skip-e2e --skip-soak
+```
+
+`verify-phase3` runs `verify-beta`, packages the release bundle, optionally runs the soak harness, and writes a timestamped release record under `target/release-records/`.
+
+Run the soak harness and keep the emitted soak and benchmark artifacts with the release record.
 
 Windows soak:
 
@@ -90,6 +106,7 @@ Review benchmark and soak artifacts for:
 
 - Smoke the installer output on Windows and confirm packaged installs keep the legacy `autism` launcher as compatibility only
 - Confirm docs and examples use `nuclear` as the canonical name
+- Confirm the packaged bundle is named `nuclear-<version>-windows-<arch>-full`
 - Record the release commit SHA
-- Summarize compatibility notes in the release notes
+- Summarize compatibility notes in [`docs/beta-release-notes.md`](beta-release-notes.md)
 - Call out any intentionally deferred debt or residual risk explicitly

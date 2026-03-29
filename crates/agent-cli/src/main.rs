@@ -2853,6 +2853,7 @@ async fn chat_command(storage: &Storage, args: ChatArgs) -> Result<()> {
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn interactive_session(
     storage: &Storage,
     mut alias: Option<String>,

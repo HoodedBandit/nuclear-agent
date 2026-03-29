@@ -37,6 +37,13 @@ Environment variables also work:
 - `AGENT_TOKEN`
 - `AGENT_BASE_URL`
 - `AGENT_WORKSPACE_PATH`
+- `AGENT_SOAK_OUTPUT_ROOT`
+
+Each soak run now writes artifacts under `target/soak/<timestamp>/` by default:
+
+- `samples.jsonl`
+- `summary.json`
+- `summary.md`
 
 ## What To Watch
 

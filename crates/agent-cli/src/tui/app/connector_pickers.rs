@@ -9,7 +9,7 @@ impl<'a> TuiApp<'a> {
         let mut items = config
             .all_providers()
             .into_iter()
-            .filter(|provider| provider_has_saved_access(provider))
+            .filter(provider_has_saved_access)
             .filter_map(|provider| {
                 let alias = self.preferred_provider_alias(&config, &provider.id)?;
                 let provider_name = if provider.display_name.trim().is_empty() {

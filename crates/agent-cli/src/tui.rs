@@ -18,6 +18,7 @@ use events::spawn_daemon_event_poller;
 use render::draw_app;
 use terminal::TerminalSession;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_tui_session(
     storage: &Storage,
     alias: Option<String>,
