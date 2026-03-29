@@ -4,7 +4,8 @@ param(
     [string]$BaseUrl = "http://127.0.0.1:42690",
     [int]$Iterations = 30,
     [int]$DelayMs = 1000,
-    [string]$Workspace = ""
+    [string]$Workspace = "",
+    [string]$OutputRoot = ""
 )
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -20,6 +21,10 @@ $args = @(
 
 if ($Workspace) {
     $args += @("--workspace", $Workspace)
+}
+
+if ($OutputRoot) {
+    $args += @("--output-root", $OutputRoot)
 }
 
 node @args

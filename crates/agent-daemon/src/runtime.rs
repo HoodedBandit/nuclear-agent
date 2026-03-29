@@ -967,6 +967,7 @@ fn effective_session_cwd(
     requested.or_else(|| session.and_then(|summary| summary.cwd.clone()))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn tool_context(
     state: &AppState,
     alias: &ModelAlias,

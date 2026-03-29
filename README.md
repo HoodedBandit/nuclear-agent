@@ -242,6 +242,7 @@ Docs:
 - [`docs/benchmarks.md`](docs/benchmarks.md)
 - [`docs/release-checklist.md`](docs/release-checklist.md)
 - [`docs/reliability.md`](docs/reliability.md)
+- [`docs/beta-release-notes.md`](docs/beta-release-notes.md)
 
 Inspect and enable local skills:
 
@@ -280,6 +281,18 @@ Run the HTTP control-plane soak harness against a live daemon:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run-soak.ps1 -Token "<daemon-token>" -Workspace .
+```
+
+Package the canonical Windows release bundle:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1
+```
+
+Run the final beta signoff flow with packaging and release record generation:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-phase3.ps1 -Token "<daemon-token>" -Workspace .
 ```
 
 ## Notes

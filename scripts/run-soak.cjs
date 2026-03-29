@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+const fs = require("fs");
+const path = require("path");
 const { performance } = require("perf_hooks");
 
 function parseArgs(argv) {
@@ -9,6 +11,7 @@ function parseArgs(argv) {
     iterations: 30,
     delayMs: 1000,
     workspacePath: process.env.AGENT_WORKSPACE_PATH || "",
+    outputRoot: process.env.AGENT_SOAK_OUTPUT_ROOT || "",
   };
 
   for (let index = 2; index < argv.length; index += 1) {
@@ -28,6 +31,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (value === "--workspace" && next) {
       options.workspacePath = next;
+      index += 1;
+    } else if (value === "--output-root" && next) {
+      options.outputRoot = next;
       index += 1;
     } else if (value === "--help" || value === "-h") {
       printHelp();
@@ -51,9 +57,10 @@ function printHelp() {
       "  --iterations <n>      Number of loop iterations (default 30)",
       "  --delay-ms <n>        Delay between iterations in milliseconds (default 1000)",
       "  --workspace <path>    Optional workspace path for /v1/workspace/inspect",
+      "  --output-root <path>  Optional output root for soak artifacts",
       "",
       "Environment fallbacks:",
-      "  AGENT_BASE_URL, AGENT_TOKEN, AGENT_WORKSPACE_PATH",
+      "  AGENT_BASE_URL, AGENT_TOKEN, AGENT_WORKSPACE_PATH, AGENT_SOAK_OUTPUT_ROOT",
       "",
     ].join("\n")
   );
@@ -101,6 +108,70 @@ async function runIteration(options, iteration) {
   };
 }
 
+function writeArtifacts(options, samples) {
+  const repoRoot = path.resolve(__dirname, "..");
+  const outputRoot = path.resolve(options.outputRoot || path.join(repoRoot, "target", "soak"));
+  fs.mkdirSync(outputRoot, { recursive: true });
+  const runDir = path.join(
+    outputRoot,
+    new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z").replace("T", "-")
+  );
+  fs.mkdirSync(runDir, { recursive: true });
+
+  const total = samples.reduce((sum, sample) => sum + sample.durationMs, 0);
+  const average = Math.round((total / samples.length) * 100) / 100;
+  const slowest = samples.reduce((max, sample) => Math.max(max, sample.durationMs), 0);
+  const fastest = samples.reduce((min, sample) => Math.min(min, sample.durationMs), Number.MAX_VALUE);
+  const maxProviders = samples.reduce((max, sample) => Math.max(max, sample.providers), 0);
+  const maxPlugins = samples.reduce((max, sample) => Math.max(max, sample.plugins), 0);
+  const maxSessions = samples.reduce((max, sample) => Math.max(max, sample.sessions), 0);
+  const maxDirtyFiles = samples.reduce((max, sample) => Math.max(max, sample.dirtyFiles), 0);
+
+  fs.writeFileSync(
+    path.join(runDir, "samples.jsonl"),
+    samples.map((sample) => JSON.stringify(sample)).join("\n") + "\n",
+    "utf8"
+  );
+
+  const summary = {
+    base_url: options.baseUrl,
+    iterations: samples.length,
+    average_ms: average,
+    fastest_ms: fastest,
+    slowest_ms: slowest,
+    max_providers: maxProviders,
+    max_plugins: maxPlugins,
+    max_sessions: maxSessions,
+    max_dirty_files: maxDirtyFiles,
+    workspace_root: samples.at(-1)?.workspaceRoot || null,
+    run_dir: runDir,
+    passed: samples.length,
+    failed: 0,
+  };
+  fs.writeFileSync(path.join(runDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n", "utf8");
+  fs.writeFileSync(
+    path.join(runDir, "summary.md"),
+    [
+      "# Soak Summary",
+      "",
+      `- base_url: \`${summary.base_url}\``,
+      `- iterations: \`${summary.iterations}\``,
+      `- average_ms: \`${summary.average_ms}\``,
+      `- fastest_ms: \`${summary.fastest_ms}\``,
+      `- slowest_ms: \`${summary.slowest_ms}\``,
+      `- max_providers: \`${summary.max_providers}\``,
+      `- max_plugins: \`${summary.max_plugins}\``,
+      `- max_sessions: \`${summary.max_sessions}\``,
+      `- max_dirty_files: \`${summary.max_dirty_files}\``,
+      `- workspace_root: \`${summary.workspace_root || ""}\``,
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+
+  return summary;
+}
+
 async function main() {
   const options = parseArgs(process.argv);
   const samples = [];
@@ -116,23 +187,9 @@ async function main() {
     }
   }
 
-  const total = samples.reduce((sum, sample) => sum + sample.durationMs, 0);
-  const average = Math.round((total / samples.length) * 100) / 100;
-  const slowest = samples.reduce((max, sample) => Math.max(max, sample.durationMs), 0);
-  const fastest = samples.reduce((min, sample) => Math.min(min, sample.durationMs), Number.MAX_VALUE);
-  process.stdout.write(
-    JSON.stringify(
-      {
-        iterations: samples.length,
-        average_ms: average,
-        fastest_ms: fastest,
-        slowest_ms: slowest,
-        workspace_root: samples.at(-1)?.workspaceRoot || null,
-      },
-      null,
-      2
-    ) + "\n"
-  );
+  const summary = writeArtifacts(options, samples);
+  process.stdout.write(`Soak output written to ${summary.run_dir}\n`);
+  process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
 }
 
 main().catch((error) => {

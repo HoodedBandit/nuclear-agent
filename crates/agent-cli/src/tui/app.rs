@@ -450,6 +450,7 @@ pub(crate) struct TuiApp<'a> {
 }
 
 impl<'a> TuiApp<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn new(
         storage: &'a Storage,
         client: DaemonClient,

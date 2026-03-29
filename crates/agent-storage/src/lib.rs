@@ -522,6 +522,7 @@ impl Storage {
         self.ensure_session_with_title(session_id, None, alias, provider_id, model, task_mode, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn ensure_session_with_title(
         &self,
         session_id: &str,

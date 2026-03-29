@@ -40,6 +40,7 @@ step() {
 step "baseline workspace verification" bash "$repo_root/scripts/verify-workspace.sh"
 step "phase 1 isolated runtime smoke" bash "$repo_root/scripts/verify-phase1.sh" "$repo_root/target/verify-workspace/release/nuclear"
 step "phase 2 operator surface smoke" bash "$repo_root/scripts/verify-phase2.sh" "$repo_root/target/verify-workspace/release/nuclear"
+step "cargo clippy --workspace --all-targets --all-features -- -D warnings" cargo clippy --workspace --all-targets --all-features --target-dir "$repo_root/target/verify-workspace" -- -D warnings
 
 if [ "$skip_e2e" -eq 0 ]; then
   step "dashboard Playwright E2E" npm run test:e2e

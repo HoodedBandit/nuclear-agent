@@ -361,6 +361,7 @@ pub(super) fn stem_english(word: &str) -> String {
 
 /// Fuzzy LIKE-based fallback search for when FTS returns too few results.
 /// Uses substring matching on subject and content columns.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn fuzzy_memory_search(
     connection: &Connection,
     query: &str,

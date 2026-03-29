@@ -222,14 +222,12 @@ pub(super) async fn fetch_gmail_message_detail(
     token: &str,
     message_id: &str,
 ) -> Result<GmailMessageDetail, ApiError> {
-    let url = format!(
-        "{}",
-        super::connector_service_url(
-            "https://gmail.googleapis.com",
-            "NUCLEAR_GMAIL_API_BASE_URL",
-            &format!("/gmail/v1/users/me/messages/{message_id}"),
-        )
-    );
+    let url = super::connector_service_url(
+        "https://gmail.googleapis.com",
+        "NUCLEAR_GMAIL_API_BASE_URL",
+        &format!("/gmail/v1/users/me/messages/{message_id}"),
+    )
+    .to_string();
     let response = state
         .http_client
         .get(&url)

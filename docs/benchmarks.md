@@ -79,3 +79,4 @@ Per-task results now include:
 - Treat `coding-smoke` as the CI-safe benchmark layer.
 - Treat `release-eval` as the prerelease benchmark layer for deeper repo understanding, structured output, review, patch-planning, and tool-use checks.
 - Compare `summary.json` and `summary.md` across runs instead of relying on anecdotal quality impressions.
+- Use `scripts/write-release-record.ps1` or `scripts/write-release-record.sh` to attach the latest benchmark summaries to a beta release record.

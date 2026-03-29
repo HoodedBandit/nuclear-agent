@@ -45,6 +45,10 @@ try {
         & (Join-Path $PSScriptRoot "verify-phase2.ps1") -BinaryPath $releaseBinary
     }
 
+    Invoke-Step "cargo clippy --workspace --all-targets --all-features -- -D warnings" {
+        cargo clippy --workspace --all-targets --all-features --target-dir (Join-Path $repoRoot "target\verify-workspace") -- -D warnings
+    }
+
     if (-not $SkipE2E) {
         Invoke-Step "dashboard Playwright E2E" {
             npm.cmd run test:e2e

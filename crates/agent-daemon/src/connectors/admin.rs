@@ -1035,6 +1035,7 @@ pub(crate) async fn upsert_gmail_connector(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{resolve_webhook_token_sha256, should_cleanup_upserted_secret};
 

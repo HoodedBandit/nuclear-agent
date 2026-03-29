@@ -56,9 +56,11 @@ function Get-CargoTargetRoot {
 function Invoke-IsolatedInstall {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$RepoRoot,
+        [string]$InstallerRoot,
         [Parameter(Mandatory = $true)]
-        [string]$ScenarioRoot
+        [string]$ScenarioRoot,
+        [switch]$PreferSourceBuild,
+        [switch]$SkipPlaywrightSetup
     )
 
     $previousUserProfile = $env:USERPROFILE
@@ -73,11 +75,20 @@ function Invoke-IsolatedInstall {
         New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
         New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
 
-        & powershell -NoProfile -ExecutionPolicy Bypass `
-            -File (Join-Path $RepoRoot "install.ps1") `
-            -NoPathPersist `
-            -PreferSourceBuild `
-            -SkipPlaywrightSetup
+        $installArgs = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $InstallerRoot "install.ps1"),
+            "-NoPathPersist"
+        )
+        if ($PreferSourceBuild) {
+            $installArgs += "-PreferSourceBuild"
+        }
+        if ($SkipPlaywrightSetup) {
+            $installArgs += "-SkipPlaywrightSetup"
+        }
+
+        & powershell @installArgs
         if ($LASTEXITCODE -ne 0) {
             throw "install.ps1 failed with exit code $LASTEXITCODE"
         }
@@ -102,6 +113,7 @@ function Invoke-IsolatedInstall {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $tempRoot = Join-Path $repoRoot "target\install-smoke\windows"
+$packageOutputRoot = Join-Path $tempRoot "package-output"
 $cargoTargetRoot = Get-CargoTargetRoot -RepoRoot $repoRoot
 $releaseLegacyBinary = Join-Path $cargoTargetRoot "release\autism.exe"
 
@@ -122,7 +134,11 @@ try {
 
     $freshScenarioRoot = Join-Path $tempRoot "fresh-default"
     Invoke-Step "fresh install uses the canonical Nuclear path" {
-        Invoke-IsolatedInstall -RepoRoot $repoRoot -ScenarioRoot $freshScenarioRoot
+        Invoke-IsolatedInstall `
+            -InstallerRoot $repoRoot `
+            -ScenarioRoot $freshScenarioRoot `
+            -PreferSourceBuild `
+            -SkipPlaywrightSetup
 
         $installDir = Join-Path $freshScenarioRoot "LocalAppData\Programs\NuclearAI\Nuclear\bin"
         $legacyDir = Join-Path $freshScenarioRoot "LocalAppData\Programs\NuclearAI\Autism\bin"
@@ -145,7 +161,11 @@ try {
         New-Item -ItemType Directory -Force -Path $legacyInstallDir | Out-Null
         Copy-Item -Force $releaseLegacyBinary (Join-Path $legacyInstallDir "autism.exe")
 
-        Invoke-IsolatedInstall -RepoRoot $repoRoot -ScenarioRoot $upgradeScenarioRoot
+        Invoke-IsolatedInstall `
+            -InstallerRoot $repoRoot `
+            -ScenarioRoot $upgradeScenarioRoot `
+            -PreferSourceBuild `
+            -SkipPlaywrightSetup
 
         $canonicalDir = Join-Path $upgradeScenarioRoot "LocalAppData\Programs\NuclearAI\Nuclear\bin"
         $nuclearBinary = Join-Path $legacyInstallDir "nuclear.exe"
@@ -155,6 +175,68 @@ try {
         Assert-Exists -Path $legacyBinary -Label "upgraded legacy compatibility binary"
         if (Test-Path $canonicalDir) {
             throw "Legacy upgrades should remain in the existing install root instead of creating $canonicalDir"
+        }
+
+        [void](Get-Version -BinaryPath $nuclearBinary)
+        [void](Get-Version -BinaryPath $legacyBinary)
+    }
+
+    Invoke-Step "package canonical Windows release bundle" {
+        & (Join-Path $PSScriptRoot "package-release.ps1") -OutputRoot $packageOutputRoot -Clean
+        if ($LASTEXITCODE -ne 0) {
+            throw "package-release.ps1 failed"
+        }
+    }
+
+    $packageDir = Get-ChildItem -Path $packageOutputRoot -Directory |
+        Where-Object { $_.Name -like "nuclear-*-windows-*-full" } |
+        Sort-Object Name -Descending |
+        Select-Object -First 1
+    if ($null -eq $packageDir) {
+        throw "Could not locate the packaged Windows bundle under $packageOutputRoot"
+    }
+
+    $packagedFreshScenarioRoot = Join-Path $tempRoot "packaged-fresh-default"
+    Invoke-Step "packaged bundle fresh install uses the bundled nuclear binary" {
+        Invoke-IsolatedInstall `
+            -InstallerRoot $packageDir.FullName `
+            -ScenarioRoot $packagedFreshScenarioRoot `
+            -SkipPlaywrightSetup
+
+        $installDir = Join-Path $packagedFreshScenarioRoot "LocalAppData\Programs\NuclearAI\Nuclear\bin"
+        $legacyDir = Join-Path $packagedFreshScenarioRoot "LocalAppData\Programs\NuclearAI\Autism\bin"
+        $nuclearBinary = Join-Path $installDir "nuclear.exe"
+        $legacyBinary = Join-Path $installDir "autism.exe"
+
+        Assert-Exists -Path $nuclearBinary -Label "packaged canonical binary"
+        Assert-Exists -Path $legacyBinary -Label "packaged legacy compatibility binary"
+        if (Test-Path $legacyDir) {
+            throw "Packaged fresh installs should not create the legacy default directory at $legacyDir"
+        }
+
+        [void](Get-Version -BinaryPath $nuclearBinary)
+        [void](Get-Version -BinaryPath $legacyBinary)
+    }
+
+    $packagedUpgradeScenarioRoot = Join-Path $tempRoot "packaged-upgrade-legacy-default"
+    Invoke-Step "packaged bundle legacy install upgrades in place" {
+        $legacyInstallDir = Join-Path $packagedUpgradeScenarioRoot "LocalAppData\Programs\NuclearAI\Autism\bin"
+        New-Item -ItemType Directory -Force -Path $legacyInstallDir | Out-Null
+        Copy-Item -Force $releaseLegacyBinary (Join-Path $legacyInstallDir "autism.exe")
+
+        Invoke-IsolatedInstall `
+            -InstallerRoot $packageDir.FullName `
+            -ScenarioRoot $packagedUpgradeScenarioRoot `
+            -SkipPlaywrightSetup
+
+        $canonicalDir = Join-Path $packagedUpgradeScenarioRoot "LocalAppData\Programs\NuclearAI\Nuclear\bin"
+        $nuclearBinary = Join-Path $legacyInstallDir "nuclear.exe"
+        $legacyBinary = Join-Path $legacyInstallDir "autism.exe"
+
+        Assert-Exists -Path $nuclearBinary -Label "packaged upgraded canonical binary"
+        Assert-Exists -Path $legacyBinary -Label "packaged upgraded legacy compatibility binary"
+        if (Test-Path $canonicalDir) {
+            throw "Packaged legacy upgrades should remain in the existing install root instead of creating $canonicalDir"
         }
 
         [void](Get-Version -BinaryPath $nuclearBinary)
