@@ -1,46 +1,20 @@
 # Nuclear Agent
 
-Nuclear Agent is a Rust-based local agent runtime for Windows and Linux.
+Nuclear Agent is a local-first agent runtime for Windows and Linux that gives you a real operator surface for serious AI work: a persistent daemon, a terminal-first CLI/TUI, and a browser dashboard that can route models, run guarded tools, manage sessions, and keep state on your machine.
 
-It ships as:
+It is built for people who want more than a disposable chat box. You can run it as a coding assistant, a local operator console, a multi-provider model router, or a foundation for plugins, MCP integrations, missions, and higher-trust automation.
 
-- a persistent local daemon with an authenticated HTTP and WebSocket control plane
-- a terminal-first `nuclear` CLI with interactive, non-interactive, and TUI flows
-- a browser dashboard for live status, providers, sessions, plugins, and operator controls
-- local persistence for config, sessions, logs, missions, memory, and plugin state
+## Why It's Useful
 
-## What It Supports
+- **One runtime, three ways to drive it.** Work from the CLI, stay inside the TUI, or move into the browser dashboard without changing the underlying runtime.
+- **Local control instead of mystery SaaS glue.** Providers, aliases, sessions, memory, missions, logs, and plugin state all live in a coherent local system you can inspect and operate.
+- **Built for real operator work.** Trust gates, permission presets, remote-content protections, rollback, support bundles, and daemon health surfaces are part of the product instead of afterthoughts.
+- **Provider-flexible by design.** Point `main` at a hosted provider, a local endpoint, or a self-hosted OpenAI-compatible service and switch without rebuilding your workflow.
+- **Extensible without turning into a mess.** Plugins, MCP-style tools, connectors, and provider adapters plug into the runtime instead of living as unrelated scripts.
 
-- hosted providers: OpenAI-compatible, Anthropic, Moonshot, OpenRouter, and Venice
-- local providers: Ollama and self-hosted OpenAI-compatible endpoints
-- model aliases and a configurable `main` target
-- tool calling with trust and permission gates
-- multimodal image attachments where the provider supports them
-- plugin, MCP, and app-style tool integration
-- memory, missions, delegation, autonomy, autopilot, and evolve flows
-- rollback and redacted support-bundle export for managed installs
+## Install In 60 Seconds
 
-## Workspace Layout
-
-- `crates/agent-core`: shared contracts and request/response types
-- `crates/agent-storage`: persistence, paths, migration, and install metadata
-- `crates/agent-providers`: provider adapters and credential storage
-- `crates/agent-policy`: trust, permission, and autonomy helpers
-- `crates/agent-daemon`: runtime, tools, control plane, and dashboard assets
-- `crates/agent-cli`: the `nuclear` command and terminal UX
-- `scripts/`: verification, packaging, install, rollback, and release tooling
-- `harness/`: deterministic and reference evaluation tasks and fixtures
-- `tests/`: dashboard end-to-end coverage
-
-## Install
-
-### Managed Installers
-
-Packaged installs use:
-
-- `install.ps1` on Windows
-- `install.cmd` as a Windows wrapper
-- `install` on Linux
+### Managed install
 
 Windows:
 
@@ -54,147 +28,95 @@ Linux:
 ./install
 ```
 
-Managed upgrades migrate legacy install roots and state into the canonical Nuclear paths. New installs write only the canonical `nuclear` layout.
+Managed installs put `nuclear` on your PATH, keep rollback metadata, and migrate legacy managed state one-way into the canonical Nuclear paths.
 
-### Install From Source
+### Install from source
 
-Build the workspace:
-
-```powershell
+```bash
 cargo build --workspace
-```
-
-Install the CLI locally from source:
-
-```powershell
 cargo install --path crates/agent-cli --force
 ```
 
-## Quick Start
+Source installs are the right path if you want to build, debug, or extend the runtime directly from the repo.
 
-Run onboarding:
+## First Run
 
-```powershell
-target\debug\nuclear.exe setup
+Complete onboarding:
+
+```bash
+nuclear setup
 ```
 
-Or just launch the CLI:
+Start chatting:
 
-```powershell
-target\debug\nuclear.exe
+```bash
+nuclear
 ```
 
-If no usable configuration exists, the CLI enters onboarding before opening chat.
+Open the browser cockpit:
 
-Useful daemon commands:
-
-```powershell
-target\debug\nuclear.exe daemon start
-target\debug\nuclear.exe daemon status
-target\debug\nuclear.exe daemon stop
+```bash
+nuclear dashboard
 ```
 
-Useful interactive commands:
+If you install from source without putting `nuclear` on your PATH, run the equivalent binary directly from your build output.
 
-```text
-/help
-/model <alias>
-/thinking high
-/permissions full-auto
-/attach path\to\image.png
-/copy
-/compact
-/fork
-/resume
-/new
-!pwd
-```
+![Modern Nuclear Agent dashboard cockpit](docs/images/dashboard-cockpit.png)
 
-Non-interactive runs:
+## What You Can Do With It
 
-```powershell
-target\debug\nuclear.exe exec "Summarize the current workspace"
-target\debug\nuclear.exe review --uncommitted
-target\debug\nuclear.exe run --task main="Write the backend plan" --task secondary="Write the release notes"
-```
+### Run agent workflows from the surface that fits the task
 
-## Providers
+Use the CLI for fast prompts and reviews, the TUI for terminal-native sessions, and the dashboard for live operator views, system status, integrations, and session control.
 
-Add a named hosted provider:
+### Route work across multiple model providers
 
-```powershell
-target\debug\nuclear.exe provider add --id anthropic --name Anthropic --kind anthropic --model claude-3-7-sonnet --api-key %ANTHROPIC_API_KEY%
-```
+Configure hosted or local providers, map aliases like `main` to the model you actually want, and change routing without rebuilding the rest of your workflow.
 
-Log in through the guided flow:
+### Use tools without giving up control
 
-```powershell
-target\debug\nuclear.exe login --kind openai-compatible
-target\debug\nuclear.exe login --kind anthropic
-target\debug\nuclear.exe login --kind moonshot
-target\debug\nuclear.exe login --kind openrouter
-target\debug\nuclear.exe login --kind venice
-```
+Tool execution runs through explicit policy and permission gates. Shell, network, filesystem, plugin, and remote-content flows are meant to be inspectable and governable, not magical.
 
-Add a local provider:
+### Keep long-running state local and usable
 
-```powershell
-target\debug\nuclear.exe provider add-local --id ollama-local --name Ollama --kind ollama --main-alias main
-```
+Sessions, memory, missions, logs, plugin state, and daemon config persist locally so you can resume, compact, inspect, branch, and recover real work instead of starting from scratch every time.
 
-List models for a configured provider:
+### Extend the runtime instead of bolting things on
 
-```powershell
-target\debug\nuclear.exe model list --provider anthropic
-target\debug\nuclear.exe model list --provider ollama-local
-```
+Plugins, MCP-style tool surfaces, connectors, provider adapters, and mission workflows all plug into the same runtime model, which keeps extension behavior closer to the core product instead of scattered around wrapper scripts.
 
-## Dashboard
+### Operate it like software, not a toy
 
-Launch the dashboard:
+Nuclear Agent includes daemon health checks, doctor commands, rollback companions for managed installs, support-bundle export, deterministic harness coverage, and packaging/release tooling for repeatable builds.
 
-```powershell
-target\debug\nuclear.exe dashboard
-```
+## How It Works
 
-The dashboard exposes:
+Nuclear Agent centers around a local daemon. The daemon owns runtime state, provider access, policy enforcement, tool execution, sessions, memory, missions, plugin projection, and the dashboard APIs.
 
-- provider and alias management
-- live status and logs
-- session resume and chat
-- plugin and connector management
-- config editing and operator controls
+The `nuclear` CLI, terminal UI, and browser dashboard are just different operator surfaces over that runtime. You can move between them without changing the underlying agent state.
 
-## Operations
+Provider aliases sit between your workflows and the actual model endpoint, so you can keep using `main` while changing the target provider or model behind it. Policies and permission presets sit alongside that flow so risky actions stay explicit.
 
-Key operator commands:
+## Docs Map
 
-```powershell
-target\debug\nuclear.exe doctor
-target\debug\nuclear.exe plugin doctor
-target\debug\nuclear.exe support-bundle
-```
+- [Operations](docs/operations.md): health checks, recovery, rollback, support bundles, and auth repair
+- [Plugins](docs/plugins.md): plugin packaging, trust model, hosted tool protocol, and connector/provider adapters
+- [Reliability](docs/reliability.md): soak flow, fast checks, and stability expectations
+- [Harness](docs/harness.md): deterministic and reference evaluation lanes, fixtures, and release-gate behavior
+- [Release Checklist](docs/release-checklist.md): packaging, signing, release records, and prerelease validation flow
+- [Package README](PACKAGE_README.md): what ships in the managed bundle and how package installs behave
 
-For managed installs, rollback companions are installed with the package and can restore the previous managed binary. See [docs/operations.md](docs/operations.md).
+Nuclear Agent is actively hardened and already useful as a local runtime, but some live integrations still need manual validation in real environments, especially provider auth, connector-specific behavior, signing, and soak certification.
 
-## Verification
+## For Contributors
 
-Fast workspace verification:
+The repo is organized around a few clear subsystems:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-workspace.ps1
-```
+- `crates/agent-daemon`: runtime, control plane, dashboard serving, tools, and operator APIs
+- `crates/agent-cli`: CLI, TUI, onboarding, and terminal UX
+- `crates/agent-providers`: provider adapters, auth helpers, model listing, and provider-facing tool wiring
+- `crates/agent-storage`: persistence, migration, logs, sessions, missions, memory, and install-state metadata
+- `crates/agent-core` and `crates/agent-policy`: shared contracts, request types, policy, trust, and permissions
+- `scripts`, `harness`, and `tests`: verification, packaging, release automation, evaluation fixtures, and end-to-end coverage
 
-GA verification:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-ga.ps1
-```
-
-Release packaging:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\finalize-release.ps1 -Token "<daemon-token>" -Workspace .
-```
-
-Linux equivalents are provided in the matching `.sh` scripts. See [docs/harness.md](docs/harness.md) and [docs/release-checklist.md](docs/release-checklist.md).
+If you are making changes, start with the subsystem that owns the behavior, then use the verification scripts and dashboard E2E coverage to prove you did not break the runtime.
