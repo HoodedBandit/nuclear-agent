@@ -32,7 +32,33 @@ It ships as:
 - `harness/`: deterministic and reference evaluation tasks and fixtures
 - `tests/`: dashboard end-to-end coverage
 
-## Build
+## Install
+
+### Managed Installers
+
+Packaged installs use:
+
+- `install.ps1` on Windows
+- `install.cmd` as a Windows wrapper
+- `install` on Linux
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Linux:
+
+```bash
+./install
+```
+
+Managed upgrades migrate legacy install roots and state into the canonical Nuclear paths. New installs write only the canonical `nuclear` layout.
+
+### Install From Source
+
+Build the workspace:
 
 ```powershell
 cargo build --workspace
@@ -43,14 +69,6 @@ Install the CLI locally from source:
 ```powershell
 cargo install --path crates/agent-cli --force
 ```
-
-Packaged installs use:
-
-- `install.ps1` on Windows
-- `install.cmd` as a Windows wrapper
-- `install` on Linux
-
-Managed upgrades migrate legacy install roots and state into the canonical Nuclear paths. New installs write only the canonical `nuclear` layout.
 
 ## Quick Start
 
