@@ -99,7 +99,8 @@ fn is_shell_tool(tool_name: &str) -> bool {
 pub fn is_network_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "fetch_url"
+        "web_search"
+            | "fetch_url"
             | "http_request"
             | "brave_web_search"
             | "brave_news_search"
@@ -227,6 +228,15 @@ mod tests {
 
         assert!(allow_network(&policy, &autonomy));
         assert!(allow_self_edit(&policy, &autonomy));
+    }
+
+    #[test]
+    fn provider_builtin_web_search_is_treated_as_network_tool() {
+        assert!(is_network_tool("web_search"));
+        assert!(!tool_allowed_by_preset(
+            "web_search",
+            PermissionPreset::AutoEdit
+        ));
     }
 
     #[test]

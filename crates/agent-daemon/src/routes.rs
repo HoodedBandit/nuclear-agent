@@ -9,7 +9,15 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use futures::stream;
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use agent_core::{
     BatchTaskRequest, BatchTaskResponse, DashboardLaunchResponse, RunTaskRequest, RunTaskResponse,
@@ -20,7 +28,10 @@ use crate::{
     add_mission, approve_connector_approval, approve_memory, autonomy_status, autopilot_status,
     call_home_assistant_service_route, cancel_mission, clear_provider_credentials, compact_session,
     control_socket::control_socket_route,
-    dashboard::{add_dashboard_asset_routes, dashboard_index, dashboard_root},
+    dashboard::{
+        add_dashboard_asset_routes, dashboard_classic_index, dashboard_classic_root,
+        dashboard_index, dashboard_modern_index, dashboard_modern_root, dashboard_root,
+    },
     dashboard_bootstrap, delegation_status, delete_alias, delete_app_connector,
     delete_brave_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_mcp_server, delete_plugin,
@@ -36,14 +47,15 @@ use crate::{
     list_discord_connectors, list_enabled_skills, list_events, list_gmail_connectors,
     list_home_assistant_connectors, list_inbox_connectors, list_logs, list_mcp_servers,
     list_memories, list_memory_review_queue, list_mission_checkpoints, list_missions,
-    list_plugin_doctor_reports, list_plugins, list_profile_memories, list_provider_models,
-    list_providers, list_sessions, list_signal_connectors, list_skill_drafts,
-    list_slack_connectors, list_telegram_connectors, list_webhook_connectors, pause_autonomy,
-    pause_evolve_mode, pause_mission, poll_discord_connector_route, poll_gmail_connector_route,
-    poll_home_assistant_connector_route, poll_inbox_connector_route, poll_signal_connector_route,
-    poll_slack_connector_route, poll_telegram_connector_route, provider_browser_auth_callback,
-    provider_browser_auth_complete, publish_skill_draft, rebuild_memory, receive_webhook_event,
-    reject_connector_approval, reject_memory, reject_skill_draft, rename_session, reset_onboarding,
+    list_plugin_doctor_reports, list_plugins, list_profile_memories,
+    list_provider_model_descriptors, list_provider_models, list_providers, list_sessions,
+    list_signal_connectors, list_skill_drafts, list_slack_connectors, list_telegram_connectors,
+    list_webhook_connectors, pause_autonomy, pause_evolve_mode, pause_mission,
+    poll_discord_connector_route, poll_gmail_connector_route, poll_home_assistant_connector_route,
+    poll_inbox_connector_route, poll_signal_connector_route, poll_slack_connector_route,
+    poll_telegram_connector_route, provider_browser_auth_callback, provider_browser_auth_complete,
+    publish_skill_draft, rebuild_memory, receive_webhook_event, reject_connector_approval,
+    reject_memory, reject_skill_draft, rename_session, reset_onboarding,
     resolve_alias_and_provider, resume_autonomy, resume_evolve_mode, resume_mission, search_memory,
     send_discord_message_route, send_gmail_message_route, send_signal_message_route,
     send_slack_message_route, send_telegram_message_route, shutdown, start_evolve_mode,
@@ -96,6 +108,10 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route(
             "/v1/providers/{provider_id}/models",
             get(list_provider_models),
+        )
+        .route(
+            "/v1/providers/{provider_id}/model-descriptors",
+            get(list_provider_model_descriptors),
         )
         .route("/v1/aliases", get(list_aliases).post(upsert_alias))
         .route("/v1/main-alias", put(update_main_alias))
@@ -343,6 +359,12 @@ pub(crate) fn build_public_routes(state: AppState) -> Router {
             .route("/", get(dashboard_root))
             .route("/ui", get(dashboard_index))
             .route("/dashboard", get(dashboard_index))
+            .route("/ui-classic", get(dashboard_classic_index))
+            .route("/dashboard-classic", get(dashboard_classic_index))
+            .route("/dashboard-classic-root", get(dashboard_classic_root))
+            .route("/ui-modern", get(dashboard_modern_index))
+            .route("/dashboard-modern", get(dashboard_modern_index))
+            .route("/dashboard-modern-root", get(dashboard_modern_root))
             .route(
                 "/auth/dashboard/session",
                 post(create_dashboard_session).delete(clear_dashboard_session),
@@ -566,6 +588,7 @@ async fn run_task(
             permission_preset: payload.permission_preset,
             task_mode: payload.task_mode,
             output_schema_json: payload.output_schema_json,
+            remote_content_policy_override: payload.remote_content_policy_override,
             persist: !payload.ephemeral,
             background: false,
             delegation_depth: 0,
@@ -587,16 +610,7 @@ async fn run_task_stream(
     let provider = provider.clone();
 
     tokio::spawn(async move {
-        let mut emit = |event: RunTaskStreamEvent| {
-            let tx = tx.clone();
-            async move {
-                if let Ok(json) = serde_json::to_string(&event) {
-                    tx.send(Bytes::from(format!("{json}\n"))).await.is_ok()
-                } else {
-                    true
-                }
-            }
-        };
+        let mut emit = best_effort_stream_emitter(tx);
         if let Err(error) = execute_task_request_with_events(
             &state,
             &alias,
@@ -611,6 +625,7 @@ async fn run_task_stream(
                 permission_preset: payload.permission_preset,
                 task_mode: payload.task_mode,
                 output_schema_json: payload.output_schema_json,
+                remote_content_policy_override: payload.remote_content_policy_override,
                 persist: !payload.ephemeral,
                 background: false,
                 delegation_depth: 0,
@@ -641,6 +656,30 @@ async fn run_task_stream(
         ],
         Body::from_stream(response_stream),
     ))
+}
+
+fn best_effort_stream_emitter(
+    tx: tokio::sync::mpsc::Sender<Bytes>,
+) -> impl FnMut(RunTaskStreamEvent) -> Pin<Box<dyn Future<Output = bool> + Send>> {
+    let connected = Arc::new(AtomicBool::new(true));
+    move |event| {
+        let tx = tx.clone();
+        let connected = Arc::clone(&connected);
+        Box::pin(async move {
+            if !connected.load(Ordering::Relaxed) {
+                return true;
+            }
+
+            let delivered = match serde_json::to_string(&event) {
+                Ok(json) => tx.send(Bytes::from(format!("{json}\n"))).await.is_ok(),
+                Err(_) => true,
+            };
+            if !delivered {
+                connected.store(false, Ordering::Relaxed);
+            }
+            true
+        })
+    }
 }
 
 async fn run_batch(
@@ -676,7 +715,6 @@ mod tests {
     use agent_core::AppConfig;
     use agent_storage::Storage;
     use axum::response::IntoResponse;
-    use std::sync::{atomic::AtomicBool, Arc};
     use tokio::sync::{mpsc, Notify, RwLock};
     use uuid::Uuid;
 
@@ -792,5 +830,25 @@ mod tests {
         assert!(!active.onboarding_complete);
         assert_eq!(response.removed_credentials, 0);
         assert!(response.credential_warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn best_effort_stream_emitter_ignores_disconnects() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+        drop(rx);
+
+        let mut emit = best_effort_stream_emitter(tx);
+        assert!(
+            emit(RunTaskStreamEvent::Error {
+                message: "first".to_string(),
+            })
+            .await
+        );
+        assert!(
+            emit(RunTaskStreamEvent::Error {
+                message: "second".to_string(),
+            })
+            .await
+        );
     }
 }

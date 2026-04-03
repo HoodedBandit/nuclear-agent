@@ -103,10 +103,6 @@ function Choose-DefaultInstallDir {
         }
     }
 
-    if (Should-UseLegacyProgramRoot) {
-        return Get-LegacyInstallDir
-    }
-
     return Get-CanonicalInstallDir
 }
 
@@ -122,11 +118,6 @@ function Get-ManagedDependencyRoot {
     $canonicalDependencyRoot = Join-Path (Get-CanonicalProgramRoot) "deps"
     if (Test-Path $canonicalDependencyRoot) {
         return $canonicalDependencyRoot
-    }
-
-    $legacyDependencyRoot = Join-Path (Get-LegacyProgramRoot) "deps"
-    if ((Should-UseLegacyProgramRoot) -or (Test-Path $legacyDependencyRoot)) {
-        return $legacyDependencyRoot
     }
 
     return $canonicalDependencyRoot
@@ -170,9 +161,7 @@ function Resolve-BundledBinary {
     $cargoTargetRoot = Get-CargoTargetRoot -Root $Root
     $candidates = @(
         (Join-Path $Root "bin\windows-x64\nuclear.exe"),
-        (Join-Path $Root "bin\windows-x64\autism.exe"),
-        (Join-Path $cargoTargetRoot "release\nuclear.exe"),
-        (Join-Path $cargoTargetRoot "release\autism.exe")
+        (Join-Path $cargoTargetRoot "release\nuclear.exe")
     )
 
     foreach ($candidate in $candidates) {
@@ -833,11 +822,15 @@ function Get-AppConfigPath {
         return $null
     }
 
-    $configPath = Join-Path $env:APPDATA "NuclearAI\Agent Builder\config\config.json"
-    if (Test-Path $configPath) {
-        return $configPath
+    $candidates = @(
+        (Join-Path $env:APPDATA "NuclearAI\Nuclear\config\config.json"),
+        (Join-Path $env:APPDATA "NuclearAI\Agent Builder\config\config.json")
+    )
+    foreach ($configPath in $candidates) {
+        if (Test-Path $configPath) {
+            return $configPath
+        }
     }
-
     return $null
 }
 
@@ -986,8 +979,7 @@ function Stop-ConfiguredDaemon {
 function Build-BinaryFromSource {
     param(
         [string]$SourceRoot,
-        [string]$TargetBinary,
-        [string]$LegacyBinary
+        [string]$TargetBinary
     )
 
     $cargoPath = Ensure-Cargo
@@ -995,7 +987,7 @@ function Build-BinaryFromSource {
     Write-Step "Building Nuclear Agent from source"
     Push-Location $SourceRoot
     try {
-        & $cargoPath build --release --bin nuclear --bin autism
+        & $cargoPath build --release --bin nuclear
         if ($LASTEXITCODE -ne 0) {
             throw "cargo build failed"
         }
@@ -1009,13 +1001,7 @@ function Build-BinaryFromSource {
         throw "Cargo reported success but $builtBinary was not found."
     }
 
-    $builtLegacyBinary = Join-Path $cargoTargetRoot "release\autism.exe"
-    if (-not (Test-Path $builtLegacyBinary)) {
-        throw "Cargo reported success but $builtLegacyBinary was not found."
-    }
-
     Copy-FileAtomic -Source $builtBinary -Destination $TargetBinary
-    Copy-FileAtomic -Source $builtLegacyBinary -Destination $LegacyBinary
 }
 
 function Ensure-InstallDir {
@@ -1024,6 +1010,180 @@ function Ensure-InstallDir {
     if (-not (Test-Path $TargetDir)) {
         New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
     }
+}
+
+function Test-FileContentMatch {
+    param(
+        [string]$Source,
+        [string]$Destination
+    )
+
+    if (-not (Test-Path $Source) -or -not (Test-Path $Destination)) {
+        return $false
+    }
+
+    $sourceItem = Get-Item -LiteralPath $Source
+    $destinationItem = Get-Item -LiteralPath $Destination
+    if ($sourceItem.PSIsContainer -or $destinationItem.PSIsContainer) {
+        return $false
+    }
+    if ($sourceItem.Length -ne $destinationItem.Length) {
+        return $false
+    }
+
+    $sourceHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
+    $destinationHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+    return $sourceHash -eq $destinationHash
+}
+
+function Merge-TreeWithConflictCheck {
+    param(
+        [string]$Source,
+        [string]$Destination
+    )
+
+    if (-not (Test-Path $Source)) {
+        return
+    }
+
+    $sourceItem = Get-Item -LiteralPath $Source
+    if ($sourceItem.PSIsContainer) {
+        if (Test-Path $Destination) {
+            $destinationItem = Get-Item -LiteralPath $Destination
+            if (-not $destinationItem.PSIsContainer) {
+                throw "Managed install migration conflict: $Destination is a file but $Source is a directory."
+            }
+        }
+        if (-not (Test-Path $Destination)) {
+            New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+        }
+        Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+            Merge-TreeWithConflictCheck -Source $_.FullName -Destination (Join-Path $Destination $_.Name)
+        }
+        return
+    }
+
+    if (Test-Path $Destination) {
+        $destinationItem = Get-Item -LiteralPath $Destination
+        if ($destinationItem.PSIsContainer) {
+            throw "Managed install migration conflict: $Destination is a directory but $Source is a file."
+        }
+        if (-not (Test-FileContentMatch -Source $Source -Destination $Destination)) {
+            throw "Managed install migration conflict: existing file $Destination differs from legacy file $Source."
+        }
+        return
+    }
+
+    if (-not (Test-Path $Destination)) {
+        $parent = Split-Path -Parent $Destination
+        if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path $parent)) {
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        }
+        Copy-Item -Force -LiteralPath $Source -Destination $Destination
+    }
+}
+
+function Migrate-LegacyManagedInstall {
+    param([string]$InstallDir)
+
+    $canonicalInstallDir = [System.IO.Path]::GetFullPath((Get-CanonicalInstallDir))
+    $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+    if ($resolvedInstallDir -ine $canonicalInstallDir) {
+        return $null
+    }
+
+    $legacyRoot = Get-LegacyProgramRoot
+    if (-not (Test-Path $legacyRoot)) {
+        return $null
+    }
+
+    $canonicalRoot = Get-CanonicalProgramRoot
+    if (-not (Test-Path $canonicalRoot)) {
+        $canonicalParent = Split-Path -Parent $canonicalRoot
+        if (-not (Test-Path $canonicalParent)) {
+            New-Item -ItemType Directory -Force -Path $canonicalParent | Out-Null
+        }
+        Write-Step "Migrating managed legacy install root to $canonicalRoot"
+        Move-Item -LiteralPath $legacyRoot -Destination $canonicalRoot
+        return $legacyRoot
+    }
+
+    Write-Step "Merging managed legacy install root into $canonicalRoot"
+    Merge-TreeWithConflictCheck -Source $legacyRoot -Destination $canonicalRoot
+    Remove-Item -LiteralPath $legacyRoot -Recurse -Force
+    return $legacyRoot
+}
+
+function Get-RollbackBinaryPath {
+    param([string]$InstallDir)
+
+    return (Join-Path $InstallDir ".rollback\nuclear.exe")
+}
+
+function Backup-InstalledBinary {
+    param(
+        [string]$SourceBinary,
+        [string]$InstallDir
+    )
+
+    if (-not (Test-Path $SourceBinary)) {
+        return $null
+    }
+
+    $rollbackBinary = Get-RollbackBinaryPath -InstallDir $InstallDir
+    $rollbackDir = Split-Path -Parent $rollbackBinary
+    if (-not (Test-Path $rollbackDir)) {
+        New-Item -ItemType Directory -Force -Path $rollbackDir | Out-Null
+    }
+    Copy-Item -Force -LiteralPath $SourceBinary -Destination $rollbackBinary
+    return $rollbackBinary
+}
+
+function Write-InstallState {
+    param(
+        [string]$InstallDir,
+        [string]$Version,
+        [string]$InstallSource,
+        [string]$RollbackBinary,
+        [string]$PreviousBinarySource,
+        [string]$MigratedFromInstallDir
+    )
+
+    $payload = @{
+        schema_version            = 1
+        display_name              = "Nuclear Agent"
+        command_name              = "nuclear"
+        install_dir               = $InstallDir
+        installed_at              = (Get-Date).ToUniversalTime().ToString("o")
+        version                   = $Version
+        install_source            = $InstallSource
+        rollback_binary           = $RollbackBinary
+        previous_binary_source    = $PreviousBinarySource
+        migrated_from_install_dir = $MigratedFromInstallDir
+    }
+    $path = Join-Path $InstallDir "install-state.json"
+    $payload | ConvertTo-Json -Depth 4 | Set-Content -Path $path -Encoding UTF8
+}
+
+function Install-RollbackCompanion {
+    param(
+        [string]$SourceRoot,
+        [string]$InstallDir
+    )
+
+    $rollbackScript = Join-Path $SourceRoot "scripts\rollback-install.ps1"
+    if (-not (Test-Path $rollbackScript)) {
+        throw "Rollback script was not found at $rollbackScript"
+    }
+
+    $installedScript = Join-Path $InstallDir "nuclear-rollback.ps1"
+    Copy-Item -Force -LiteralPath $rollbackScript -Destination $installedScript
+
+    $cmdWrapper = Join-Path $InstallDir "nuclear-rollback.cmd"
+    Set-Content -Path $cmdWrapper -Encoding Ascii -Value @(
+        "@echo off"
+        "powershell -ExecutionPolicy Bypass -File ""%~dp0nuclear-rollback.ps1"" %*"
+    )
 }
 
 function Write-InstallerErrorLog {
@@ -1064,7 +1224,8 @@ try {
         $InstallDir = if (-not [string]::IsNullOrWhiteSpace($env:NUCLEAR_INSTALL_DIR)) {
             $env:NUCLEAR_INSTALL_DIR
         } elseif (-not [string]::IsNullOrWhiteSpace($env:AUTISM_INSTALL_DIR)) {
-            $env:AUTISM_INSTALL_DIR
+            Write-Step "AUTISM_INSTALL_DIR is deprecated and ignored; migrating to the canonical install root"
+            $null
         } else {
             $null
         }
@@ -1074,44 +1235,66 @@ try {
         $InstallDir = Choose-DefaultInstallDir
     }
 
+    $legacyInstallDir = [System.IO.Path]::GetFullPath((Get-LegacyInstallDir))
+    $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+    if ($resolvedInstallDir -ieq $legacyInstallDir) {
+        Write-Step "Legacy install root requested; migrating to the canonical install root instead"
+        $InstallDir = Get-CanonicalInstallDir
+    }
+
     $binaryPath = Join-Path $InstallDir "nuclear.exe"
-    $legacyBinaryPath = Join-Path $InstallDir "autism.exe"
     $bundledBinary = Resolve-BundledBinary -Root $scriptRoot
 
     Write-Step "Installing Nuclear Agent CLI"
     Write-Step "Install directory: $InstallDir"
+    $migratedFromInstallDir = Migrate-LegacyManagedInstall -InstallDir $InstallDir
     Ensure-InstallDir -TargetDir $InstallDir
+    $previousBinarySource = @(
+        $binaryPath,
+        (Join-Path $InstallDir "autism.exe"),
+        (Join-Path (Get-LegacyInstallDir) "nuclear.exe"),
+        (Join-Path (Get-LegacyInstallDir) "autism.exe")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $rollbackBinary = if ($previousBinarySource) {
+        Backup-InstalledBinary -SourceBinary $previousBinarySource -InstallDir $InstallDir
+    } else {
+        $null
+    }
     Stop-InstalledAgentProcesses -BinaryPath $binaryPath
-    Stop-InstalledAgentProcesses -BinaryPath $legacyBinaryPath
+    Stop-InstalledAgentProcesses -BinaryPath (Join-Path (Get-LegacyInstallDir) "autism.exe")
 
     $usedBundledBinary = $false
     if ($bundledBinary -and -not $PreferSourceBuild) {
         Write-Step "Using bundled Windows binary"
         Copy-FileAtomic -Source $bundledBinary -Destination $binaryPath
-        Copy-FileAtomic -Source $bundledBinary -Destination $legacyBinaryPath
         Unblock-PathTree -Path $binaryPath
-        Unblock-PathTree -Path $legacyBinaryPath
         $usedBundledBinary = $true
     } else {
-        Build-BinaryFromSource -SourceRoot $sourceRoot -TargetBinary $binaryPath -LegacyBinary $legacyBinaryPath
+        Build-BinaryFromSource -SourceRoot $sourceRoot -TargetBinary $binaryPath
         Unblock-PathTree -Path $binaryPath
-        Unblock-PathTree -Path $legacyBinaryPath
     }
 
     Remove-Item -Path (Join-Path $InstallDir "nuclear.cmd") -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $InstallDir "autism.exe") -Force -ErrorAction SilentlyContinue
     Remove-Item -Path (Join-Path $InstallDir "autism.cmd") -Force -ErrorAction SilentlyContinue
     Stop-ConfiguredDaemon -BinaryPath $binaryPath
 
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $updatedFuturePath = $false
-    if (-not $NoPathPersist -and -not (Path-Contains -PathValue $userPath -Entry $InstallDir)) {
-        $newUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) {
-            $InstallDir
-        } else {
-            "$InstallDir;$userPath"
+    if (-not $NoPathPersist) {
+        $segments = @()
+        if (-not [string]::IsNullOrWhiteSpace($userPath)) {
+            $segments = $userPath.Split(";", [System.StringSplitOptions]::RemoveEmptyEntries) |
+                Where-Object { $_.TrimEnd("\") -ine (Get-LegacyInstallDir).TrimEnd("\") }
         }
-        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-        $updatedFuturePath = $true
+        if (-not ($segments | Where-Object { $_.TrimEnd("\") -ieq $InstallDir.TrimEnd("\") })) {
+            $segments = @($InstallDir) + $segments
+        }
+        $newUserPath = ($segments -join ";")
+        if ($newUserPath -ne $userPath) {
+            [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+            $updatedFuturePath = $true
+        }
     }
 
     if (-not (Path-Contains -PathValue $env:Path -Entry $InstallDir)) {
@@ -1127,9 +1310,8 @@ try {
     } catch {
         if ($usedBundledBinary -and (Test-ApplicationControlBlock -ErrorRecord $_)) {
             Write-Step "Bundled binary appears blocked by Windows policy; falling back to a local source build"
-            Build-BinaryFromSource -SourceRoot $sourceRoot -TargetBinary $binaryPath -LegacyBinary $legacyBinaryPath
+            Build-BinaryFromSource -SourceRoot $sourceRoot -TargetBinary $binaryPath
             Unblock-PathTree -Path $binaryPath
-            Unblock-PathTree -Path $legacyBinaryPath
             $version = Get-VersionOutput -BinaryPath $binaryPath
         } else {
             throw
@@ -1145,9 +1327,19 @@ try {
     }
 
     Write-Step "Installed version: $version"
+    Write-InstallState `
+        -InstallDir $InstallDir `
+        -Version $version `
+        -InstallSource $(if ($usedBundledBinary) { "bundled" } else { "source_build" }) `
+        -RollbackBinary $rollbackBinary `
+        -PreviousBinarySource $previousBinarySource `
+        -MigratedFromInstallDir $migratedFromInstallDir
+    Install-RollbackCompanion -SourceRoot $sourceRoot -InstallDir $InstallDir
     Ensure-PlaywrightChromium -SourceRoot $sourceRoot -BundleRoot $scriptRoot
     Write-Step "Run: nuclear"
-    Write-Step "Legacy command compatibility: autism"
+    if ($rollbackBinary) {
+        Write-Step "Rollback script: $(Join-Path $InstallDir 'nuclear-rollback.ps1')"
+    }
     Write-Step "If an already-open terminal does not recognize the command, close it and open a new terminal window."
 } catch {
     $root = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $PSCommandPath }

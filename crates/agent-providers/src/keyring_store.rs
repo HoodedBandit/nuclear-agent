@@ -13,16 +13,16 @@ use std::{
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use super::{
-    AuthMode, OAuthToken, ProviderConfig, ProviderKind, KEYCHAIN_SERVICE,
-    OPENAI_BROWSER_AUTH_ISSUER,
-};
-use agent_core::APP_NAME;
+use agent_core::{AuthMode, OAuthToken, ProviderConfig, ProviderKind, APP_NAME, KEYCHAIN_SERVICE};
+
+use super::OPENAI_BROWSER_AUTH_ISSUER;
 
 pub(crate) const KEYCHAIN_SECRET_SAFE_UTF16_UNITS: usize = 1024;
 const SEGMENTED_SECRET_STORAGE_FORMAT: &str = "segmented_secret_v1";
 const SEGMENTED_OAUTH_TOKEN_STORAGE_FORMAT: &str = "segmented_oauth_token_v1";
 const FILE_SECRET_STORE_DIR_NAME: &str = "secrets";
+const LEGACY_APP_NAME: &str = "Agent Builder";
+const LEGACY_KEYCHAIN_SERVICE: &str = "agent-builder";
 
 fn oauth_refresh_locks() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> {
     static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -30,7 +30,10 @@ fn oauth_refresh_locks() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<
 }
 
 pub(crate) fn oauth_refresh_lock_for(account: &str) -> Arc<Mutex<()>> {
-    let mut map = oauth_refresh_locks().lock().expect("lock poisoned");
+    let mut map = oauth_refresh_locks().lock().unwrap_or_else(|poisoned| {
+        warn!("oauth refresh lock map was poisoned; recovering inner state");
+        poisoned.into_inner()
+    });
     map.entry(account.to_owned())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -390,6 +393,14 @@ fn get_secret_raw(account: &str) -> Result<String> {
             ),
         }
     }
+    if let Ok(secret) = get_keyring_secret_raw(account) {
+        return Ok(secret);
+    }
+    if let Ok(secret) = read_legacy_secret_raw(account) {
+        let _ = set_secret_raw(account, &secret);
+        let _ = delete_legacy_secret_raw_entry(account);
+        return Ok(secret);
+    }
     get_keyring_secret_raw(account)
 }
 
@@ -641,17 +652,20 @@ fn get_keyring_secret_raw(account: &str) -> Result<String> {
 
 fn delete_secret_raw_entry(account: &str) -> Result<()> {
     let fallback_removed = delete_fallback_secret(account)?;
+    let legacy_removed = delete_legacy_secret_raw_entry(account).is_ok();
     match Entry::new(KEYCHAIN_SERVICE, account) {
         Ok(entry) => match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(error)
-                if fallback_removed || is_missing_keyring_delete_error(&error.to_string()) =>
+                if fallback_removed
+                    || legacy_removed
+                    || is_missing_keyring_delete_error(&error.to_string()) =>
             {
                 Ok(())
             }
             Err(error) => Err(anyhow!(error).context("failed to delete secret from keychain")),
         },
-        Err(_error) if fallback_removed => Ok(()),
+        Err(_error) if fallback_removed || legacy_removed => Ok(()),
         Err(error) => Err(anyhow!(error).context("failed to open secret entry")),
     }
 }
@@ -707,6 +721,14 @@ fn fallback_secret_root() -> Result<PathBuf> {
     fallback_secret_root_from_env()
 }
 
+fn legacy_fallback_secret_root() -> Result<PathBuf> {
+    if let Some(dirs) = ProjectDirs::from("com", "NuclearAI", LEGACY_APP_NAME) {
+        return Ok(dirs.data_local_dir().join(FILE_SECRET_STORE_DIR_NAME));
+    }
+
+    legacy_fallback_secret_root_from_env()
+}
+
 #[cfg(windows)]
 fn fallback_secret_root_from_env() -> Result<PathBuf> {
     let user_profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
@@ -732,6 +754,31 @@ fn fallback_secret_root_from_env() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("failed to resolve fallback secret storage directory"))
 }
 
+#[cfg(windows)]
+fn legacy_fallback_secret_root_from_env() -> Result<PathBuf> {
+    let user_profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
+    let app_data = std::env::var_os("APPDATA").map(PathBuf::from).or_else(|| {
+        user_profile
+            .as_ref()
+            .map(|path| path.join("AppData").join("Roaming"))
+    });
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| {
+            user_profile
+                .as_ref()
+                .map(|path| path.join("AppData").join("Local"))
+        })
+        .or(app_data.clone());
+    local_app_data
+        .map(|root| {
+            root.join("NuclearAI")
+                .join(LEGACY_APP_NAME)
+                .join(FILE_SECRET_STORE_DIR_NAME)
+        })
+        .ok_or_else(|| anyhow!("failed to resolve legacy fallback secret storage directory"))
+}
+
 #[cfg(not(windows))]
 fn fallback_secret_root_from_env() -> Result<PathBuf> {
     if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
@@ -750,6 +797,94 @@ fn fallback_secret_root_from_env() -> Result<PathBuf> {
                 .join(FILE_SECRET_STORE_DIR_NAME)
         })
         .ok_or_else(|| anyhow!("failed to resolve fallback secret storage directory"))
+}
+
+#[cfg(not(windows))]
+fn legacy_fallback_secret_root_from_env() -> Result<PathBuf> {
+    if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        return Ok(xdg_data_home
+            .join("NuclearAI")
+            .join(LEGACY_APP_NAME)
+            .join(FILE_SECRET_STORE_DIR_NAME));
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| {
+            home.join(".local")
+                .join("share")
+                .join("NuclearAI")
+                .join(LEGACY_APP_NAME)
+                .join(FILE_SECRET_STORE_DIR_NAME)
+        })
+        .ok_or_else(|| anyhow!("failed to resolve legacy fallback secret storage directory"))
+}
+
+fn legacy_fallback_secret_path(account: &str) -> Result<PathBuf> {
+    Ok(legacy_fallback_secret_root()?.join(format!(
+        "{}.secret",
+        URL_SAFE_NO_PAD.encode(account.as_bytes())
+    )))
+}
+
+fn read_legacy_fallback_secret(account: &str) -> Result<String> {
+    let path = legacy_fallback_secret_path(account)?;
+    fs::read_to_string(&path).with_context(|| {
+        format!(
+            "failed to read legacy fallback secret file {}",
+            path.display()
+        )
+    })
+}
+
+fn delete_legacy_fallback_secret(account: &str) -> Result<bool> {
+    let path = legacy_fallback_secret_path(account)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to delete legacy fallback secret file {}",
+                path.display()
+            )
+        }),
+    }
+}
+
+fn get_keyring_secret_raw_from_service(service: &str, account: &str) -> Result<String> {
+    let entry = Entry::new(service, account)?;
+    entry
+        .get_password()
+        .context("failed to read secret from keychain")
+}
+
+fn delete_keyring_secret_raw_from_service(service: &str, account: &str) -> Result<()> {
+    let entry = Entry::new(service, account)?;
+    entry
+        .delete_credential()
+        .context("failed to delete secret from keychain")
+}
+
+fn read_legacy_secret_raw(account: &str) -> Result<String> {
+    read_legacy_fallback_secret(account).or_else(|fallback_error| {
+        get_keyring_secret_raw_from_service(LEGACY_KEYCHAIN_SERVICE, account).map_err(
+            |keyring_error| {
+                anyhow!(
+                    "failed to read legacy secret from fallback store ({fallback_error:#}) and keychain ({keyring_error:#})"
+                )
+            },
+        )
+    })
+}
+
+fn delete_legacy_secret_raw_entry(account: &str) -> Result<()> {
+    let fallback_removed = delete_legacy_fallback_secret(account)?;
+    match delete_keyring_secret_raw_from_service(LEGACY_KEYCHAIN_SERVICE, account) {
+        Ok(()) => Ok(()),
+        Err(error) if fallback_removed || is_missing_keyring_delete_error(&error.to_string()) => {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn is_missing_keyring_delete_error(error: &str) -> bool {

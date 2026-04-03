@@ -16,5 +16,17 @@
 *.db-shm
 *.db-wal
 /node_modules
+/ui/dashboard/node_modules
+/ui/dashboard/.vite
+/ui/dashboard/.vitest
+/ui/dashboard/coverage
+/ui/dashboard/dist
+/ui/dashboard/*.tsbuildinfo
 /test-results
 /playwright-report
+/Microsoft
+/scripts/__pycache__/
+/scripts/harness/__pycache__/
+/.eslintcache
+__pycache__/
+*.pyc

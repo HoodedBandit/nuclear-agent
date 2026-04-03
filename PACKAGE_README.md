@@ -1,44 +1,45 @@
 # Nuclear Agent Package
 
-This package is the Windows release bundle for Nuclear Agent.
+This bundle is a managed release package for Nuclear Agent.
+
+## Included Files
+
+- `bin/`: packaged binaries for the target platform
+- `source/`: source snapshot for local rebuild fallback
+- `install.ps1`, `install.cmd`, `install`: platform installers
+- release metadata generated during packaging
 
 ## Install
 
-Run one of the packaged installers from this directory:
+Windows:
 
 - `install.cmd`
 - `install.ps1`
 
-The installer places `nuclear` on the user PATH for normal use and also installs
-the legacy `autism` launcher for compatibility with existing environments.
+Linux:
 
-## What Is Included
+- `install`
 
-- `bin/windows-x64/`: bundled Windows release binaries
-- `source/`: source snapshot used for fallback local builds
-- `install.ps1` and `install.cmd`: Windows installers
-- `install`: Linux installer copied for source-tree parity
+The installer places `nuclear` on the user PATH and writes managed install state for rollback and recovery.
 
-## Notes
+## Upgrade Behavior
 
-- Fresh installs default to the canonical `nuclear` install root.
-- Existing legacy `autism` installs are upgraded in place to avoid breaking PATH
-  assumptions or shortcuts.
-- If Windows application control blocks the bundled binary, `install.ps1` falls
-  back to building from `source/` and installs `rustup` automatically when
-  needed.
-- The bundled release binary is the preferred beta path on Windows.
+- fresh installs use the canonical Nuclear paths
+- legacy managed installs are migrated one-way into canonical Nuclear paths
+- new state is written only to the canonical `nuclear` layout
 
-## Verify
+If the packaged binary is blocked by local application control, the installer can fall back to building from the packaged source tree.
 
-From the repo root, the packaged installer path is covered by:
+## Verification
+
+Installer smoke:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-smoke.ps1
 ```
 
-The full beta verification stack is:
+Full release verification:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-phase3.ps1 -Token "<daemon-token>" -Workspace .
+powershell -ExecutionPolicy Bypass -File .\scripts\finalize-release.ps1 -Token "<daemon-token>" -Workspace .
 ```

@@ -10,11 +10,6 @@ default-run = "nuclear"
 name = "nuclear"
 path = "src/main.rs"
 
-[[bin]]
-name = "autism"
-path = "src/legacy_main.rs"
-test = false
-
 [dependencies]
 agent-daemon = { path = "../agent-daemon" }
 agent-core = { path = "../agent-core" }

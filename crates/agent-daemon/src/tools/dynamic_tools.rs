@@ -4,11 +4,10 @@ pub(super) fn dynamic_tool_definition(
     name: &str,
     description: &str,
     input_schema_json: &str,
-) -> Option<ToolDefinition> {
-    let Ok(input_schema) = serde_json::from_str::<Value>(input_schema_json) else {
-        return None;
-    };
-    Some(super::tool(name, description, input_schema))
+) -> Result<ToolDefinition> {
+    let input_schema = serde_json::from_str::<Value>(input_schema_json)
+        .with_context(|| format!("tool '{name}' has invalid input schema JSON"))?;
+    Ok(super::tool(name, description, input_schema))
 }
 
 pub(super) async fn execute_dynamic_tool(
@@ -95,6 +94,15 @@ async fn run_external_tool(
     let mut text = String::new();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        bail!(
+            "external tool '{}' exited unsuccessfully: {}\nstdout:\n{}\nstderr:\n{}",
+            command,
+            output.status,
+            stdout.trim_end(),
+            stderr.trim_end()
+        );
+    }
     if !stdout.trim().is_empty() {
         text.push_str(stdout.trim_end());
     }
@@ -106,8 +114,6 @@ async fn run_external_tool(
     }
     if text.is_empty() {
         text = format!("exit={}", output.status);
-    } else if !output.status.success() {
-        text.push_str(&format!("\nexit={}", output.status));
     }
     Ok(super::truncate(&text, MAX_COMMAND_OUTPUT_BYTES))
 }
@@ -205,6 +211,17 @@ async fn run_hosted_plugin_tool(
         );
     }
 
+    if !output.status.success() {
+        bail!(
+            "hosted plugin tool '{}' from plugin '{}' exited unsuccessfully: {}\nstdout:\n{}\nstderr:\n{}",
+            plugin_tool.tool_name,
+            plugin_tool.plugin_id,
+            output.status,
+            stdout.trim_end(),
+            stderr.trim_end()
+        );
+    }
+
     let mut text = String::new();
     if !stdout.trim().is_empty() {
         text.push_str(stdout.trim_end());
@@ -217,8 +234,6 @@ async fn run_hosted_plugin_tool(
     }
     if text.is_empty() {
         text = format!("exit={}", output.status);
-    } else if !output.status.success() {
-        text.push_str(&format!("\nexit={}", output.status));
     }
     Ok(super::truncate(&text, MAX_COMMAND_OUTPUT_BYTES))
 }
@@ -334,6 +349,12 @@ mod tests {
             background_shell_allowed: true,
             background_network_allowed: true,
             background_self_edit_allowed: true,
+            model_capabilities: agent_core::ModelToolCapabilities::default(),
+            remote_content_policy: RemoteContentPolicy::BlockHighRisk,
+            remote_content_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+                RemoteContentRuntimeState::default(),
+            )),
+            allowed_direct_urls: std::sync::Arc::new(std::collections::HashSet::new()),
         }
     }
 
@@ -423,6 +444,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_tool_reports_non_zero_exit_as_error() {
+        let root = temp_root();
+        let command = if cfg!(target_os = "windows") {
+            "cmd"
+        } else {
+            "sh"
+        };
+        let args = if cfg!(target_os = "windows") {
+            vec!["/C".to_string(), "exit 7".to_string()]
+        } else {
+            vec!["-lc".to_string(), "exit 7".to_string()]
+        };
+
+        let error = run_external_tool(command, &args, None, &json!({"smoke": true}), &root)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("exited unsuccessfully"));
+    }
+
+    #[tokio::test]
+    async fn hosted_plugin_tool_reports_non_zero_exit_as_error() {
+        let root = temp_root();
+        let context = test_context(&root);
+        let command = if cfg!(target_os = "windows") {
+            "cmd"
+        } else {
+            "sh"
+        };
+        let args = if cfg!(target_os = "windows") {
+            vec!["/C".to_string(), "exit 9".to_string()]
+        } else {
+            vec!["-lc".to_string(), "exit 9".to_string()]
+        };
+        let plugin_tool = hosted_plugin_tool(
+            &root,
+            command.to_string(),
+            args,
+            PluginPermissions::default(),
+        );
+
+        let error = run_hosted_plugin_tool(&context, &plugin_tool, &json!({}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("exited unsuccessfully"));
+    }
+
+    #[tokio::test]
     async fn hosted_plugin_tool_parses_protocol_response() {
         let root = temp_root();
         let context = test_context(&root);
@@ -434,5 +504,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(output, "plugin-ok");
+    }
+
+    #[test]
+    fn dynamic_tool_definition_rejects_invalid_schema() {
+        let error = dynamic_tool_definition("broken_tool", "Broken", "{not json").unwrap_err();
+        assert!(error.to_string().contains("invalid input schema JSON"));
     }
 }

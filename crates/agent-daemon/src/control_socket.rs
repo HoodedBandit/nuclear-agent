@@ -1,4 +1,11 @@
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use agent_core::{
     ControlClientMessage, ControlConnected, ControlError, ControlEvent, ControlLogBatch,
@@ -590,24 +597,7 @@ async fn execute_run_task_request(
 ) -> Result<agent_core::RunTaskResponse, ApiError> {
     let (alias, provider) = resolve_alias_and_provider(state, request.alias.as_deref()).await?;
     let request_id = request_id.to_string();
-    let outbound = outbound.clone();
-
-    let mut emit = move |event: RunTaskStreamEvent| {
-        let outbound = outbound.clone();
-        let request_id = request_id.clone();
-        async move {
-            send_protocol_message(
-                &outbound,
-                ControlServerMessage::Event {
-                    event: Box::new(ControlEvent::TaskStream(Box::new(ControlTaskStreamEvent {
-                        request_id,
-                        event,
-                    }))),
-                },
-            )
-            .await
-        }
-    };
+    let mut emit = best_effort_control_event_emitter(outbound.clone(), request_id.clone());
 
     execute_task_request_with_events(
         state,
@@ -623,6 +613,7 @@ async fn execute_run_task_request(
             permission_preset: request.permission_preset,
             task_mode: request.task_mode,
             output_schema_json: request.output_schema_json,
+            remote_content_policy_override: request.remote_content_policy_override,
             persist: !request.ephemeral,
             background: false,
             delegation_depth: 0,
@@ -631,6 +622,38 @@ async fn execute_run_task_request(
         &mut emit,
     )
     .await
+}
+
+fn best_effort_control_event_emitter(
+    outbound: mpsc::Sender<ControlServerMessage>,
+    request_id: String,
+) -> impl FnMut(RunTaskStreamEvent) -> Pin<Box<dyn Future<Output = bool> + Send>> {
+    let connected = Arc::new(AtomicBool::new(true));
+    move |event| {
+        let outbound = outbound.clone();
+        let request_id = request_id.clone();
+        let connected = Arc::clone(&connected);
+        Box::pin(async move {
+            if !connected.load(Ordering::Relaxed) {
+                return true;
+            }
+
+            let delivered = send_protocol_message(
+                &outbound,
+                ControlServerMessage::Event {
+                    event: Box::new(ControlEvent::TaskStream(Box::new(ControlTaskStreamEvent {
+                        request_id,
+                        event,
+                    }))),
+                },
+            )
+            .await;
+            if !delivered {
+                connected.store(false, Ordering::Relaxed);
+            }
+            true
+        })
+    }
 }
 
 async fn current_daemon_status(state: &AppState) -> Result<DaemonStatus, ApiError> {
@@ -693,7 +716,6 @@ mod tests {
     use agent_core::{AppConfig, LogEntry};
     use agent_storage::Storage;
     use chrono::Utc;
-    use std::sync::{atomic::AtomicBool, Arc};
     use tokio::sync::RwLock;
     use uuid::Uuid;
 
@@ -804,6 +826,26 @@ mod tests {
         assert_eq!(
             active.after.as_ref().map(format_event_cursor).as_deref(),
             Some(expected_cursor.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn best_effort_control_event_emitter_ignores_disconnects() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+
+        let mut emit = best_effort_control_event_emitter(tx, "request-1".to_string());
+        assert!(
+            emit(RunTaskStreamEvent::Error {
+                message: "first".to_string(),
+            })
+            .await
+        );
+        assert!(
+            emit(RunTaskStreamEvent::Error {
+                message: "second".to_string(),
+            })
+            .await
         );
     }
 }

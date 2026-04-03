@@ -1,3 +1,24 @@
+import {
+  apiPost,
+  apiPut,
+  buttonHtml,
+  elements,
+  escapeHtml,
+  fmt,
+  fmtBoolean,
+  hasDashboardAuth,
+  mergeLastData,
+  refreshDashboard,
+  refreshLoadedPanels,
+  renderBootstrapData,
+  renderEvents,
+  renderLogs,
+  renderWhenChanged,
+  scheduleRefresh,
+  setStatus,
+  state,
+} from "./dashboard-core.js";
+
 function controlSocketUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/v1/ws`;
@@ -32,7 +53,9 @@ function scheduleControlDrivenRefresh(forcePanels = []) {
 
 function rejectPendingControlRequests(message) {
   for (const pending of state.controlSocketRequests.values()) {
-    pending.reject(new Error(message));
+    const error = new Error(message);
+    error.code = "control_socket_disconnected_after_send";
+    pending.reject(error);
   }
   state.controlSocketRequests.clear();
 }
@@ -210,21 +233,27 @@ async function ensureControlSocket() {
       }
     });
 
-    socket.addEventListener("close", () => {
-      const wasReady = state.controlSocketReady;
-      const intentional = state.controlSocketClosing;
-      state.controlSocketClosing = false;
-      state.controlSocket = null;
-      state.controlSocketReady = false;
-      state.controlSocketPromise = null;
-      rejectPendingControlRequests("Control socket disconnected.");
-      scheduleRefresh();
-      if (wasReady && hasDashboardAuth() && !intentional) {
-        setStatus("Live control connection lost. Falling back to HTTP refresh.", "warn");
-      }
-      if (!settled) {
-        settled = true;
-        reject(new Error("Control socket closed before it was ready."));
+  socket.addEventListener("close", () => {
+    const wasReady = state.controlSocketReady;
+    const intentional = state.controlSocketClosing;
+    const hadPendingRequests = state.controlSocketRequests.size > 0;
+    state.controlSocketClosing = false;
+    state.controlSocket = null;
+    state.controlSocketReady = false;
+    state.controlSocketPromise = null;
+    rejectPendingControlRequests("Control socket disconnected.");
+    scheduleRefresh();
+    if (wasReady && hasDashboardAuth() && !intentional) {
+      setStatus(
+        hadPendingRequests
+          ? "Live control connection lost during a live request. Retry manually to avoid duplicate work."
+          : "Live control connection lost. Refreshing from HTTP.",
+        "warn"
+      );
+    }
+    if (!settled) {
+      settled = true;
+      reject(new Error("Control socket closed before it was ready."));
       }
     });
   });
@@ -255,7 +284,94 @@ async function controlRequest(request, { onEvent = null } = {}) {
       );
     } catch (error) {
       state.controlSocketRequests.delete(requestId);
+      error.code = "control_socket_send_failed";
       reject(error);
     }
   });
 }
+
+function renderAutopilot(status) {
+  elements.controlSummary.textContent = `Autopilot ${status.autopilot.state} | autonomy ${status.autonomy.state}/${status.autonomy.mode} | evolve ${status.evolve.state}`;
+  const autopilot = status.autopilot;
+  const evolve = status.evolve;
+  const actions = [];
+  if (autopilot.state !== "enabled") {
+    actions.push(buttonHtml("Enable", { autopilot: "enable" }));
+  }
+  if (autopilot.state === "enabled") {
+    actions.push(buttonHtml("Pause", { autopilot: "pause" }, "button-muted"));
+  }
+  if (autopilot.state === "paused") {
+    actions.push(buttonHtml("Resume", { autopilot: "resume" }));
+  }
+  actions.push(buttonHtml("Wake now", { autopilot: "wake" }, "button-ghost"));
+  if (status.autonomy.state !== "enabled" || status.autonomy.mode !== "free_thinking") {
+    actions.push(buttonHtml("Free thinking", { autonomy: "free_thinking" }, "button-ghost"));
+  }
+  if (evolve.state === "disabled" || evolve.state === "completed" || evolve.state === "failed") {
+    actions.push(buttonHtml("Start evolve", { evolve: "start" }, "button-ghost"));
+  } else if (evolve.state === "running") {
+    actions.push(buttonHtml("Pause evolve", { evolve: "pause" }, "button-ghost"));
+    actions.push(buttonHtml("Stop evolve", { evolve: "stop" }, "button-muted"));
+  } else if (evolve.state === "paused") {
+    actions.push(buttonHtml("Resume evolve", { evolve: "resume" }, "button-ghost"));
+    actions.push(buttonHtml("Stop evolve", { evolve: "stop" }, "button-muted"));
+  }
+  elements.autopilotActions.innerHTML = actions.join("");
+
+  const rows = [
+    ["State", autopilot.state],
+    ["Autonomy mode", status.autonomy.mode],
+    ["Evolve state", evolve.state],
+    ["Evolve mission", fmt(evolve.current_mission_id)],
+    ["Evolve iteration", evolve.iteration],
+    ["Pending restart", fmtBoolean(evolve.pending_restart)],
+    ["Max concurrent missions", autopilot.max_concurrent_missions],
+    ["Wake interval", `${autopilot.wake_interval_seconds}s`],
+    ["Background shell", fmtBoolean(autopilot.allow_background_shell)],
+    ["Background network", fmtBoolean(autopilot.allow_background_network)],
+    ["Background self-edit", fmtBoolean(autopilot.allow_background_self_edit)],
+  ];
+  elements.autopilotDetails.innerHTML = rows
+    .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(fmt(value))}</dd>`)
+    .join("");
+}
+
+async function setAutopilot(mode) {
+  const current = state.lastData?.status?.autopilot?.state || "enabled";
+  await apiPut("/v1/autopilot/status", { state: mode === "wake" ? current : mode });
+  await refreshDashboard();
+}
+
+async function setAutonomy(mode) {
+  await apiPost("/v1/autonomy/enable", { mode });
+  await refreshDashboard();
+}
+
+async function setEvolve(mode) {
+  if (mode === "start") {
+    await apiPost("/v1/evolve/start", { budget_friendly: false });
+  } else {
+    await apiPost(`/v1/evolve/${mode}`, {});
+  }
+  await refreshDashboard();
+}
+
+window.dashboardControl = {
+  controlRequest,
+  renderAutopilot,
+  setAutopilot,
+  setAutonomy,
+  setEvolve,
+};
+
+export {
+  closeControlSocket,
+  controlRequest,
+  ensureControlSocket,
+  expectControlResponse,
+  renderAutopilot,
+  setAutonomy,
+  setAutopilot,
+  setEvolve,
+};

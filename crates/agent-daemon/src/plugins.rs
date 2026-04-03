@@ -1410,6 +1410,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             }],
             Some("plugin-model"),
             Some("session-1"),

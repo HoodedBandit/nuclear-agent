@@ -1,0 +1,41 @@
+{
+  "model": "scripted-harness-model",
+  "turns": [
+    {
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "calculator.py" } },
+        { "name": "read_file", "arguments": { "path": "tests/test_calculator.py" } }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "run_shell",
+          "arguments": {
+            "command": "python -m unittest discover -s tests -p 'test_*.py'",
+            "timeout_seconds": 30
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "apply_patch", "patch_file": "fix.patch" }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "run_shell",
+          "arguments": {
+            "command": "python -m unittest discover -s tests -p 'test_*.py'",
+            "timeout_seconds": 30
+          }
+        }
+      ]
+    },
+    {
+      "response": "Fixed the broken add implementation in calculator.py and reran the tests successfully."
+    }
+  ]
+}

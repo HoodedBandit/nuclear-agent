@@ -5,7 +5,12 @@ pub(super) fn parse_arguments(arguments: &str) -> Result<Value> {
     if trimmed.is_empty() {
         return Ok(json!({}));
     }
-    serde_json::from_str(trimmed).context("tool arguments must be valid JSON")
+    let value: Value =
+        serde_json::from_str(trimmed).context("tool arguments must be valid JSON")?;
+    if !value.is_object() {
+        bail!("tool arguments must decode to a JSON object");
+    }
+    Ok(value)
 }
 
 pub(super) fn required_string<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
@@ -67,13 +72,29 @@ pub(super) fn is_sensitive_env_var(name: &str) -> bool {
 }
 
 pub(super) fn truncate(text: &str, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
-        return text.to_string();
+    agent_core::truncate_with_suffix(text, max_bytes, "...(truncated)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_arguments, truncate};
+
+    #[test]
+    fn parse_arguments_requires_object_payloads() {
+        let error = parse_arguments(r#"["nope"]"#).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("tool arguments must decode to a JSON object"));
     }
 
-    let mut end = max_bytes;
-    while !text.is_char_boundary(end) {
-        end -= 1;
+    #[test]
+    fn parse_arguments_accepts_empty_input_as_empty_object() {
+        let value = parse_arguments("   ").unwrap();
+        assert_eq!(value.as_object().map(|object| object.len()), Some(0));
     }
-    format!("{}...(truncated)", &text[..end])
+
+    #[test]
+    fn truncate_preserves_utf8_boundaries() {
+        assert_eq!(truncate("hello😀world", 8), "hello...(truncated)");
+    }
 }

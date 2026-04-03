@@ -51,32 +51,17 @@ resolve_bundled_binary() {
         printf '%s\n' "$binary_root/bin/linux-x64/nuclear"
         return
       fi
-      legacy_candidate="$binary_root/bin/linux-x64/autism"
       ;;
     aarch64|arm64)
       if [ -x "$binary_root/bin/linux-arm64/nuclear" ]; then
         printf '%s\n' "$binary_root/bin/linux-arm64/nuclear"
         return
       fi
-      legacy_candidate="$binary_root/bin/linux-arm64/autism"
-      ;;
-    *)
-      legacy_candidate=""
       ;;
   esac
 
-  if [ -n "$legacy_candidate" ] && [ -x "$legacy_candidate" ]; then
-    printf '%s\n' "$legacy_candidate"
-    return
-  fi
-
   if [ -x "$cargo_target_root_value/release/nuclear" ]; then
     printf '%s\n' "$cargo_target_root_value/release/nuclear"
-    return
-  fi
-
-  if [ -x "$cargo_target_root_value/release/autism" ]; then
-    printf '%s\n' "$cargo_target_root_value/release/autism"
     return
   fi
 
@@ -139,8 +124,7 @@ choose_install_dir() {
   fi
 
   if [ -n "${AUTISM_INSTALL_DIR:-}" ]; then
-    printf '%s\n' "$AUTISM_INSTALL_DIR"
-    return
+    step "AUTISM_INSTALL_DIR is deprecated and ignored; using the canonical Nuclear install root"
   fi
 
   if [ -n "${CARGO_HOME:-}" ] && [ -d "$CARGO_HOME/bin" ]; then
@@ -212,6 +196,58 @@ install_binary_atomic() {
   mv -f "$atomic_tmp_binary" "$atomic_target_binary"
 }
 
+rollback_binary_path() {
+  install_dir="$1"
+  printf '%s\n' "$install_dir/.rollback/nuclear"
+}
+
+backup_installed_binary() {
+  source_binary="$1"
+  install_dir="$2"
+  if [ ! -f "$source_binary" ]; then
+    printf '\n'
+    return
+  fi
+  rollback_binary="$(rollback_binary_path "$install_dir")"
+  mkdir -p "$(dirname "$rollback_binary")"
+  cp "$source_binary" "$rollback_binary"
+  chmod 0755 "$rollback_binary"
+  printf '%s\n' "$rollback_binary"
+}
+
+write_install_state() {
+  install_dir="$1"
+  version="$2"
+  install_source="$3"
+  rollback_binary="$4"
+  previous_binary_source="$5"
+  cat >"$install_dir/install-state.json" <<EOF
+{
+  "schema_version": 1,
+  "display_name": "Nuclear Agent",
+  "command_name": "nuclear",
+  "install_dir": "$install_dir",
+  "installed_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "version": "$version",
+  "install_source": "$install_source",
+  "rollback_binary": "$rollback_binary",
+  "previous_binary_source": "$previous_binary_source"
+}
+EOF
+}
+
+install_rollback_companion() {
+  source_root="$1"
+  install_dir="$2"
+  rollback_script="$source_root/scripts/rollback-install.sh"
+  if [ ! -f "$rollback_script" ]; then
+    echo "Rollback script was not found at $rollback_script" >&2
+    exit 1
+  fi
+  cp "$rollback_script" "$install_dir/nuclear-rollback"
+  chmod 0755 "$install_dir/nuclear-rollback"
+}
+
 stop_installed_processes() {
   managed_binary_path="$1"
 
@@ -235,23 +271,16 @@ stop_installed_processes() {
 build_binary_from_source() {
   build_source_root="$1"
   install_target_binary="$2"
-  install_legacy_binary="$3"
   cargo_target_root_value="$(cargo_target_root "$build_source_root")"
   ensure_cargo
   step "Building Nuclear Agent from source"
-  cargo build --release --bin nuclear --bin autism --manifest-path "$build_source_root/Cargo.toml"
+  cargo build --release --bin nuclear --manifest-path "$build_source_root/Cargo.toml"
   built_binary="$cargo_target_root_value/release/nuclear"
   if [ ! -x "$built_binary" ]; then
     echo "Cargo reported success but $built_binary was not found." >&2
     exit 1
   fi
-  built_legacy_binary="$cargo_target_root_value/release/autism"
-  if [ ! -x "$built_legacy_binary" ]; then
-    echo "Cargo reported success but $built_legacy_binary was not found." >&2
-    exit 1
-  fi
   install_binary_atomic "$built_binary" "$install_target_binary"
-  install_binary_atomic "$built_legacy_binary" "$install_legacy_binary"
 }
 
 case "$(uname -s)" in
@@ -267,24 +296,37 @@ root="$(script_dir)"
 source_root="$(resolve_source_root "$root")"
 install_dir="$(choose_install_dir)"
 binary_path="$install_dir/nuclear"
-legacy_binary_path="$install_dir/autism"
 bundled_binary="$(resolve_bundled_binary "$root")"
 
 step "Installing Nuclear Agent CLI"
 step "Install directory: $install_dir"
 mkdir -p "$install_dir"
+previous_binary_source=""
+for candidate in "$binary_path" "$install_dir/autism"; do
+  if [ -f "$candidate" ]; then
+    previous_binary_source="$candidate"
+    break
+  fi
+done
+rollback_binary=""
+if [ -n "$previous_binary_source" ]; then
+  rollback_binary="$(backup_installed_binary "$previous_binary_source" "$install_dir")"
+fi
 stop_installed_processes "$binary_path"
-stop_installed_processes "$legacy_binary_path"
+stop_installed_processes "$install_dir/autism"
 
 if [ -n "$bundled_binary" ]; then
   step "Using bundled Linux binary"
   install_binary_atomic "$bundled_binary" "$binary_path"
-  install_binary_atomic "$bundled_binary" "$legacy_binary_path"
 else
-  build_binary_from_source "$source_root" "$binary_path" "$legacy_binary_path"
+  build_binary_from_source "$source_root" "$binary_path"
 fi
 
+rm -f "$install_dir/autism"
+
 version="$("$binary_path" --version)"
+write_install_state "$install_dir" "$version" "$( [ -n "$bundled_binary" ] && printf 'bundled' || printf 'source_build' )" "$rollback_binary" "$previous_binary_source"
+install_rollback_companion "$source_root" "$install_dir"
 add_to_path "$install_dir"
 
 step "Installed version: $version"
@@ -293,4 +335,6 @@ if command -v nuclear >/dev/null 2>&1; then
 else
   step "Open a new terminal and run: nuclear"
 fi
-step "Legacy command compatibility: autism"
+if [ -n "$rollback_binary" ]; then
+  step "Rollback script: $install_dir/nuclear-rollback"
+fi

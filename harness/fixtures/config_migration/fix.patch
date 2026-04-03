@@ -1,0 +1,16 @@
+*** Begin Patch
+*** Update File: config_loader.py
+@@
+ def load_api_url(data):
+-    if "api_url" not in data:
+-        raise KeyError("api_url")
+-    return data["api_url"].rstrip("/")
++    if "api_url" in data:
++        value = data["api_url"]
++    elif "base_url" in data:
++        value = data["base_url"]
++    else:
++        raise KeyError("api_url")
++    return value.rstrip("/")
+*** End Patch
+

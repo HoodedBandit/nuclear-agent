@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::argument_helpers::{optional_bool, optional_string, optional_u64, required_string};
 use super::path_helpers::{
     copy_dir_recursive, ensure_writable_path, find_paths, normalize_descendant_path,

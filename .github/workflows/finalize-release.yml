@@ -1,0 +1,97 @@
+name: finalize-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  finalize:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      NUCLEAR_SIGNING_HOOK: python scripts/ed25519_sign_hook.py
+      NUCLEAR_SIGNING_KEY_ID: gha-release
+      NUCLEAR_ED25519_PRIVATE_KEY: ${{ secrets.NUCLEAR_ED25519_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo verification tools
+        run: cargo install --locked cargo-audit cargo-deny
+
+      - name: Install Linux release prerequisites
+        if: runner.os != 'Windows'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium (Linux)
+        if: runner.os != 'Windows'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright Chromium (Windows)
+        if: runner.os == 'Windows'
+        run: npx playwright install chromium
+
+      - name: Install PyNaCl
+        run: python -m pip install pynacl
+
+      - name: Finalize release package (Linux)
+        if: runner.os != 'Windows'
+        run: bash scripts/finalize-release.sh --skip-coding-reference --skip-soak
+
+      - name: Finalize release package (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\finalize-release.ps1 -SkipCodingReference -SkipSoak
+
+      - name: Upload release package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ runner.os }}
+          path: |
+            target/release/package
+            target/release-records
+
+      - name: Record manual signoff requirements
+        shell: bash
+        run: |
+          {
+            echo "## Manual signoff still required"
+            echo
+            echo "- `coding-reference` against a real configured provider"
+            echo "- soak run with a live daemon token and workspace"
+            echo "- hosted provider and connector live validation"
+          } >> "$GITHUB_STEP_SUMMARY"

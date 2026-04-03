@@ -1,0 +1,30 @@
+{
+  "model": "scripted-harness-model",
+  "turns": [
+    {
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "config_loader.py" } },
+        { "name": "read_file", "arguments": { "path": "tests/test_config_loader.py" } }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "apply_patch", "patch_file": "fix.patch" }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "run_shell",
+          "arguments": {
+            "command": "python -m unittest discover -s tests -p 'test_*.py'",
+            "timeout_seconds": 30
+          }
+        }
+      ]
+    },
+    {
+      "response": "Added legacy base_url support as a migration fallback and reran the tests successfully."
+    }
+  ]
+}

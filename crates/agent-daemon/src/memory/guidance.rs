@@ -3,7 +3,7 @@ use std::{
     path::{Path as FsPath, PathBuf},
 };
 
-use agent_core::{SkillDraft, SkillDraftStatus, ToolExecutionRecord};
+use agent_core::{truncate_with_suffix, SkillDraft, SkillDraftStatus, ToolExecutionRecord};
 
 use crate::AppState;
 
@@ -130,10 +130,7 @@ fn load_skill_guidance_blocks(enabled_skills: &[String]) -> String {
         let Ok(mut content) = fs::read_to_string(&path) else {
             continue;
         };
-        if content.len() > 8_000 {
-            content.truncate(8_000);
-            content.push_str("\n\n[truncated]");
-        }
+        content = truncate_with_suffix(&content, 8_000, "\n\n[truncated]");
         let block = format!(
             "--- skill:{} ({})\n{}\n",
             skill_name,

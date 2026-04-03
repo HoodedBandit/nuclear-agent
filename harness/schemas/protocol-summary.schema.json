@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "properties": {
+    "transport": {
+      "type": "string"
+    },
+    "auth": {
+      "type": "string"
+    },
+    "implemented_features": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "remaining_gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "transport",
+    "auth",
+    "implemented_features",
+    "remaining_gaps"
+  ],
+  "additionalProperties": false
+}
+

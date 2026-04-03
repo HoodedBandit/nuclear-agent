@@ -824,6 +824,7 @@ async fn run_mission_cycle(
             permission_preset: Some(PermissionPreset::FullAuto),
             task_mode: None,
             output_schema_json: Some(output_schema.to_string()),
+            remote_content_policy_override: None,
             persist: true,
             background: true,
             delegation_depth: 0,

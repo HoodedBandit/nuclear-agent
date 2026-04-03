@@ -1,0 +1,30 @@
+.card {
+  min-height: 128px;
+  padding: 1rem 1.1rem;
+  border-radius: 20px;
+  border: 1px solid rgba(146, 167, 212, 0.12);
+  background:
+    radial-gradient(circle at top right, rgba(88, 204, 255, 0.11), transparent 40%),
+    rgba(6, 10, 19, 0.88);
+  display: grid;
+  gap: 0.55rem;
+}
+
+.label {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.value {
+  font-size: 1.95rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.detail {
+  color: var(--text-soft);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}

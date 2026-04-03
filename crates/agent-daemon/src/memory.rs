@@ -1130,6 +1130,7 @@ mod tests {
             tool_calls: Vec::new(),
             provider_payload_json: None,
             attachments: Vec::new(),
+            provider_output_items: Vec::new(),
         };
         let tool = SessionMessage {
             id: "message-tool".to_string(),
@@ -1144,6 +1145,7 @@ mod tests {
             tool_calls: Vec::new(),
             provider_payload_json: None,
             attachments: Vec::new(),
+            provider_output_items: Vec::new(),
         };
 
         let observations = learning_observations_from_session_messages(&[user, tool]);

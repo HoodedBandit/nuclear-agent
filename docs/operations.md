@@ -1,38 +1,68 @@
-﻿# Operations
+# Operations
 
-## Health Checks
+## Core Health Checks
 
-Start with these checks before changing config:
+Run these before changing runtime state:
 
 ```powershell
-target\debug\nuclear.exe doctor
-target\debug\nuclear.exe daemon status
-target\debug\nuclear.exe plugin doctor
+nuclear doctor
+nuclear daemon status
+nuclear plugin doctor
 ```
 
-If the daemon is running, the dashboard also exposes live status, log, and plugin doctor views at `/dashboard`.
+If the daemon is running, the dashboard also exposes live status, logs, plugins, providers, and control state.
 
-## Update Flow
+## Routine Update Flow
 
-Recommended update order:
-
-1. Stop background autonomy or mission work.
+1. Pause autonomy, autopilot, evolve, or mission work if active.
 2. Run `nuclear doctor`.
-3. Update the binary or rebuild the workspace.
+3. Update the binary or reinstall the package.
 4. Run `nuclear plugin doctor`.
-5. Refresh managed plugins with `nuclear plugin update <id>` when their recorded source changed.
+5. Update any plugin package whose source or review state changed.
 6. Restart the daemon and re-run `nuclear doctor`.
 
 ## Rollback
 
-This repo does not yet ship a dedicated rollback command. The practical rollback path today is:
+Managed packaged installs write rollback metadata and install rollback companions.
 
-1. Restore the previous binary or previous git revision.
-2. Restart the daemon with that binary.
-3. Re-run `nuclear plugin doctor`.
-4. Reinstall or update any plugin package whose compatibility or integrity no longer matches the restored host.
+Windows:
 
-Because plugin installs are copied into the daemon-managed data directory, restoring source files alone does not roll back an already installed plugin. Use `plugin update` or `plugin remove` plus `plugin install`.
+```powershell
+& "$env:LOCALAPPDATA\Programs\NuclearAI\Nuclear\bin\nuclear-rollback.ps1"
+```
+
+Linux:
+
+```bash
+~/.local/bin/nuclear-rollback
+```
+
+Rollback restores the previous managed binary, validates it with `--version`, and preserves the canonical managed install layout.
+
+After rollback:
+
+1. Run `nuclear doctor`.
+2. Run `nuclear plugin doctor`.
+3. Reinstall or update any plugin package that no longer matches the restored host version.
+
+## Support Bundle
+
+Export a redacted local diagnostics bundle before escalation or manual triage:
+
+```powershell
+nuclear support-bundle
+nuclear support-bundle --output-dir .\tmp\support-bundle --log-limit 200 --session-limit 25
+```
+
+The support bundle includes:
+
+- doctor output
+- daemon status when available
+- config summary with secrets removed
+- recent session metadata
+- recent logs
+- install-state metadata
+- migration metadata when present
 
 ## Recovery
 
@@ -41,33 +71,22 @@ If the daemon becomes unhealthy:
 1. Run `nuclear daemon stop`.
 2. Run `nuclear doctor`.
 3. Run `nuclear plugin doctor`.
-4. Inspect recent logs from the dashboard or `nuclear logs`.
+4. Inspect recent logs with `nuclear logs` or the dashboard.
 5. Restart with `nuclear daemon start`.
 
-If a plugin is flagged for integrity drift, treat the installed package as modified:
+If a plugin is flagged for integrity drift:
 
-1. Compare the source reference and the installed package.
-2. Reinstall from the intended source with `nuclear plugin update <id>` or `nuclear plugin install <source> --trust`.
+1. Treat the installed package as modified.
+2. Reinstall or update from the intended source.
 3. Re-run `nuclear plugin doctor`.
-
-Marketplace-backed installs resolve through `config/plugin-marketplace.json` by default, or the `AGENT_PLUGIN_MARKETPLACE_INDEX` override.
 
 ## Auth Repair
 
-If a provider login stops working:
+If provider auth stops working:
 
-1. Run `nuclear doctor` and read the provider-specific error.
-2. Re-run the appropriate `nuclear login ...` flow or re-add the provider credentials.
-3. Verify aliases still point at the expected provider and model.
-4. Retry the request from the CLI or dashboard.
+1. Run `nuclear doctor`.
+2. Re-run the relevant `nuclear login ...` or provider setup flow.
+3. Confirm aliases still point at the intended provider and model.
+4. Retry from the CLI or dashboard.
 
-If a dashboard session gets stuck, clear the browser session and reconnect with the daemon token.
-
-## Reliability Smoke
-
-Before shipping a build, run the repo and control-plane smoke checks:
-
-```powershell
-target\debug\nuclear.exe repo inspect .
-powershell -ExecutionPolicy Bypass -File .\scripts\run-soak.ps1 -Token "<daemon-token>" -Workspace .
-```
+If the dashboard session becomes unusable, reconnect with a fresh dashboard session or daemon token.

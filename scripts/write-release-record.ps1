@@ -1,13 +1,20 @@
 param(
-    [string]$PackageRoot = ".\\target\\phase3\\package",
+    [string]$PackageRoot = ".\\target\\release\\package",
     [string]$PackageManifest = "",
-    [string]$BenchmarkSmokeRoot = ".\\target\\verify-workspace\\benchmarks-smoke",
-    [string]$BenchmarkSmokeSummary = "",
-    [string]$ReleaseEvalRoot = ".\\target\\verify-beta\\release-eval",
-    [string]$ReleaseEvalSummary = "",
+    [string]$RuntimeCertRoot = ".\\target\\verify-ga\\runtime-cert",
+    [string]$RuntimeCertSummary = "",
+    [string]$CodingDeterministicRoot = ".\\target\\verify-ga\\coding-deterministic",
+    [string]$CodingDeterministicSummary = "",
+    [string]$CodingReferenceRoot = ".\\target\\finalize-release\\coding-reference",
+    [string]$CodingReferenceSummary = "",
+    [string]$AnalysisSmokeRoot = ".\\target\\harness\\analysis-smoke",
+    [string]$AnalysisSmokeSummary = "",
     [string]$SoakRoot = ".\\target\\soak",
     [string]$SoakSummary = "",
-    [string]$OutputRoot = ".\\target\\release-records"
+    [switch]$RequireCodingReference,
+    [string]$OutputRoot = ".\\target\\release-records",
+    [string]$NotesFile = ".\\docs\\ga-release-notes.md",
+    [string]$ChecklistFile = ".\\docs\\release-checklist.md"
 )
 
 Set-StrictMode -Version Latest
@@ -34,24 +41,23 @@ $scriptPath = Join-Path $PSScriptRoot "write_release_record.py"
 $arguments = @(
     $scriptPath,
     "--package-root", $PackageRoot,
-    "--benchmark-smoke-root", $BenchmarkSmokeRoot,
-    "--release-eval-root", $ReleaseEvalRoot,
+    "--runtime-cert-root", $RuntimeCertRoot,
+    "--coding-deterministic-root", $CodingDeterministicRoot,
+    "--coding-reference-root", $CodingReferenceRoot,
+    "--analysis-smoke-root", $AnalysisSmokeRoot,
     "--soak-root", $SoakRoot,
-    "--output-root", $OutputRoot
+    "--output-root", $OutputRoot,
+    "--notes-file", $NotesFile,
+    "--checklist-file", $ChecklistFile
 )
 
-if ($PackageManifest) {
-    $arguments += @("--package-manifest", $PackageManifest)
-}
-if ($BenchmarkSmokeSummary) {
-    $arguments += @("--benchmark-smoke-summary", $BenchmarkSmokeSummary)
-}
-if ($ReleaseEvalSummary) {
-    $arguments += @("--release-eval-summary", $ReleaseEvalSummary)
-}
-if ($SoakSummary) {
-    $arguments += @("--soak-summary", $SoakSummary)
-}
+if ($PackageManifest) { $arguments += @("--package-manifest", $PackageManifest) }
+if ($RuntimeCertSummary) { $arguments += @("--runtime-cert-summary", $RuntimeCertSummary) }
+if ($CodingDeterministicSummary) { $arguments += @("--coding-deterministic-summary", $CodingDeterministicSummary) }
+if ($CodingReferenceSummary) { $arguments += @("--coding-reference-summary", $CodingReferenceSummary) }
+if ($AnalysisSmokeSummary) { $arguments += @("--analysis-smoke-summary", $AnalysisSmokeSummary) }
+if ($SoakSummary) { $arguments += @("--soak-summary", $SoakSummary) }
+if ($RequireCodingReference) { $arguments += "--require-coding-reference" }
 
 & $pythonCommand.Executable @($pythonCommand.Arguments) @arguments
 exit $LASTEXITCODE

@@ -1,0 +1,54 @@
+{
+  "model": "scripted-harness-model",
+  "turns": [
+    {
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "formatter.py" } },
+        { "name": "read_file", "arguments": { "path": "tests/test_formatter.py" } }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "apply_patch", "patch_file": "wrong.patch" }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "run_shell",
+          "arguments": {
+            "command": "python -m unittest discover -s tests -p 'test_*.py'",
+            "timeout_seconds": 30
+          }
+        }
+      ]
+    },
+    {
+      "branches": [
+        {
+          "match_any_tool_output_contains": ["FAILED", "AssertionError"],
+          "tool_calls": [
+            { "name": "apply_patch", "patch_file": "fix.patch" }
+          ]
+        }
+      ],
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "formatter.py" } }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "run_shell",
+          "arguments": {
+            "command": "python -m unittest discover -s tests -p 'test_*.py'",
+            "timeout_seconds": 30
+          }
+        }
+      ]
+    },
+    {
+      "response": "Repaired slugify after the initial patch still left separator runs intact, then reran the tests successfully."
+    }
+  ]
+}

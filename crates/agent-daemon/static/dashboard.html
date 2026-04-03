@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nuclear Agent Control Room</title>
   <link rel="stylesheet" href="/dashboard.css">
+  <link rel="modulepreload" href="/dashboard-core.js">
+  <link rel="modulepreload" href="/dashboard-core-foundation.js">
+  <link rel="modulepreload" href="/dashboard-core-chat.js">
+  <link rel="modulepreload" href="/dashboard-control.js">
+  <link rel="modulepreload" href="/dashboard-connectors.js">
+  <link rel="modulepreload" href="/dashboard-providers.js">
+  <link rel="modulepreload" href="/dashboard-plugins.js">
+  <link rel="modulepreload" href="/dashboard-workspace.js">
+  <link rel="modulepreload" href="/dashboard-settings.js">
+  <link rel="modulepreload" href="/dashboard-chat.js">
+  <link rel="modulepreload" href="/dashboard.js">
 </head>
 <body id="top">
   <div class="backdrop"></div>
@@ -1019,13 +1030,6 @@
     </main>
   </div>
 
-  <script src="/dashboard-control.js" defer></script>
-  <script src="/dashboard-connectors.js" defer></script>
-  <script src="/dashboard-providers.js" defer></script>
-  <script src="/dashboard-plugins.js" defer></script>
-  <script src="/dashboard-workspace.js" defer></script>
-  <script src="/dashboard-settings.js" defer></script>
-  <script src="/dashboard.js" defer></script>
-  <script src="/dashboard-chat.js" defer></script>
+  <script type="module" src="/dashboard.js"></script>
 </body>
 </html>

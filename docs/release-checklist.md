@@ -1,112 +1,110 @@
 # Release Checklist
 
-Use this checklist before cutting a release or shipping a packaged build. For beta releases, treat
-**Windows as the blocking platform** and keep Linux compatibility intact without making Linux a
-manual signoff gate.
+Use this checklist before publishing a public release. Windows and Linux are both supported release platforms.
 
-## Phase 1. Core Runtime and Platform Hardening
+## 1. Repo and Product Readiness
 
-- Ensure the worktree is clean: `git status --short`
-- Confirm the canonical CLI name is `nuclear` and any remaining `autism` references are compatibility-only
-- Review the compatibility surface before release notes are written: installer behavior, launcher aliases, persisted state, plugin protocol, and control-plane routes
-- Verify the shipped Windows path works end to end: install, onboarding, daemon lifecycle, provider login, chat/run, session resume/fork/compact, shutdown, reset, and recovery
-- Resolve blocker-level Windows issues in provider auth, plugin install/update, dashboard auth, daemon restart, and persisted state handling before advancing
+- worktree reviewed and intentionally staged
+- canonical product name is `Nuclear Agent`
+- canonical command is `nuclear`
+- no public release artifact depends on legacy names except migration paths and upgrade notes
+- public repo contains only intentional product, build, test, and release assets
 
-## Phase 2. Operator Surface Hardening
+## 2. Core Verification
 
-Beta signoff assumes every operator-facing surface remains in scope:
-
-- dashboard and session workflows
-- providers and aliases
-- plugins and plugin doctor
-- connectors, approvals, and polling/sending flows
-- memory, missions, autonomy, evolve, permissions, delegation, MCP/apps, logs, and doctor
-
-For each surface, require:
-
-- one documented happy path
-- one clear failure/recovery path
-- one persistence or restart validation
-
-Provider certification must cover every listed provider path:
-
-- OpenAI-compatible
-- ChatGPT Codex
-- Anthropic
-- Moonshot
-- OpenRouter
-- Venice
-- Ollama
-
-For each provider, sign off on credential setup, model listing, prompt execution, and failure messaging when auth or model access is invalid.
-
-## Phase 3. Beta Verification and Signoff
-
-### Core verification
-
-Windows:
+Workspace verification:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-beta.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-workspace.ps1
 ```
 
-Linux compatibility:
+GA verification:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-ga.ps1
+```
+
+Linux equivalents:
 
 ```bash
-./scripts/verify-beta.sh --skip-e2e
+./scripts/verify-workspace.sh
+./scripts/verify-ga.sh
 ```
 
-`verify-beta` expands the baseline workspace verification to include:
+`verify-workspace` covers:
 
-- Rust workspace check, test, and release build
-- installer smoke for fresh install and legacy upgrade
-- packaged installer smoke for fresh install and legacy upgrade
-- isolated Phase 1 runtime smoke for daemon lifecycle, prompt execution, session recovery, dashboard launch auth, restart persistence, and reset recovery
-- isolated Phase 2 operator surface smoke for provider and alias management, plugin doctor lifecycle, inbox connector recovery, memory and mission workflows, MCP/apps, autopilot status/config, and restart persistence
-- isolated Phase 2 certification matrix for every shipped provider path, delegation controls, webhook delivery, Telegram/Discord/Slack/Signal approvals and sends, Home Assistant polling and service restrictions, Gmail approval and send flows, Brave tool routing, dashboard bootstrap counts, and restart persistence
-- benchmark smoke artifact validation
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- dependency duplicate/audit/deny/outdated checks when the optional cargo tools are installed
+- source LOC guard
+- `cargo fmt --all --check`
+- `cargo check --workspace`
+- `cargo test --workspace`
+- release build for `nuclear`
+- runtime smoke
+- dependency checks
+
+`verify-ga` adds:
+
+- strict clippy
 - dashboard Playwright E2E
-- prerelease `release-eval` benchmarks
+- full `runtime-cert`
+- blocking `coding-deterministic`
 
-### Additional release records
+## 3. Packaging and Trust
 
-Windows final signoff:
+Final packaging:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-phase3.ps1 -Token "<daemon-token>" -Workspace .
+powershell -ExecutionPolicy Bypass -File .\scripts\finalize-release.ps1 -Token "<daemon-token>" -Workspace .
 ```
 
-Linux compatibility signoff:
+Linux:
 
 ```bash
-./scripts/verify-phase3.sh --skip-e2e --skip-soak
+./scripts/finalize-release.sh --workspace .
 ```
 
-`verify-phase3` runs `verify-beta`, packages the release bundle, optionally runs the soak harness, and writes a timestamped release record under `target/release-records/`.
+Release outputs must include:
 
-Run the soak harness and keep the emitted soak and benchmark artifacts with the release record.
+- packaged archive
+- manifest
+- checksum sidecars
+- SPDX SBOM
+- provenance statement
+- release record
+- signatures when signing is required
 
-Windows soak:
+## 4. Operator Surface Signoff
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-soak.ps1 -Token "<daemon-token>" -Workspace .
-```
+The following surfaces remain release-relevant:
 
-Review benchmark and soak artifacts for:
+- onboarding and daemon lifecycle
+- providers, aliases, and model selection
+- dashboard chat and session flows
+- plugins and plugin doctor
+- connectors and approvals
+- memory, missions, autonomy, autopilot, evolve, delegation, logs, and support-bundle export
+- install, upgrade, rollback, reset, and recovery
 
-- pass/fail count
-- structured output artifacts
-- provider/model/session metadata
-- unexpected latency or tool-use drift
-- repeated operator traffic regressions in status, bootstrap, and workspace inspection
+For each blocking surface, confirm:
 
-### Final certification
+- a normal happy path
+- a clear failure path
+- a clear recovery path
+- restart or persistence behavior
 
-- Smoke the installer output on Windows and confirm packaged installs keep the legacy `autism` launcher as compatibility only
-- Confirm docs and examples use `nuclear` as the canonical name
-- Confirm the packaged bundle is named `nuclear-<version>-windows-<arch>-full`
-- Record the release commit SHA
-- Summarize compatibility notes in [`docs/beta-release-notes.md`](beta-release-notes.md)
-- Call out any intentionally deferred debt or residual risk explicitly
+## 5. Manual Signoff
+
+These remain manual signoff items and are not ordinary CI blockers:
+
+- live hosted-provider login and model access
+- live connector authentication and send or poll flows
+- `coding-reference` against a real configured provider
+- soak review with a live daemon token and workspace
+- real signing with release keys
+
+## 6. Publish Check
+
+Before publishing:
+
+- release notes describe the actual shipped behavior
+- any remaining operational caveats are explicit
+- packaged installs and source snapshot match the repo state being published

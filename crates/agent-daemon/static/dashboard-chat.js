@@ -677,3 +677,5 @@ async function runSlashCommand(input) {
 
   throw new Error(`unknown slash command '${line}'. Use /help to list commands.`);
 }
+
+export { runSlashCommand };

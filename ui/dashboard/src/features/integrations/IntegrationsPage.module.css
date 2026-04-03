@@ -1,0 +1,102 @@
+.page {
+  display: grid;
+  gap: 1rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 440px);
+  gap: 1rem;
+}
+
+.list,
+.connectorGrid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.listCard,
+.connectorCard {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.95rem 1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(146, 167, 212, 0.1);
+}
+
+.meta {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.capabilityBlock {
+  display: grid;
+  gap: 0.4rem;
+  justify-items: end;
+}
+
+.form {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.form label {
+  display: grid;
+  gap: 0.45rem;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.form input,
+.form select {
+  width: 100%;
+  border-radius: 18px;
+  border: 1px solid rgba(146, 167, 212, 0.16);
+  background: rgba(3, 6, 14, 0.88);
+  color: var(--text-primary);
+  font: inherit;
+  padding: 0.82rem 0.95rem;
+}
+
+.formActions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.primaryButton,
+.linkButtonGhost {
+  border: 0;
+  border-radius: 16px;
+  padding: 0.82rem 1rem;
+  font: inherit;
+  text-decoration: none;
+}
+
+.primaryButton {
+  color: #04121d;
+  background: linear-gradient(135deg, #7ee1ff, #47c1ff);
+  cursor: pointer;
+}
+
+.linkButtonGhost {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.inlineLink {
+  color: var(--accent-soft);
+}
+
+.errorCopy {
+  color: #ffb0b0;
+  margin: 0;
+}
+
+@media (max-width: 1100px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

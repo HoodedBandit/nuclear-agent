@@ -9,6 +9,9 @@ function readState() {
 }
 
 async function connectDashboard(page) {
+  await page.addInitScript(() => {
+    window.__dashboardTestMode = true;
+  });
   const state = readState();
   await page.goto("/ui");
   await page.fill("#token-input", state.token);
@@ -17,7 +20,7 @@ async function connectDashboard(page) {
     .poll(async () => (await page.locator("#connection-status").textContent()) || "", {
       timeout: 10000,
     })
-    .toMatch(/Connected\.|Live control connection lost\. Falling back to HTTP refresh\./);
+    .toMatch(/Connected\.|Live control connection lost\./);
   await expect(page.locator("#providers-summary")).toContainText("provider");
   await expect(page.locator("#providers-list")).toContainText("Local Codex");
   return state;
@@ -59,6 +62,38 @@ test("sends a chat message through the dashboard against the mock local provider
   await expect(page.locator("#chat-transcript")).toContainText("Browser chat test");
   await expect(page.locator("#chat-transcript")).toContainText("Mock reply from mock-codex: Browser chat test");
   await expect(page.locator("#sessions-body")).toContainText("main");
+});
+
+test("does not fall back to HTTP when a control-socket request disconnects after dispatch", async ({ page }) => {
+  await connectDashboard(page);
+  await openTab(page, "chat");
+
+  let fallbackCalls = 0;
+  await page.route("**/v1/run/stream", async (route) => {
+    fallbackCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/plain",
+      body: "",
+    });
+  });
+
+  await page.fill("#run-task-prompt", "Guarded fallback smoke");
+  await page.click("#run-task-form button[type='submit']");
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.dashboardApp.__debug.getPendingControlRequestCount())
+    )
+    .toBeGreaterThan(0);
+
+  await page.evaluate(() => window.dashboardApp.__debug.dropControlSocket());
+
+  await expect(page.locator("#connection-status")).toContainText(
+    "Live control connection was lost after the task was already dispatched"
+  );
+  await expect(page.locator("#run-task-result")).toContainText("Chat failed");
+  await expect.poll(() => fallbackCalls).toBe(0);
 });
 
 test("restores the saved task mode when reloading a chat session", async ({ page }) => {
@@ -308,4 +343,50 @@ test("runs slash commands and shell commands from the dashboard chat console", a
   await page.fill("#run-task-prompt", "!cd .");
   await page.click("#run-task-form button[type='submit']");
   await expect(page.locator("#run-task-result")).toContainText("cwd=");
+});
+
+test("keeps self-edit unchanged when enabling autonomy", async ({ page }) => {
+  await connectDashboard(page);
+
+  const selfEdit = page.locator('[data-trust-flag="allow_self_edit"]');
+  if (await selfEdit.isChecked()) {
+    await selfEdit.uncheck();
+    await expect(selfEdit).not.toBeChecked();
+  }
+
+  await page.getByRole("button", { name: "Free thinking" }).click();
+  await expect(page.locator("#control-summary")).toContainText("free_thinking");
+  await expect(selfEdit).not.toBeChecked();
+});
+
+test("surfaces remote-content safety events in the operator console", async ({ page }) => {
+  await connectDashboard(page);
+  await openTab(page, "chat");
+
+  await page.evaluate(() => {
+    window.dashboardApp.__debug.emitChatStreamEvent({
+      type: "remote_content",
+      artifact: {
+        source: {
+          kind: "web_page",
+          label: "malicious page",
+          url: "https://example.com",
+          host: "example.com",
+        },
+        title: "malicious",
+        mime_type: "text/html",
+        excerpt: "Blocked suspicious remote content from example.com.",
+        assessment: {
+          risk: "high",
+          blocked: true,
+          reasons: ["remote content requests secrets, credentials, or hidden prompts"],
+          warnings: ["instruction override language detected"],
+        },
+      },
+    });
+  });
+
+  await expect(page.locator("#run-task-result")).toContainText("Remote content");
+  await expect(page.locator("#run-task-result")).toContainText("Blocked remote content from malicious page");
+  await expect(page.locator("#chat-transcript")).toContainText("remote_content");
 });

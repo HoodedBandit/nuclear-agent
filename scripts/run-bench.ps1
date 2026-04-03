@@ -1,40 +1,20 @@
 param(
     [string]$TaskFile = ".\\benchmarks\\coding-smoke\\tasks.jsonl",
     [string]$BinaryPath = "",
-    [string]$OutputRoot = ""
+    [string]$OutputRoot = "",
+    [switch]$BootstrapProfile,
+    [string]$BootstrapRoot = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-
-function Resolve-PythonCommand {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "python"
-            Arguments  = @()
-        }
-    }
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "py"
-            Arguments  = @("-3")
-        }
-    }
-    throw "Python is required to run benchmarks."
+$arguments = @{
+    Lane = "analysis-smoke"
+    TaskFile = $TaskFile
 }
+if ($BinaryPath) { $arguments["BinaryPath"] = $BinaryPath }
+if ($OutputRoot) { $arguments["OutputRoot"] = $OutputRoot }
 
-$pythonCommand = Resolve-PythonCommand
-$scriptPath = Join-Path $PSScriptRoot "run_bench.py"
-$arguments = @($scriptPath, "--task-file", $TaskFile)
-
-if ($BinaryPath) {
-    $arguments += @("--binary-path", $BinaryPath)
-}
-if ($OutputRoot) {
-    $arguments += @("--output-root", $OutputRoot)
-}
-
-& $pythonCommand.Executable @($pythonCommand.Arguments) @arguments
+& (Join-Path $PSScriptRoot "run-harness.ps1") @arguments
 exit $LASTEXITCODE

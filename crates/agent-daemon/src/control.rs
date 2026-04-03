@@ -1,14 +1,18 @@
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use agent_core::{
     AliasUpsertRequest, AppConfig, AutonomyEnableRequest, AutonomyMode, AutonomyState,
     AutopilotConfig, AutopilotState, AutopilotUpdateRequest, DaemonConfigUpdateRequest,
     DaemonStatus, DashboardBootstrapResponse, DelegationConfig, DelegationConfigUpdateRequest,
     DelegationTarget, HealthReport, LogEntry, MainAliasUpdateRequest, MainTargetSummary,
-    McpServerConfig, McpServerUpsertRequest, MemoryReviewStatus, ModelAlias, PermissionPreset,
-    PermissionUpdateRequest, ProviderConfig, ProviderSuggestionRequest, ProviderSuggestionResponse,
-    ProviderUpsertRequest, SkillDraftStatus, SkillUpdateRequest, TrustUpdateRequest,
-    CONFIG_VERSION, INTERNAL_DAEMON_ARG,
+    McpServerConfig, McpServerUpsertRequest, MemoryReviewStatus, ModelAlias, ModelDescriptor,
+    PermissionPreset, PermissionUpdateRequest, ProviderCapabilitySummary, ProviderConfig,
+    ProviderSuggestionRequest, ProviderSuggestionResponse, ProviderUpsertRequest, SkillDraftStatus,
+    SkillUpdateRequest, TrustUpdateRequest, CONFIG_VERSION, INTERNAL_DAEMON_ARG,
 };
 use agent_policy::{autonomy_warning, permission_summary};
 use agent_providers::{delete_secret, store_api_key, store_oauth_token};
@@ -20,6 +24,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::warn;
 
@@ -28,6 +33,11 @@ use crate::{
     normalize_delegation_limit, runtime::provider_has_runnable_access, ApiError, AppState,
     LimitQuery,
 };
+use crate::{
+    collect_hosted_plugin_tools,
+    tools::{effective_tool_definitions, remote_content::RemoteContentRuntimeState, ToolContext},
+};
+use agent_core::{HostedToolKind, ModelToolCapabilities, ToolBackend, ToolDefinition};
 
 fn redact_provider_secret_metadata(mut provider: ProviderConfig) -> ProviderConfig {
     provider.keychain_account = None;
@@ -105,6 +115,8 @@ pub(crate) fn build_dashboard_bootstrap_response(
         permissions: config.permission_preset,
         trust: config.trust_policy.clone(),
         delegation_config: config.delegation.clone(),
+        provider_capabilities: provider_capability_summaries(state, config)?,
+        remote_content_policy: config.remote_content_policy,
     })
 }
 
@@ -445,6 +457,22 @@ pub(crate) async fn list_provider_models(
     Ok(Json(models))
 }
 
+pub(crate) async fn list_provider_model_descriptors(
+    State(state): State<AppState>,
+    Path(provider_id): Path<String>,
+) -> Result<Json<Vec<ModelDescriptor>>, ApiError> {
+    let provider = {
+        let config = state.config.read().await;
+        config
+            .resolve_provider(&provider_id)
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown provider"))?
+    };
+
+    let descriptors =
+        agent_providers::list_model_descriptors(&state.http_client, &provider).await?;
+    Ok(Json(descriptors))
+}
+
 pub(crate) async fn clear_provider_credentials(
     State(state): State<AppState>,
     Path(provider_id): Path<String>,
@@ -669,8 +697,9 @@ pub(crate) async fn enable_autonomy(
         config.autonomy.mode = mode.clone();
         config.autonomy.unlimited_usage = true;
         config.autonomy.full_network = true;
-        config.autonomy.allow_self_edit =
-            payload.allow_self_edit || !matches!(mode, AutonomyMode::Assisted);
+        config.autonomy.allow_self_edit = payload
+            .allow_self_edit
+            .unwrap_or(config.autonomy.allow_self_edit);
         config.autonomy.consented_at = Some(Utc::now());
         state.storage.save_config(&config)?;
         config.autonomy.clone()
@@ -1003,7 +1032,105 @@ pub(crate) async fn doctor(State(state): State<AppState>) -> Result<Json<HealthR
         keyring_ok: agent_providers::keyring_available(),
         providers: checks,
         plugins: collect_plugin_doctor_reports(&config),
+        remote_content_policy: config.remote_content_policy,
+        provider_capabilities: provider_capability_summaries(&state, &config)?,
     }))
+}
+
+fn provider_capability_summaries(
+    state: &AppState,
+    config: &AppConfig,
+) -> Result<Vec<ProviderCapabilitySummary>, ApiError> {
+    config
+        .all_providers()
+        .into_iter()
+        .filter_map(|provider| {
+            provider
+                .default_model
+                .clone()
+                .map(|model| (provider, model))
+        })
+        .map(|(provider, model)| {
+            let descriptor = agent_providers::describe_model(&provider, &model);
+            let capabilities = runtime_registered_model_capabilities(
+                state,
+                config,
+                &provider,
+                &model,
+                descriptor.capabilities,
+            )?;
+            Ok(ProviderCapabilitySummary {
+                provider_id: provider.id.clone(),
+                model: descriptor.id,
+                capabilities,
+            })
+        })
+        .collect()
+}
+
+fn runtime_registered_model_capabilities(
+    state: &AppState,
+    config: &AppConfig,
+    provider: &ProviderConfig,
+    model: &str,
+    model_capabilities: ModelToolCapabilities,
+) -> Result<ModelToolCapabilities, ApiError> {
+    let context = ToolContext {
+        state: state.clone(),
+        cwd: state.storage.paths().data_dir.clone(),
+        trust_policy: config.trust_policy.clone(),
+        autonomy: config.autonomy.clone(),
+        permission_preset: config.permission_preset,
+        http_client: state.http_client.clone(),
+        mcp_servers: config.mcp_servers.clone(),
+        app_connectors: config.app_connectors.clone(),
+        plugin_tools: collect_hosted_plugin_tools(config),
+        brave_connectors: config.brave_connectors.clone(),
+        current_alias: None,
+        default_thinking_level: config.thinking_level,
+        task_mode: None,
+        delegation: config.delegation.clone(),
+        delegation_targets: delegation_targets_from_config(config, None),
+        delegation_depth: 0,
+        background: false,
+        background_shell_allowed: true,
+        background_network_allowed: true,
+        background_self_edit_allowed: true,
+        model_capabilities,
+        remote_content_policy: config.remote_content_policy,
+        remote_content_state: Arc::new(Mutex::new(RemoteContentRuntimeState::default())),
+        allowed_direct_urls: Arc::new(HashSet::new()),
+    };
+    let tools = effective_tool_definitions(&context).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "failed to resolve runtime tool capabilities for provider '{}' model '{}': {error}",
+                provider.id, model
+            ),
+        )
+    })?;
+    Ok(tool_registry_capabilities(&tools))
+}
+
+fn tool_registry_capabilities(tools: &[ToolDefinition]) -> ModelToolCapabilities {
+    let mut capabilities = ModelToolCapabilities::default();
+    for tool in tools {
+        match (tool.name.as_str(), tool.backend, tool.hosted_kind) {
+            ("web_search", ToolBackend::ProviderBuiltin, Some(HostedToolKind::WebSearch)) => {
+                capabilities.web_search = true;
+            }
+            ("run_shell", ToolBackend::LocalFunction, _) => {
+                capabilities.shell = true;
+                capabilities.local_shell = true;
+            }
+            ("apply_patch", ToolBackend::LocalFunction, _) => {
+                capabilities.apply_patch = true;
+            }
+            _ => {}
+        }
+    }
+    capabilities
 }
 
 pub(crate) fn load_events(
@@ -1054,4 +1181,189 @@ pub(crate) fn parse_event_cursor(value: &str) -> Result<EventCursor, ApiError> {
             id,
         })
         .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        enable_autonomy, runtime_registered_model_capabilities, tool_registry_capabilities,
+    };
+    use agent_core::{
+        AppConfig, AutonomyEnableRequest, AutonomyMode, AutonomyProfile, AutonomyState,
+        HostedToolKind, ModelToolCapabilities, PermissionPreset, ProviderConfig, ProviderKind,
+        ToolBackend, ToolDefinition, TrustPolicy,
+    };
+    use axum::{extract::State, Json};
+    use chrono::Utc;
+    use reqwest::Client;
+    use std::sync::{atomic::AtomicBool, Arc};
+    use tokio::sync::{mpsc, Notify, RwLock};
+
+    use crate::{
+        new_browser_auth_store, new_dashboard_launch_store, new_dashboard_session_store,
+        new_mission_cancellation_store, AppState, ProviderRateLimiter,
+    };
+
+    fn test_state(config: AppConfig) -> AppState {
+        let storage = agent_storage::Storage::open_at(
+            std::env::temp_dir().join(format!("agent-control-test-{}", uuid::Uuid::new_v4())),
+        )
+        .unwrap();
+        let (shutdown_tx, _) = mpsc::unbounded_channel();
+        AppState {
+            storage,
+            config: Arc::new(RwLock::new(config)),
+            http_client: Client::new(),
+            browser_auth_sessions: new_browser_auth_store(),
+            dashboard_sessions: new_dashboard_session_store(),
+            dashboard_launches: new_dashboard_launch_store(),
+            mission_cancellations: new_mission_cancellation_store(),
+            started_at: Utc::now(),
+            shutdown: shutdown_tx,
+            autopilot_wake: Arc::new(Notify::new()),
+            log_wake: Arc::new(Notify::new()),
+            restart_requested: Arc::new(AtomicBool::new(false)),
+            rate_limiter: ProviderRateLimiter::new(),
+        }
+    }
+
+    #[test]
+    fn tool_registry_capabilities_reflect_actual_registered_tools() {
+        let tools = vec![
+            ToolDefinition {
+                name: "web_search".to_string(),
+                description: "web".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                backend: ToolBackend::ProviderBuiltin,
+                hosted_kind: Some(HostedToolKind::WebSearch),
+                strict_schema: false,
+            },
+            ToolDefinition {
+                name: "run_shell".to_string(),
+                description: "shell".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                backend: ToolBackend::LocalFunction,
+                hosted_kind: None,
+                strict_schema: true,
+            },
+            ToolDefinition {
+                name: "apply_patch".to_string(),
+                description: "patch".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                backend: ToolBackend::LocalFunction,
+                hosted_kind: None,
+                strict_schema: true,
+            },
+        ];
+
+        let capabilities = tool_registry_capabilities(&tools);
+
+        assert!(capabilities.web_search);
+        assert!(capabilities.shell);
+        assert!(capabilities.local_shell);
+        assert!(capabilities.apply_patch);
+        assert!(!capabilities.file_search);
+        assert!(!capabilities.code_interpreter);
+        assert!(!capabilities.remote_mcp);
+        assert!(!capabilities.tool_search);
+    }
+
+    #[test]
+    fn runtime_registered_model_capabilities_use_effective_tool_registry() {
+        let mut config = AppConfig {
+            permission_preset: PermissionPreset::FullAuto,
+            trust_policy: TrustPolicy {
+                trusted_paths: Vec::new(),
+                allow_shell: true,
+                allow_network: true,
+                allow_full_disk: false,
+                allow_self_edit: false,
+            },
+            autonomy: AutonomyProfile::default(),
+            ..AppConfig::default()
+        };
+        config.providers.push(ProviderConfig {
+            id: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: "https://example.com".to_string(),
+            auth_mode: agent_core::AuthMode::None,
+            default_model: Some("gpt-4.1".to_string()),
+            keychain_account: None,
+            oauth: None,
+            local: true,
+        });
+        let state = test_state(config.clone());
+        let provider = config.providers[0].clone();
+
+        let capabilities = runtime_registered_model_capabilities(
+            &state,
+            &config,
+            &provider,
+            "gpt-4.1",
+            ModelToolCapabilities {
+                web_search: true,
+                ..ModelToolCapabilities::default()
+            },
+        )
+        .unwrap();
+
+        assert!(capabilities.web_search);
+        assert!(capabilities.shell);
+        assert!(capabilities.apply_patch);
+    }
+
+    #[tokio::test]
+    async fn enable_autonomy_preserves_self_edit_when_unspecified() {
+        let mut config = AppConfig::default();
+        config.autonomy.allow_self_edit = false;
+        let state = test_state(config);
+
+        let Json(profile) = enable_autonomy(
+            State(state.clone()),
+            Json(AutonomyEnableRequest {
+                mode: Some(AutonomyMode::FreeThinking),
+                allow_self_edit: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(profile.state, AutonomyState::Enabled);
+        assert_eq!(profile.mode, AutonomyMode::FreeThinking);
+        assert!(!profile.allow_self_edit);
+        let saved = state.config.read().await;
+        assert!(!saved.autonomy.allow_self_edit);
+    }
+
+    #[tokio::test]
+    async fn enable_autonomy_allows_explicit_self_edit_override() {
+        let state = test_state(AppConfig::default());
+
+        let Json(profile) = enable_autonomy(
+            State(state.clone()),
+            Json(AutonomyEnableRequest {
+                mode: Some(AutonomyMode::FreeThinking),
+                allow_self_edit: Some(true),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(profile.allow_self_edit);
+        let saved = state.config.read().await;
+        assert!(saved.autonomy.allow_self_edit);
+    }
 }
