@@ -3,7 +3,8 @@
   gap: 1rem;
 }
 
-.grid {
+.grid,
+.secondaryGrid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(360px, 440px);
   gap: 1rem;
@@ -42,6 +43,12 @@
   gap: 0.85rem;
 }
 
+.copy {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
 .form label {
   display: grid;
   gap: 0.45rem;
@@ -66,6 +73,11 @@
   flex-wrap: wrap;
 }
 
+.discoveryStatus {
+  display: grid;
+  gap: 0.35rem;
+}
+
 .primaryButton,
 .linkButtonGhost {
   border: 0;
@@ -81,13 +93,28 @@
   cursor: pointer;
 }
 
+.primaryButton:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 .linkButtonGhost {
   color: var(--text-primary);
   background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+
+.linkButtonGhost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .inlineLink {
   color: var(--accent-soft);
+}
+
+.successCopy {
+  color: #9de6b6;
 }
 
 .errorCopy {
@@ -96,7 +123,8 @@
 }
 
 @media (max-width: 1100px) {
-  .grid {
+  .grid,
+  .secondaryGrid {
     grid-template-columns: 1fr;
   }
 }

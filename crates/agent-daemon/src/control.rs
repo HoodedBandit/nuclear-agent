@@ -457,6 +457,48 @@ pub(crate) async fn list_provider_models(
     Ok(Json(models))
 }
 
+pub(crate) async fn discover_provider_models(
+    State(state): State<AppState>,
+    Json(payload): Json<ProviderUpsertRequest>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let provider = payload.provider;
+    if provider.id.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "provider.id must not be empty",
+        ));
+    }
+    if provider.base_url.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "provider.base_url must not be empty",
+        ));
+    }
+    if provider.auth_mode == agent_core::AuthMode::ApiKey
+        && payload
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        && provider.keychain_account.is_none()
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "api_key is required for API-key providers",
+        ));
+    }
+
+    let models = agent_providers::list_models_with_overrides(
+        &state.http_client,
+        &provider,
+        payload.api_key.as_deref(),
+        payload.oauth_token.as_ref(),
+    )
+    .await?;
+    Ok(Json(models))
+}
+
 pub(crate) async fn list_provider_model_descriptors(
     State(state): State<AppState>,
     Path(provider_id): Path<String>,
@@ -1186,18 +1228,26 @@ pub(crate) fn parse_event_cursor(value: &str) -> Result<EventCursor, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        enable_autonomy, runtime_registered_model_capabilities, tool_registry_capabilities,
+        discover_provider_models, enable_autonomy, runtime_registered_model_capabilities,
+        tool_registry_capabilities,
     };
     use agent_core::{
-        AppConfig, AutonomyEnableRequest, AutonomyMode, AutonomyProfile, AutonomyState,
+        AppConfig, AuthMode, AutonomyEnableRequest, AutonomyMode, AutonomyProfile, AutonomyState,
         HostedToolKind, ModelToolCapabilities, PermissionPreset, ProviderConfig, ProviderKind,
-        ToolBackend, ToolDefinition, TrustPolicy,
+        ProviderUpsertRequest, ToolBackend, ToolDefinition, TrustPolicy,
     };
     use axum::{extract::State, Json};
     use chrono::Utc;
     use reqwest::Client;
-    use std::sync::{atomic::AtomicBool, Arc};
-    use tokio::sync::{mpsc, Notify, RwLock};
+    use std::{
+        collections::HashMap,
+        sync::{atomic::AtomicBool, Arc},
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::{mpsc, oneshot, Notify, RwLock},
+    };
 
     use crate::{
         new_browser_auth_store, new_dashboard_launch_store, new_dashboard_session_store,
@@ -1225,6 +1275,111 @@ mod tests {
             restart_requested: Arc::new(AtomicBool::new(false)),
             rate_limiter: ProviderRateLimiter::new(),
         }
+    }
+
+    #[derive(Debug)]
+    struct CapturedHttpRequest {
+        method: String,
+        path: String,
+        headers: HashMap<String, String>,
+    }
+
+    fn parse_http_request(raw: &str) -> CapturedHttpRequest {
+        let (head, _) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
+        let mut lines = head.lines();
+        let request_line = lines.next().expect("request line should be present");
+        let mut request_parts = request_line.split_whitespace();
+        let method = request_parts
+            .next()
+            .expect("request method should be present")
+            .to_string();
+        let path = request_parts
+            .next()
+            .expect("request path should be present")
+            .to_string();
+        let headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            .collect();
+        CapturedHttpRequest {
+            method,
+            path,
+            headers,
+        }
+    }
+
+    async fn read_local_http_request(
+        stream: &mut tokio::net::TcpStream,
+    ) -> std::io::Result<String> {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let mut header_end = None;
+        let mut content_length = 0usize;
+
+        loop {
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            if header_end.is_none() {
+                if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                    header_end = Some(position + 4);
+                    let headers = String::from_utf8_lossy(&buffer[..position + 4]);
+                    content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.split_once(':').and_then(|(name, value)| {
+                                if name.eq_ignore_ascii_case("content-length") {
+                                    value.trim().parse().ok()
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .unwrap_or(0);
+                }
+            }
+            if let Some(end) = header_end {
+                if buffer.len() >= end + content_length {
+                    break;
+                }
+            }
+        }
+
+        Ok(String::from_utf8_lossy(&buffer).into_owned())
+    }
+
+    async fn spawn_json_response_server(
+        status_line: &str,
+        response_body: &str,
+    ) -> (String, oneshot::Receiver<String>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("test server should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have an address");
+        let status_line = status_line.to_string();
+        let response_body = response_body.to_string();
+        let (request_tx, request_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("server should accept");
+            let request = read_local_http_request(&mut stream)
+                .await
+                .expect("server should read request");
+            let _ = request_tx.send(request);
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("server should write response");
+        });
+        (format!("http://{addr}"), request_rx)
     }
 
     #[test]
@@ -1365,5 +1520,45 @@ mod tests {
         assert!(profile.allow_self_edit);
         let saved = state.config.read().await;
         assert!(saved.autonomy.allow_self_edit);
+    }
+
+    #[tokio::test]
+    async fn discover_provider_models_uses_api_key_override_for_openai_compatible_hosts() {
+        let (base_url, request_rx) = spawn_json_response_server(
+            "200 OK",
+            r#"{"data":[{"id":"kimi-k2.5"},{"id":"kimi-k2"}]}"#,
+        )
+        .await;
+        let state = test_state(AppConfig::default());
+
+        let Json(models) = discover_provider_models(
+            State(state),
+            Json(ProviderUpsertRequest {
+                provider: ProviderConfig {
+                    id: "moonshot".to_string(),
+                    display_name: "Moonshot".to_string(),
+                    kind: ProviderKind::OpenAiCompatible,
+                    base_url,
+                    auth_mode: AuthMode::ApiKey,
+                    default_model: None,
+                    keychain_account: None,
+                    oauth: None,
+                    local: false,
+                },
+                api_key: Some("moonshot-test-key".to_string()),
+                oauth_token: None,
+            }),
+        )
+        .await
+        .expect("model discovery should succeed");
+
+        assert_eq!(models, vec!["kimi-k2.5".to_string(), "kimi-k2".to_string()]);
+        let request = parse_http_request(&request_rx.await.expect("server should capture request"));
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/models");
+        assert_eq!(
+            request.headers.get("authorization").map(String::as_str),
+            Some("Bearer moonshot-test-key")
+        );
     }
 }

@@ -1,23 +1,125 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useDashboardData } from "../../app/useDashboardData";
-import { listProviders, saveProvider } from "../../api/client";
-import type { ProviderConfig, ProviderKind } from "../../api/types";
+import { discoverProviderModels, listProviders, saveProvider } from "../../api/client";
+import type { AuthMode, ProviderConfig, ProviderKind, ProviderUpsertRequest } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { Pill } from "../../components/Pill";
 import { Surface } from "../../components/Surface";
 import styles from "./IntegrationsPage.module.css";
 
-const PROVIDER_PRESETS: Array<{
-  kind: ProviderKind;
+type ProviderPresetId =
+  | "openai"
+  | "moonshot"
+  | "openrouter"
+  | "venice"
+  | "anthropic"
+  | "ollama"
+  | "local_openai";
+
+interface ProviderPreset {
+  id: ProviderPresetId;
   label: string;
+  providerKind: ProviderKind;
+  displayName: string;
+  providerId: string;
   baseUrl: string;
-}> = [
-  { kind: "chat_gpt_codex", label: "ChatGPT Codex", baseUrl: "https://chatgpt.com/backend-api" },
-  { kind: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com" },
-  { kind: "open_ai_compatible", label: "OpenAI Compatible", baseUrl: "https://api.openai.com/v1" },
-  { kind: "ollama", label: "Ollama", baseUrl: "http://127.0.0.1:11434" }
+  authMode: AuthMode;
+  local: boolean;
+  apiKeyLabel?: string;
+  apiKeyPlaceholder?: string;
+  defaultModelPlaceholder: string;
+}
+
+const PROVIDER_PRESETS: ProviderPreset[] = [
+  {
+    id: "openai",
+    label: "OpenAI",
+    providerKind: "open_ai_compatible",
+    displayName: "OpenAI",
+    providerId: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    authMode: "api_key",
+    local: false,
+    apiKeyLabel: "OpenAI API key",
+    apiKeyPlaceholder: "sk-...",
+    defaultModelPlaceholder: "gpt-5.4"
+  },
+  {
+    id: "moonshot",
+    label: "Moonshot (Kimi)",
+    providerKind: "open_ai_compatible",
+    displayName: "Moonshot",
+    providerId: "moonshot",
+    baseUrl: "https://api.moonshot.ai/v1",
+    authMode: "api_key",
+    local: false,
+    apiKeyLabel: "Moonshot API key",
+    apiKeyPlaceholder: "sk-...",
+    defaultModelPlaceholder: "kimi-k2.5"
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    providerKind: "open_ai_compatible",
+    displayName: "OpenRouter",
+    providerId: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    authMode: "api_key",
+    local: false,
+    apiKeyLabel: "OpenRouter API key",
+    apiKeyPlaceholder: "sk-or-...",
+    defaultModelPlaceholder: "openai/gpt-5.4"
+  },
+  {
+    id: "venice",
+    label: "Venice",
+    providerKind: "open_ai_compatible",
+    displayName: "Venice AI",
+    providerId: "venice",
+    baseUrl: "https://api.venice.ai/api/v1",
+    authMode: "api_key",
+    local: false,
+    apiKeyLabel: "Venice API key",
+    apiKeyPlaceholder: "venice-...",
+    defaultModelPlaceholder: "venice-uncensored"
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    providerKind: "anthropic",
+    displayName: "Anthropic",
+    providerId: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    authMode: "api_key",
+    local: false,
+    apiKeyLabel: "Anthropic API key",
+    apiKeyPlaceholder: "sk-ant-...",
+    defaultModelPlaceholder: "claude-sonnet-4.5"
+  },
+  {
+    id: "ollama",
+    label: "Ollama",
+    providerKind: "ollama",
+    displayName: "Ollama local",
+    providerId: "ollama-local",
+    baseUrl: "http://127.0.0.1:11434",
+    authMode: "none",
+    local: true,
+    defaultModelPlaceholder: "qwen2.5-coder:7b"
+  },
+  {
+    id: "local_openai",
+    label: "Local OpenAI-compatible",
+    providerKind: "open_ai_compatible",
+    displayName: "Local OpenAI-compatible",
+    providerId: "local-openai",
+    baseUrl: "http://127.0.0.1:5001/v1",
+    authMode: "none",
+    local: true,
+    defaultModelPlaceholder: "custom-model"
+  }
 ];
 
 const CONNECTOR_SECTIONS = [
@@ -32,6 +134,59 @@ const CONNECTOR_SECTIONS = [
   { label: "Webhook", itemsKey: "webhook_connectors" }
 ] as const;
 
+interface ProviderFormState {
+  presetId: ProviderPresetId;
+  id: string;
+  display_name: string;
+  kind: ProviderKind;
+  base_url: string;
+  auth_mode: AuthMode;
+  default_model: string;
+  api_key: string;
+  local: boolean;
+}
+
+function presetById(id: ProviderPresetId): ProviderPreset {
+  return PROVIDER_PRESETS.find((preset) => preset.id === id) ?? PROVIDER_PRESETS[0];
+}
+
+function buildInitialFormState(presetId: ProviderPresetId = "ollama"): ProviderFormState {
+  const preset = presetById(presetId);
+  return {
+    presetId: preset.id,
+    id: preset.providerId,
+    display_name: preset.displayName,
+    kind: preset.providerKind,
+    base_url: preset.baseUrl,
+    auth_mode: preset.authMode,
+    default_model: "",
+    api_key: "",
+    local: preset.local
+  };
+}
+
+function buildProviderPayload(formState: ProviderFormState): ProviderUpsertRequest {
+  const provider: ProviderConfig = {
+    id: formState.id.trim(),
+    display_name: formState.display_name.trim(),
+    kind: formState.kind,
+    base_url: formState.base_url.trim(),
+    auth_mode: formState.auth_mode,
+    default_model: formState.default_model.trim() || null,
+    keychain_account: null,
+    local: formState.local
+  };
+
+  return {
+    provider,
+    api_key:
+      formState.auth_mode === "api_key"
+        ? formState.api_key.trim() || null
+        : null,
+    oauth_token: null
+  };
+}
+
 export function IntegrationsPage() {
   const { bootstrap } = useDashboardData();
   const queryClient = useQueryClient();
@@ -40,40 +195,58 @@ export function IntegrationsPage() {
     queryFn: listProviders,
     initialData: bootstrap.providers
   });
-  const [formState, setFormState] = useState({
-    id: "",
-    display_name: "",
-    kind: "ollama" as ProviderKind,
-    base_url: "http://127.0.0.1:11434",
-    default_model: ""
+  const [formState, setFormState] = useState<ProviderFormState>(() => buildInitialFormState());
+
+  const selectedPreset = useMemo(
+    () => presetById(formState.presetId),
+    [formState.presetId]
+  );
+
+  const discoveryPayload = useMemo(() => buildProviderPayload(formState), [formState]);
+  const canDiscoverModels =
+    discoveryPayload.provider.id.length > 0 &&
+    discoveryPayload.provider.base_url.length > 0 &&
+    (discoveryPayload.provider.auth_mode !== "api_key" ||
+      (discoveryPayload.api_key ?? "").length > 0);
+
+  const modelDiscoveryQuery = useQuery({
+    queryKey: [
+      "provider-model-discovery",
+      discoveryPayload.provider.kind,
+      discoveryPayload.provider.id,
+      discoveryPayload.provider.base_url,
+      discoveryPayload.provider.auth_mode,
+      discoveryPayload.api_key ?? ""
+    ],
+    queryFn: async () => discoverProviderModels(discoveryPayload),
+    enabled: canDiscoverModels,
+    retry: false,
+    staleTime: 30_000
   });
+
+  useEffect(() => {
+    if (!modelDiscoveryQuery.data || modelDiscoveryQuery.data.length === 0) {
+      return;
+    }
+    if (formState.default_model.trim().length > 0) {
+      return;
+    }
+    setFormState((current) => ({
+      ...current,
+      default_model: modelDiscoveryQuery.data?.[0] ?? current.default_model
+    }));
+  }, [formState.default_model, modelDiscoveryQuery.data]);
 
   const saveProviderMutation = useMutation({
     mutationFn: async () => {
-      const provider: ProviderConfig = {
-        id: formState.id.trim(),
-        display_name: formState.display_name.trim(),
-        kind: formState.kind,
-        base_url: formState.base_url.trim(),
-        auth_mode: formState.kind === "ollama" ? "none" : "api_key",
-        default_model: formState.default_model.trim() || null,
-        keychain_account: null,
-        local: formState.kind === "ollama"
-      };
-      await saveProvider(provider);
+      await saveProvider(buildProviderPayload(formState));
     },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
         queryClient.invalidateQueries({ queryKey: ["providers"] })
       ]);
-      setFormState({
-        id: "",
-        display_name: "",
-        kind: "ollama",
-        base_url: "http://127.0.0.1:11434",
-        default_model: ""
-      });
+      setFormState(buildInitialFormState(formState.presetId));
     }
   });
 
@@ -85,6 +258,12 @@ export function IntegrationsPage() {
       })),
     [bootstrap]
   );
+
+  const discoveredModels = modelDiscoveryQuery.data ?? [];
+  const showDiscoveredModelSelect = discoveredModels.length > 0;
+  const saveDisabled =
+    saveProviderMutation.isPending ||
+    (canDiscoverModels && modelDiscoveryQuery.isPending && formState.default_model.trim().length === 0);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -102,12 +281,16 @@ export function IntegrationsPage() {
                   <div>
                     <strong>{provider.display_name}</strong>
                     <div className={styles.meta}>{provider.id}</div>
+                    <div className={styles.meta}>{provider.base_url}</div>
                   </div>
                   <div className={styles.capabilityBlock}>
                     <Pill tone={provider.local ? "good" : "accent"}>
                       {provider.local ? "Local" : "Hosted"}
                     </Pill>
                     <span className={styles.meta}>{provider.default_model ?? "No default model"}</span>
+                    <span className={styles.meta}>
+                      {provider.auth_mode === "api_key" ? "API key" : provider.auth_mode}
+                    </span>
                   </div>
                 </article>
               ))}
@@ -115,7 +298,7 @@ export function IntegrationsPage() {
           ) : (
             <EmptyState
               title="No providers configured"
-              body="The staged cockpit can create providers directly, while the classic dashboard remains available for the full legacy workbench."
+              body="The modern cockpit now supports direct API-key onboarding for hosted providers, while the classic dashboard still covers browser-session and long-tail setup flows."
             />
           )}
         </Surface>
@@ -125,32 +308,29 @@ export function IntegrationsPage() {
             <label>
               Provider preset
               <select
-                value={formState.kind}
+                value={formState.presetId}
                 onChange={(event) => {
-                  const selected = PROVIDER_PRESETS.find((preset) => preset.kind === event.target.value);
-                  setFormState((current) => ({
-                    ...current,
-                    kind: event.target.value as ProviderKind,
-                    base_url: selected?.baseUrl ?? current.base_url
-                  }));
+                  setFormState(buildInitialFormState(event.target.value as ProviderPresetId));
                 }}
               >
                 {PROVIDER_PRESETS.map((preset) => (
-                  <option key={preset.kind} value={preset.kind}>
+                  <option key={preset.id} value={preset.id}>
                     {preset.label}
                   </option>
                 ))}
               </select>
             </label>
+
             <label>
               Provider ID
               <input
                 value={formState.id}
                 onChange={(event) => setFormState((current) => ({ ...current, id: event.target.value }))}
-                placeholder="ollama-local"
+                placeholder={selectedPreset.providerId}
                 required
               />
             </label>
+
             <label>
               Display name
               <input
@@ -158,10 +338,11 @@ export function IntegrationsPage() {
                 onChange={(event) =>
                   setFormState((current) => ({ ...current, display_name: event.target.value }))
                 }
-                placeholder="Ollama local"
+                placeholder={selectedPreset.displayName}
                 required
               />
             </label>
+
             <label>
               Base URL
               <input
@@ -172,24 +353,94 @@ export function IntegrationsPage() {
                 required
               />
             </label>
-            <label>
-              Default model
-              <input
-                value={formState.default_model}
-                onChange={(event) =>
-                  setFormState((current) => ({ ...current, default_model: event.target.value }))
-                }
-                placeholder="qwen2.5-coder:7b"
-              />
-            </label>
+
+            {formState.auth_mode === "api_key" ? (
+              <label>
+                {selectedPreset.apiKeyLabel ?? "API key"}
+                <input
+                  type="password"
+                  value={formState.api_key}
+                  onChange={(event) =>
+                    setFormState((current) => ({ ...current, api_key: event.target.value }))
+                  }
+                  placeholder={selectedPreset.apiKeyPlaceholder ?? "Paste API key"}
+                  autoComplete="off"
+                  required
+                />
+              </label>
+            ) : null}
+
+            {showDiscoveredModelSelect ? (
+              <label>
+                Default model
+                <select
+                  value={formState.default_model}
+                  onChange={(event) =>
+                    setFormState((current) => ({ ...current, default_model: event.target.value }))
+                  }
+                >
+                  {discoveredModels.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                Default model
+                <input
+                  value={formState.default_model}
+                  onChange={(event) =>
+                    setFormState((current) => ({ ...current, default_model: event.target.value }))
+                  }
+                  placeholder={selectedPreset.defaultModelPlaceholder}
+                />
+              </label>
+            )}
+
+            <div className={styles.discoveryStatus}>
+              {modelDiscoveryQuery.isPending ? (
+                <span className={styles.meta}>Loading models...</span>
+              ) : null}
+              {showDiscoveredModelSelect ? (
+                <span className={styles.successCopy}>
+                  Loaded {discoveredModels.length} model{discoveredModels.length === 1 ? "" : "s"}.
+                </span>
+              ) : null}
+              {modelDiscoveryQuery.error ? (
+                <span className={styles.errorCopy}>
+                  {modelDiscoveryQuery.error instanceof Error
+                    ? `Could not load models automatically: ${modelDiscoveryQuery.error.message}`
+                    : "Could not load models automatically."}
+                </span>
+              ) : null}
+            </div>
+
             <div className={styles.formActions}>
-              <button type="submit" className={styles.primaryButton} data-testid="modern-provider-save">
-                {saveProviderMutation.isPending ? "Saving…" : "Save provider"}
+              <button
+                type="submit"
+                className={styles.primaryButton}
+                data-testid="modern-provider-save"
+                disabled={saveDisabled}
+              >
+                {saveProviderMutation.isPending ? "Saving..." : "Save provider"}
+              </button>
+              <button
+                type="button"
+                className={styles.linkButtonGhost}
+                onClick={() =>
+                  queryClient.invalidateQueries({ queryKey: ["provider-model-discovery"] })
+                }
+                disabled={!canDiscoverModels || modelDiscoveryQuery.isPending}
+              >
+                Refresh models
               </button>
               <a className={styles.linkButtonGhost} href="/dashboard-classic">
                 Open classic tools
               </a>
             </div>
+
             {saveProviderMutation.error ? (
               <p className={styles.errorCopy}>
                 {saveProviderMutation.error instanceof Error
@@ -201,21 +452,36 @@ export function IntegrationsPage() {
         </Surface>
       </div>
 
-      <Surface eyebrow="Connectors" title="Migration status">
-        <div className={styles.connectorGrid}>
-          {connectorCounts.map((item) => (
-            <article key={item.label} className={styles.connectorCard}>
-              <div>
-                <strong>{item.label}</strong>
-                <div className={styles.meta}>{item.count} configured</div>
-              </div>
-              <a href="/dashboard-classic" className={styles.inlineLink}>
-                Classic workbench
-              </a>
-            </article>
-          ))}
-        </div>
-      </Surface>
+      <div className={styles.secondaryGrid}>
+        <Surface eyebrow="Browser session" title="Use the classic workbench for session-based auth">
+          <p className={styles.copy}>
+            ChatGPT/Codex browser sign-in and long-tail OAuth flows still use the classic dashboard.
+            The modern cockpit now covers direct API-key onboarding for hosted providers and local
+            runtime presets.
+          </p>
+          <div className={styles.formActions}>
+            <a className={styles.linkButtonGhost} href="/dashboard-classic">
+              Open classic auth tools
+            </a>
+          </div>
+        </Surface>
+
+        <Surface eyebrow="Connectors" title="Migration status">
+          <div className={styles.connectorGrid}>
+            {connectorCounts.map((item) => (
+              <article key={item.label} className={styles.connectorCard}>
+                <div>
+                  <strong>{item.label}</strong>
+                  <div className={styles.meta}>{item.count} configured</div>
+                </div>
+                <a href="/dashboard-classic" className={styles.inlineLink}>
+                  Classic workbench
+                </a>
+              </article>
+            ))}
+          </div>
+        </Surface>
+      </div>
     </div>
   );
 }

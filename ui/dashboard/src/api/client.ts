@@ -2,6 +2,7 @@ import {
   DashboardBootstrapResponse,
   DashboardSessionRequest,
   ProviderConfig,
+  ProviderUpsertRequest,
   RunTaskRequest,
   RunTaskResponse,
   RunTaskStreamEvent,
@@ -91,14 +92,17 @@ export function listProviders() {
   return apiRequest<ProviderConfig[]>("/v1/providers");
 }
 
-export function saveProvider(provider: ProviderConfig) {
+export function saveProvider(payload: ProviderUpsertRequest) {
   return apiRequest<void>("/v1/providers", {
     method: "POST",
-    body: JSON.stringify({
-      provider,
-      api_key: null,
-      oauth_token: null
-    })
+    body: JSON.stringify(payload)
+  });
+}
+
+export function discoverProviderModels(payload: ProviderUpsertRequest) {
+  return apiRequest<string[]>("/v1/providers/discover-models", {
+    method: "POST",
+    body: JSON.stringify(payload)
   });
 }
 

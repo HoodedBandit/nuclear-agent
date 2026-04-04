@@ -48,6 +48,12 @@ export interface ProviderConfig {
   local: boolean;
 }
 
+export interface ProviderUpsertRequest {
+  provider: ProviderConfig;
+  api_key?: string | null;
+  oauth_token?: unknown | null;
+}
+
 export interface ModelAlias {
   alias: string;
   provider_id: string;

@@ -71,11 +71,11 @@ pub(crate) use connectors::{
 };
 pub(crate) use control::{
     autonomy_status, autopilot_status, clear_provider_credentials, dashboard_bootstrap,
-    delegation_status, delete_alias, delete_mcp_server, delete_provider, doctor, enable_autonomy,
-    export_config, get_permission_preset, get_trust, import_config, list_aliases,
-    list_delegation_targets, list_enabled_skills, list_events, list_logs, list_mcp_servers,
-    list_provider_model_descriptors, list_provider_models, list_providers, pause_autonomy,
-    reset_onboarding, resume_autonomy, shutdown, status, suggest_provider_defaults,
+    delegation_status, delete_alias, delete_mcp_server, delete_provider, discover_provider_models,
+    doctor, enable_autonomy, export_config, get_permission_preset, get_trust, import_config,
+    list_aliases, list_delegation_targets, list_enabled_skills, list_events, list_logs,
+    list_mcp_servers, list_provider_model_descriptors, list_provider_models, list_providers,
+    pause_autonomy, reset_onboarding, resume_autonomy, shutdown, status, suggest_provider_defaults,
     update_autopilot, update_daemon_config, update_delegation_config, update_enabled_skills,
     update_main_alias, update_permission_preset, update_trust, upsert_alias, upsert_mcp_server,
     upsert_provider,
