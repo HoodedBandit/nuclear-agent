@@ -53,13 +53,20 @@ pub(super) fn tool_definitions_to_responses_api(tools: &[ToolDefinition]) -> Res
 
 fn responses_api_tool_definition(tool: &ToolDefinition) -> Result<Value> {
     match tool.backend {
-        ToolBackend::LocalFunction => Ok(json!({
-            "type": "function",
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.input_schema,
-            "strict": tool.strict_schema,
-        })),
+        ToolBackend::LocalFunction => {
+            let parameters = if tool.strict_schema {
+                agent_core::responses_strict_json_schema(&tool.input_schema)?
+            } else {
+                tool.input_schema.clone()
+            };
+            Ok(json!({
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": parameters,
+                "strict": tool.strict_schema,
+            }))
+        }
         ToolBackend::ProviderBuiltin | ToolBackend::ProviderProtocol => {
             let hosted_kind = tool.hosted_kind.ok_or_else(|| {
                 anyhow!(
@@ -340,4 +347,49 @@ fn extract_chatgpt_codex_item_text(value: &Value) -> String {
                 .join("")
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    use super::tool_definitions_to_responses_api;
+    use agent_core::{ToolBackend, ToolDefinition};
+
+    #[test]
+    fn responses_api_tool_definitions_normalize_strict_function_schemas() {
+        let tools = vec![ToolDefinition {
+            name: "list_dir".to_string(),
+            description: "List a directory".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "max_entries": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+            backend: ToolBackend::LocalFunction,
+            hosted_kind: None,
+            strict_schema: true,
+        }];
+
+        let payload = tool_definitions_to_responses_api(&tools).unwrap();
+
+        assert_eq!(payload[0]["strict"], true);
+        let required = payload[0]["parameters"]["required"]
+            .as_array()
+            .expect("required should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(required.len(), 2);
+        assert!(required.contains(&"path"));
+        assert!(required.contains(&"max_entries"));
+        assert_eq!(
+            payload[0]["parameters"]["properties"]["max_entries"]["type"],
+            json!(["integer", "null"])
+        );
+    }
 }

@@ -13,7 +13,7 @@ async function connectDashboard(page) {
     window.__dashboardTestMode = true;
   });
   const state = readState();
-  await page.goto("/ui");
+  await page.goto("/ui-classic");
   await page.fill("#token-input", state.token);
   await page.click("#connect-button");
   await expect

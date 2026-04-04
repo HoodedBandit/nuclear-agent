@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
 mod app_config;
@@ -56,6 +58,154 @@ pub fn truncate_with_suffix(text: &str, max_bytes: usize, suffix: &str) -> Strin
         return text.to_string();
     }
     format!("{}{}", truncate_utf8(text, max_bytes), suffix)
+}
+
+pub fn responses_strict_json_schema(schema: &Value) -> Result<Value> {
+    normalize_responses_strict_schema(schema, true)
+}
+
+fn normalize_responses_strict_schema(schema: &Value, root: bool) -> Result<Value> {
+    let Some(object) = schema.as_object() else {
+        return Ok(schema.clone());
+    };
+
+    let mut normalized = object.clone();
+
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        let required_names = object
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut normalized_properties = Map::new();
+        let mut required = Vec::with_capacity(properties.len());
+        for (name, property_schema) in properties {
+            let property_schema = normalize_responses_strict_schema(property_schema, false)?;
+            let property_schema = if required_names.contains(name) {
+                property_schema
+            } else {
+                make_nullable_schema(property_schema)
+            };
+            normalized_properties.insert(name.clone(), property_schema);
+            required.push(Value::String(name.clone()));
+        }
+
+        normalized.insert(
+            "properties".to_string(),
+            Value::Object(normalized_properties),
+        );
+        normalized.insert("required".to_string(), Value::Array(required));
+    } else if matches!(
+        object.get("type"),
+        Some(Value::String(kind)) if kind == "object"
+    ) {
+        normalized.insert("required".to_string(), Value::Array(Vec::new()));
+    }
+
+    if let Some(items) = object.get("items") {
+        normalized.insert(
+            "items".to_string(),
+            normalize_responses_strict_schema(items, false)?,
+        );
+    }
+
+    if let Some(Value::Object(_)) = object.get("additionalProperties") {
+        normalized.insert(
+            "additionalProperties".to_string(),
+            normalize_responses_strict_schema(&object["additionalProperties"], false)?,
+        );
+    }
+
+    for combinator in ["anyOf", "oneOf", "allOf"] {
+        if let Some(entries) = object.get(combinator).and_then(Value::as_array) {
+            let mut normalized_entries = Vec::with_capacity(entries.len());
+            for entry in entries {
+                normalized_entries.push(normalize_responses_strict_schema(entry, false)?);
+            }
+            normalized.insert(combinator.to_string(), Value::Array(normalized_entries));
+        }
+    }
+
+    if root {
+        let root_type = normalized.get("type").and_then(Value::as_str);
+        if root_type != Some("object") && !normalized.contains_key("properties") {
+            return Err(anyhow!(
+                "Responses strict function schemas must use an object root"
+            ));
+        }
+    }
+
+    Ok(Value::Object(normalized))
+}
+
+fn make_nullable_schema(schema: Value) -> Value {
+    let Some(object) = schema.as_object() else {
+        return json!({
+            "anyOf": [schema, {"type": "null"}]
+        });
+    };
+
+    if schema_allows_null(object) {
+        return schema;
+    }
+
+    if let Some(Value::String(kind)) = object.get("type") {
+        let mut updated = object.clone();
+        updated.insert(
+            "type".to_string(),
+            Value::Array(vec![
+                Value::String(kind.clone()),
+                Value::String("null".to_string()),
+            ]),
+        );
+        return Value::Object(updated);
+    }
+
+    if let Some(Value::Array(kinds)) = object.get("type") {
+        if kinds.iter().any(|value| value.as_str() == Some("null")) {
+            return schema;
+        }
+        let mut updated = object.clone();
+        let mut merged = kinds.clone();
+        merged.push(Value::String("null".to_string()));
+        updated.insert("type".to_string(), Value::Array(merged));
+        return Value::Object(updated);
+    }
+
+    json!({
+        "anyOf": [schema, {"type": "null"}]
+    })
+}
+
+fn schema_allows_null(schema: &Map<String, Value>) -> bool {
+    if matches!(schema.get("type"), Some(Value::String(kind)) if kind == "null") {
+        return true;
+    }
+
+    if let Some(Value::Array(kinds)) = schema.get("type") {
+        if kinds.iter().any(|value| value.as_str() == Some("null")) {
+            return true;
+        }
+    }
+
+    for combinator in ["anyOf", "oneOf"] {
+        if let Some(Value::Array(entries)) = schema.get(combinator) {
+            if entries.iter().any(|entry| {
+                entry.as_object().is_some_and(schema_allows_null) || entry.as_str() == Some("null")
+            }) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1747,7 +1897,9 @@ pub struct HomeAssistantConnectorConfig {
 }
 #[cfg(test)]
 mod tests {
-    use super::{truncate_utf8, truncate_with_suffix};
+    use serde_json::json;
+
+    use super::{responses_strict_json_schema, truncate_utf8, truncate_with_suffix};
 
     #[test]
     fn truncate_utf8_preserves_char_boundaries() {
@@ -1759,5 +1911,66 @@ mod tests {
     fn truncate_with_suffix_appends_suffix_after_safe_truncation() {
         let text = "hello😀world";
         assert_eq!(truncate_with_suffix(text, 8, " [cut]"), "hello [cut]");
+    }
+
+    #[test]
+    fn responses_strict_json_schema_requires_all_properties_and_nullables_optionals() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "max_entries": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        });
+
+        let normalized = responses_strict_json_schema(&schema).unwrap();
+
+        let required = normalized["required"]
+            .as_array()
+            .expect("required should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(required.len(), 2);
+        assert!(required.contains(&"path"));
+        assert!(required.contains(&"max_entries"));
+        assert_eq!(normalized["properties"]["path"]["type"], json!("string"));
+        assert_eq!(
+            normalized["properties"]["max_entries"]["type"],
+            json!(["integer", "null"])
+        );
+    }
+
+    #[test]
+    fn responses_strict_json_schema_normalizes_nested_objects() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "headers": {
+                    "type": "object",
+                    "properties": {
+                        "authorization": { "type": "string" },
+                        "trace": { "type": "string" }
+                    },
+                    "required": ["authorization"],
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let normalized = responses_strict_json_schema(&schema).unwrap();
+
+        assert_eq!(normalized["required"], json!(["headers"]));
+        assert_eq!(
+            normalized["properties"]["headers"]["required"],
+            json!(["authorization", "trace"])
+        );
+        assert_eq!(
+            normalized["properties"]["headers"]["properties"]["trace"]["type"],
+            json!(["string", "null"])
+        );
     }
 }

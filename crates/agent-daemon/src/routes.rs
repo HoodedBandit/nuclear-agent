@@ -30,7 +30,7 @@ use crate::{
     control_socket::control_socket_route,
     dashboard::{
         add_dashboard_asset_routes, dashboard_classic_index, dashboard_classic_root,
-        dashboard_index, dashboard_modern_index, dashboard_modern_root, dashboard_root,
+        dashboard_modern_index, dashboard_modern_root, dashboard_root,
     },
     dashboard_bootstrap, delegation_status, delete_alias, delete_app_connector,
     delete_brave_connector, delete_discord_connector, delete_gmail_connector,
@@ -357,8 +357,8 @@ pub(crate) fn build_public_routes(state: AppState) -> Router {
     add_dashboard_asset_routes(
         Router::new()
             .route("/", get(dashboard_root))
-            .route("/ui", get(dashboard_index))
-            .route("/dashboard", get(dashboard_index))
+            .route("/ui", get(dashboard_modern_index))
+            .route("/dashboard", get(dashboard_modern_index))
             .route("/ui-classic", get(dashboard_classic_index))
             .route("/dashboard-classic", get(dashboard_classic_index))
             .route("/dashboard-classic-root", get(dashboard_classic_root))
