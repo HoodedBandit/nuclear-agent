@@ -28,10 +28,7 @@ use crate::{
     add_mission, approve_connector_approval, approve_memory, autonomy_status, autopilot_status,
     call_home_assistant_service_route, cancel_mission, clear_provider_credentials, compact_session,
     control_socket::control_socket_route,
-    dashboard::{
-        add_dashboard_asset_routes, dashboard_classic_index, dashboard_classic_root,
-        dashboard_modern_index, dashboard_modern_root, dashboard_root,
-    },
+    dashboard::{add_dashboard_asset_routes, dashboard_index, dashboard_root},
     dashboard_bootstrap, delegation_status, delete_alias, delete_app_connector,
     delete_brave_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_mcp_server, delete_plugin,
@@ -364,14 +361,8 @@ pub(crate) fn build_public_routes(state: AppState) -> Router {
     add_dashboard_asset_routes(
         Router::new()
             .route("/", get(dashboard_root))
-            .route("/ui", get(dashboard_modern_index))
-            .route("/dashboard", get(dashboard_modern_index))
-            .route("/ui-classic", get(dashboard_classic_index))
-            .route("/dashboard-classic", get(dashboard_classic_index))
-            .route("/dashboard-classic-root", get(dashboard_classic_root))
-            .route("/ui-modern", get(dashboard_modern_index))
-            .route("/dashboard-modern", get(dashboard_modern_index))
-            .route("/dashboard-modern-root", get(dashboard_modern_root))
+            .route("/ui", get(dashboard_index))
+            .route("/dashboard", get(dashboard_index))
             .route(
                 "/auth/dashboard/session",
                 post(create_dashboard_session).delete(clear_dashboard_session),

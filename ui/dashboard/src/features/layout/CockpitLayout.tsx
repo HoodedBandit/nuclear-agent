@@ -1,4 +1,4 @@
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useDashboardData } from "../../app/useDashboardData";
 import { Pill } from "../../components/Pill";
@@ -7,26 +7,36 @@ import { fmtDate, fmtDurationFrom, startCase } from "../../utils/format";
 import styles from "./CockpitLayout.module.css";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Overview" },
-  { to: "/chat", label: "Chat" },
-  { to: "/integrations", label: "Integrations" },
-  { to: "/operations", label: "Operations" },
-  { to: "/system", label: "System" }
+  { to: "/", label: "Overview", title: "Operational summary" },
+  { to: "/chat", label: "Chat", title: "Task and session cockpit" },
+  { to: "/integrations", label: "Integrations", title: "Providers, connectors, plugins, and MCP" },
+  { to: "/operations", label: "Operations", title: "Missions, memory, approvals, and events" },
+  { to: "/system", label: "System", title: "Trust, daemon, config, and diagnostics" }
 ];
 
+function routeTitle(pathname: string) {
+  const match = NAV_ITEMS.find((item) => item.to === pathname || (item.to === "/" && pathname === "/"));
+  return match ?? NAV_ITEMS[0];
+}
+
 export function CockpitLayout() {
+  const location = useLocation();
   const { bootstrap, onLogout } = useDashboardData();
   const mainTarget = bootstrap.status.main_target;
+  const current = routeTitle(location.pathname);
   const lastEvent = bootstrap.events[0];
 
   return (
     <div className={styles.shell} data-testid="modern-dashboard-shell">
-      <aside className={styles.navRail}>
+      <aside className={styles.navRail} data-testid="modern-nav-rail">
         <div className={styles.brand}>
           <div className={styles.brandMark}>N</div>
-          <div>
-            <div className={styles.brandEyebrow}>Nuclear</div>
+          <div className={styles.brandCopy}>
+            <div className={styles.brandEyebrow}>Nuclear Agent</div>
             <div className={styles.brandTitle}>Operator Cockpit</div>
+            <div className={styles.brandMeta}>
+              {bootstrap.status.main_agent_alias ?? "No main alias"} · {bootstrap.status.persistence_mode}
+            </div>
           </div>
         </div>
 
@@ -41,23 +51,26 @@ export function CockpitLayout() {
               }
               data-testid={`nav-${item.label.toLowerCase()}`}
             >
-              {item.label}
+              <span>{item.label}</span>
+              <small>{item.title}</small>
             </NavLink>
           ))}
         </nav>
 
-        <Surface className={styles.legacySurface} eyebrow="Staged rollout" title="Classic fallback">
-          <p className={styles.legacyText}>
-            The new cockpit is active in parallel. The classic dashboard remains available until the
-            migrated flows are feature-complete.
-          </p>
-          <div className={styles.legacyActions}>
-            <a className={styles.linkButton} href="/dashboard-classic">
-              Open classic
-            </a>
-            <a className={styles.linkButtonGhost} href="/dashboard">
-              Stable route
-            </a>
+        <Surface eyebrow="Current target" title="Active main route" className={styles.railCard}>
+          <div className={styles.railMeta}>
+            <div>
+              <span>Alias</span>
+              <strong>{mainTarget?.alias ?? bootstrap.status.main_agent_alias ?? "Unassigned"}</strong>
+            </div>
+            <div>
+              <span>Provider</span>
+              <strong>{mainTarget?.provider_id ?? "Unavailable"}</strong>
+            </div>
+            <div>
+              <span>Model</span>
+              <strong>{mainTarget?.model ?? "Unavailable"}</strong>
+            </div>
           </div>
         </Surface>
       </aside>
@@ -65,14 +78,11 @@ export function CockpitLayout() {
       <div className={styles.main}>
         <header className={styles.topBar}>
           <div className={styles.headlineBlock}>
-            <div className={styles.topEyebrow}>Live operator view</div>
-            <h1 className={styles.headline}>Modern dashboard rollout</h1>
+            <div className={styles.topEyebrow}>{current.label}</div>
+            <h1 className={styles.headline}>{current.title}</h1>
             <p className={styles.headlineCopy}>
-              Main target{" "}
-              <strong>
-                {mainTarget?.alias ?? bootstrap.status.main_agent_alias ?? "unassigned"}
-              </strong>{" "}
-              on {mainTarget?.model ?? "no model configured"}.
+              Live operator view for a local daemon, persistent sessions, provider routing, safety
+              controls, and automated workflows.
             </p>
           </div>
 
@@ -80,6 +90,9 @@ export function CockpitLayout() {
             <Pill tone="accent">{startCase(bootstrap.permissions)}</Pill>
             <Pill tone={bootstrap.trust.allow_shell ? "good" : "warn"}>
               Shell {bootstrap.trust.allow_shell ? "enabled" : "guarded"}
+            </Pill>
+            <Pill tone={bootstrap.status.autonomy.allow_self_edit ? "warn" : "neutral"}>
+              Self-edit {bootstrap.status.autonomy.allow_self_edit ? "on" : "off"}
             </Pill>
             <Pill tone={bootstrap.remote_content_policy === "block_high_risk" ? "good" : "warn"}>
               {startCase(bootstrap.remote_content_policy)}
@@ -91,24 +104,20 @@ export function CockpitLayout() {
         </header>
 
         <div className={styles.contentGrid}>
-          <main className={styles.workspace}>
-            <Outlet context={{ bootstrap }} />
+          <main className={styles.workspace} data-testid="modern-main-workspace">
+            <Outlet />
           </main>
 
-          <aside className={styles.inspector}>
-            <Surface eyebrow="Current target" title="Session and policy">
-              <div className={styles.metaList}>
-                <div>
-                  <span>Main alias</span>
-                  <strong>{bootstrap.status.main_agent_alias ?? "Unassigned"}</strong>
-                </div>
-                <div>
-                  <span>Persistence</span>
-                  <strong>{startCase(bootstrap.status.persistence_mode)}</strong>
-                </div>
+          <aside className={styles.inspector} data-testid="modern-right-inspector">
+            <Surface eyebrow="Daemon state" title="Live posture">
+              <div className={styles.railMeta}>
                 <div>
                   <span>Autonomy</span>
                   <strong>{startCase(bootstrap.status.autonomy.state)}</strong>
+                </div>
+                <div>
+                  <span>Evolve</span>
+                  <strong>{startCase(bootstrap.status.evolve.state)}</strong>
                 </div>
                 <div>
                   <span>Started</span>
@@ -117,33 +126,18 @@ export function CockpitLayout() {
               </div>
             </Surface>
 
-            <Surface eyebrow="Recent activity" title="Last event">
+            <Surface eyebrow="Latest event" title={lastEvent?.scope ?? "No recent activity"}>
               {lastEvent ? (
                 <div className={styles.eventCard}>
                   <div className={styles.eventMeta}>
                     <Pill tone="neutral">{lastEvent.level}</Pill>
                     <span>{fmtDurationFrom(lastEvent.created_at)}</span>
                   </div>
-                  <div className={styles.eventScope}>{lastEvent.scope}</div>
                   <p className={styles.eventMessage}>{lastEvent.message}</p>
                 </div>
               ) : (
                 <p className={styles.emptyCopy}>No recent daemon events.</p>
               )}
-            </Surface>
-
-            <Surface eyebrow="Escape hatch" title="Operator links">
-              <div className={styles.linkStack}>
-                <Link to="/integrations" className={styles.inlineLink}>
-                  Review providers and connectors
-                </Link>
-                <Link to="/chat" className={styles.inlineLink}>
-                  Open session cockpit
-                </Link>
-                <a href="/dashboard-classic" className={styles.inlineLink}>
-                  Use classic dashboard tools
-                </a>
-              </div>
             </Surface>
           </aside>
         </div>

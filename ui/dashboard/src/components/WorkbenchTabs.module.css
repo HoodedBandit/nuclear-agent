@@ -1,0 +1,46 @@
+.tabStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 9rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(146, 167, 212, 0.12);
+  border-radius: 18px;
+  background: rgba(10, 15, 28, 0.78);
+  color: var(--text-soft);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    transform 150ms ease,
+    background 150ms ease;
+}
+
+.tab:hover {
+  border-color: rgba(97, 214, 255, 0.25);
+  transform: translateY(-1px);
+}
+
+.tabActive {
+  border-color: rgba(97, 214, 255, 0.4);
+  background:
+    linear-gradient(180deg, rgba(97, 214, 255, 0.16), rgba(97, 214, 255, 0.04)),
+    rgba(10, 15, 28, 0.92);
+  color: var(--text-primary);
+}
+
+.label {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.description {
+  font-size: 0.73rem;
+  color: var(--text-muted);
+}

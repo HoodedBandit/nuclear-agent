@@ -6,7 +6,7 @@
     "dashboard:lint": "npm --prefix ui/dashboard run lint",
     "dashboard:test": "npm --prefix ui/dashboard run test",
     "dashboard:typecheck": "npm --prefix ui/dashboard run typecheck",
-    "lint": "node --no-warnings --experimental-vm-modules --input-type=module --eval \"import fs from 'node:fs'; import vm from 'node:vm'; new vm.SourceTextModule(fs.readFileSync('crates/agent-daemon/static/dashboard.js', 'utf8'));\" && node --no-warnings --experimental-vm-modules --input-type=module --eval \"import fs from 'node:fs'; import vm from 'node:vm'; new vm.SourceTextModule(fs.readFileSync('crates/agent-daemon/static/dashboard-core.js', 'utf8'));\" && node --check crates/agent-daemon/static/dashboard-chat.js && node --check crates/agent-daemon/static/dashboard-control.js && node --check crates/agent-daemon/static/dashboard-connectors.js && node --check crates/agent-daemon/static/dashboard-plugins.js && node --check crates/agent-daemon/static/dashboard-providers.js && node --check crates/agent-daemon/static/dashboard-settings.js && node --check crates/agent-daemon/static/dashboard-workspace.js && node --check tests/dashboard-e2e/coordinator.cjs && node --check tests/dashboard-e2e/dashboard.spec.cjs && node --check tests/dashboard-e2e/modern-dashboard.spec.cjs",
+    "lint": "node --check playwright.config.cjs && node --check tests/dashboard-e2e/coordinator.cjs && node --check tests/dashboard-e2e/modern-dashboard.spec.cjs",
     "pretest:e2e": "npm run lint && npm run dashboard:typecheck && npm run dashboard:lint && npm run dashboard:test && npm run dashboard:build",
     "test:e2e": "playwright test"
   },

@@ -38,8 +38,8 @@ export function ConnectScreen({ onConnected }: ConnectScreenProps) {
         <div className={styles.heroEyebrow}>Nuclear Operator Cockpit</div>
         <h1 className={styles.heroTitle}>Modern control room for sessions, tools, integrations, and system state.</h1>
         <p className={styles.heroBody}>
-          This staged cockpit preserves the existing daemon workflows while upgrading the operator
-          surface into a denser, faster, more intentional interface.
+          Sign into the operator cockpit for sessions, providers, connectors, missions, memory, and
+          system controls.
         </p>
       </section>
 
@@ -68,10 +68,7 @@ export function ConnectScreen({ onConnected }: ConnectScreenProps) {
             {submitting ? "Connecting…" : "Enter cockpit"}
           </button>
           {error ? <p className={styles.error}>{error}</p> : null}
-          <p className={styles.hint}>
-            Need the classic surface while this staged rollout is active? Open{" "}
-            <a href="/dashboard-classic">Classic Dashboard</a>.
-          </p>
+          <p className={styles.hint}>Use the daemon token from the terminal or launch flow.</p>
         </form>
       </Surface>
     </main>

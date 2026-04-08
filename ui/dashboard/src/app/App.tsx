@@ -59,7 +59,14 @@ function DashboardRoot() {
             ? bootstrapQuery.error.message
             : "Unknown dashboard error."}
         </p>
-        <a href="/dashboard-classic">Open classic dashboard</a>
+        <button
+          type="button"
+          onClick={() => {
+            void bootstrapQuery.refetch();
+          }}
+        >
+          Retry dashboard load
+        </button>
       </main>
     );
   }
