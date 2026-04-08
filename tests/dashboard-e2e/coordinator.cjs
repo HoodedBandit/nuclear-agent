@@ -94,8 +94,6 @@ function binaryNeedsRebuild(exe) {
     newestMtimeMs(path.join(repoRoot, "Cargo.toml")),
     newestMtimeMs(path.join(repoRoot, "Cargo.lock")),
     newestMtimeMs(path.join(repoRoot, "crates")),
-    newestMtimeMs(path.join(repoRoot, "ui", "dashboard")),
-    newestMtimeMs(path.join(repoRoot, "crates", "agent-daemon", "static-modern")),
     newestMtimeMs(path.join(repoRoot, "tests", "dashboard-e2e"))
   );
   return newestSourceMtimeMs > binaryMtimeMs;
@@ -220,9 +218,6 @@ function startMockProviderServer() {
       const lastUser = [...messages].reverse().find((message) => message.role === "user");
       const prompt = typeof lastUser?.content === "string" ? lastUser.content : "empty";
       const model = body.model || "mock-model";
-      if (prompt.includes("Guarded fallback smoke")) {
-        await sleep(750);
-      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({

@@ -85,40 +85,6 @@ git_commit_sha() {
   git -C "$repo_root" rev-parse HEAD 2>/dev/null || true
 }
 
-git_tree_state_json() {
-  if ! command -v git >/dev/null 2>&1; then
-    printf '{"commit_dirty": false, "dirty_paths": []}\n'
-    return
-  fi
-
-  status="$(git -C "$repo_root" status --short --untracked-files=all 2>/dev/null || true)"
-  if [ -z "$status" ]; then
-    printf '{"commit_dirty": false, "dirty_paths": []}\n'
-    return
-  fi
-
-  if command -v python3 >/dev/null 2>&1; then
-    python_emit=python3
-  elif command -v python >/dev/null 2>&1; then
-    python_emit=python
-  else
-    printf 'Python is required to encode git tree state\n' >&2
-    exit 1
-  fi
-
-  "$python_emit" - <<'PY' "$status"
-import json
-import sys
-
-paths = []
-for line in sys.argv[1].splitlines():
-    trimmed = line[3:].strip() if len(line) > 3 else line.strip()
-    if trimmed:
-        paths.append(trimmed)
-print(json.dumps({"commit_dirty": True, "dirty_paths": paths}))
-PY
-}
-
 copy_snapshot_item() {
   local relative_path="$1"
   local source_path="$repo_root/$relative_path"
@@ -171,33 +137,19 @@ chmod 0755 "$bundle_dir/bin/$platform_tag/nuclear"
 step "Copying source snapshot"
 for item in \
   .cargo \
-  .github \
   benchmarks \
   crates \
   docs \
-  harness \
   scripts \
   tests \
-  .gitignore \
   Cargo.lock \
   Cargo.toml \
-  LICENSE \
   deny.toml \
-  install \
-  install.cmd \
-  install.ps1 \
   package-lock.json \
   package.json \
   playwright.config.cjs \
   README.md \
-  PACKAGE_README.md \
-  ui/dashboard/eslint.config.js \
-  ui/dashboard/index.html \
-  ui/dashboard/package-lock.json \
-  ui/dashboard/package.json \
-  ui/dashboard/src \
-  ui/dashboard/tsconfig.json \
-  ui/dashboard/vite.config.ts
+  PACKAGE_README.md
 do
   copy_snapshot_item "$item"
 done
@@ -205,14 +157,6 @@ done
 canonical_hash="$(sha256_file "$bundle_dir/bin/$platform_tag/nuclear")"
 commit_sha="$(git_commit_sha)"
 created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-git_tree_state="$(git_tree_state_json)"
-if command -v python3 >/dev/null 2>&1; then
-  python_manifest=python3
-else
-  python_manifest=python
-fi
-commit_dirty="$(printf '%s' "$git_tree_state" | "$python_manifest" -c "import json,sys; print('true' if json.load(sys.stdin)['commit_dirty'] else 'false')")"
-dirty_paths_json="$(printf '%s' "$git_tree_state" | "$python_manifest" -c "import json,sys; print(json.dumps(json.load(sys.stdin)['dirty_paths']))")"
 
 cat >"$bundle_dir/release-manifest.json" <<EOF
 {
@@ -221,8 +165,6 @@ cat >"$bundle_dir/release-manifest.json" <<EOF
   "platform": "$platform_tag",
   "created_at": "$created_at",
   "commit_sha": "$commit_sha",
-  "commit_dirty": $commit_dirty,
-  "dirty_paths": $dirty_paths_json,
   "binaries": {
     "canonical": {
       "name": "nuclear",
@@ -266,8 +208,6 @@ cat >"$manifest_path" <<EOF
   "platform": "$platform_tag",
   "created_at": "$created_at",
   "commit_sha": "$commit_sha",
-  "commit_dirty": $commit_dirty,
-  "dirty_paths": $dirty_paths_json,
   "bundle_dir": "$bundle_dir",
   "archive_path": "$archive_path",
   "archive_sha256": "$archive_hash",

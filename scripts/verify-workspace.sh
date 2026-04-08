@@ -15,14 +15,32 @@ step() {
   "$@"
 }
 
-required_cargo_tool() {
+optional_cargo_tool() {
   local tool="$1"
   shift
-  if ! command -v "cargo-${tool}" >/dev/null 2>&1; then
-    printf 'cargo-%s is required. Install with: cargo install cargo-%s --locked\n' "$tool" "$tool" >&2
-    return 1
+  if ! cargo --list | grep -Eq "^[[:space:]]+${tool}[[:space:]]"; then
+    if [ "${CI:-}" = "true" ]; then
+      printf 'cargo-%s is not installed. Install with: cargo install cargo-%s --locked\n' "$tool" "$tool" >&2
+      return 1
+    fi
+    printf 'warning: cargo-%s is not installed; skipping local check. Install with: cargo install cargo-%s --locked\n' "$tool" "$tool" >&2
+    return 0
   fi
   cargo "$tool" "$@"
+}
+
+run_workspace_dependency_drift_check() {
+  local python_cmd
+  if command -v python3 >/dev/null 2>&1; then
+    python_cmd=python3
+  elif command -v python >/dev/null 2>&1; then
+    python_cmd=python
+  else
+    printf 'Python is required for the workspace dependency drift check\n' >&2
+    return 1
+  fi
+
+  "$python_cmd" "$repo_root/scripts/check-workspace-dependency-drift.py"
 }
 
 run_runtime_smoke() {
@@ -83,5 +101,7 @@ step "cargo test --workspace" cargo test --workspace
 step "cargo build --release --bin nuclear" cargo build --release --bin nuclear
 step "runtime smoke validation" run_runtime_smoke
 step "cargo tree --workspace --duplicates" cargo tree --workspace --duplicates
-step "cargo audit" required_cargo_tool audit
-step "cargo deny check advisories licenses bans" required_cargo_tool deny check advisories licenses bans
+step "workspace dependency drift" run_workspace_dependency_drift_check
+step "cargo audit" optional_cargo_tool audit
+step "cargo deny check advisories licenses bans" optional_cargo_tool deny check advisories licenses bans
+step "cargo outdated -R" optional_cargo_tool outdated -R

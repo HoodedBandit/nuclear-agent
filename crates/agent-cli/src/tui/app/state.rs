@@ -1,5 +1,4 @@
 use super::*;
-use agent_core::ProviderProfile;
 
 #[derive(Clone, Copy)]
 pub(crate) enum PickerMode {
@@ -40,7 +39,6 @@ pub(crate) struct ModelPickerEntry {
     pub(crate) description: Option<String>,
     pub(crate) context_window: Option<i64>,
     pub(crate) effective_context_window_percent: Option<i64>,
-    pub(crate) action: PickerAction,
 }
 
 #[derive(Clone)]
@@ -56,6 +54,7 @@ pub(crate) struct GenericPickerEntry {
 pub(crate) enum PickerAction {
     Resume(SessionSummary),
     Fork(SessionSummary),
+    SetModel(String),
     SwitchChatAlias(String),
     SetMainAlias(String),
     SetThinking(Option<ThinkingLevel>),
@@ -66,13 +65,6 @@ pub(crate) enum PickerAction {
     OpenCurrentAliasPicker,
     OpenMainAliasPicker,
     OpenModelPicker,
-    OpenProviderModelSwitchPicker {
-        set_as_main: bool,
-    },
-    OpenProviderModelPicker {
-        provider_id: String,
-        set_as_main: bool,
-    },
     OpenThinkingPicker,
     OpenPermissionPicker,
     OpenDelegationPicker,
@@ -92,6 +84,7 @@ pub(crate) enum PickerAction {
     RejectSkillDraft(String),
     ShowDelegationTargets,
     EditApiKey(String),
+    OpenProviderSwitchPicker,
     OpenProviderPicker,
     OpenProviderActions(String),
     ShowProviderDetails(String),
@@ -135,11 +128,6 @@ pub(crate) enum PickerAction {
     SetDelegationDepth(DelegationLimit),
     SetDelegationParallel(DelegationLimit),
     ToggleProviderDelegation(String, bool),
-    SetProviderModel {
-        provider_id: String,
-        model_id: String,
-        set_as_main: bool,
-    },
     OpenPersistencePicker,
     SetPersistenceMode(PersistenceMode),
     ToggleAutoStart,
@@ -508,42 +496,47 @@ fn default_thinking_description(level: ThinkingLevel) -> &'static str {
 }
 
 pub(super) fn hosted_kind_for_provider(provider: &ProviderConfig) -> Option<HostedKindArg> {
-    if provider.local {
-        return None;
-    }
-
-    match provider.effective_profile() {
-        ProviderProfile::OpenAi if provider.kind == ProviderKind::ChatGptCodex => {
-            Some(HostedKindArg::OpenaiCompatible)
+    match provider.kind {
+        ProviderKind::ChatGptCodex => Some(HostedKindArg::OpenaiCompatible),
+        ProviderKind::Anthropic if !provider.local => Some(HostedKindArg::Anthropic),
+        ProviderKind::OpenAiCompatible if !provider.local => {
+            let normalized = provider.base_url.trim_end_matches('/');
+            if normalized == DEFAULT_OPENAI_URL.trim_end_matches('/')
+                || normalized == DEFAULT_CHATGPT_CODEX_URL.trim_end_matches('/')
+            {
+                Some(HostedKindArg::OpenaiCompatible)
+            } else if normalized == DEFAULT_OPENROUTER_URL.trim_end_matches('/') {
+                Some(HostedKindArg::Openrouter)
+            } else if normalized == DEFAULT_MOONSHOT_URL.trim_end_matches('/') {
+                Some(HostedKindArg::Moonshot)
+            } else if normalized == DEFAULT_VENICE_URL.trim_end_matches('/') {
+                Some(HostedKindArg::Venice)
+            } else {
+                None
+            }
         }
-        ProviderProfile::OpenRouter => Some(HostedKindArg::Openrouter),
-        ProviderProfile::OpenAi => Some(HostedKindArg::OpenaiCompatible),
-        ProviderProfile::Moonshot => Some(HostedKindArg::Moonshot),
-        ProviderProfile::Venice => Some(HostedKindArg::Venice),
-        ProviderProfile::Anthropic
-        | ProviderProfile::Ollama
-        | ProviderProfile::LocalOpenAiCompatible
-        | ProviderProfile::GenericOpenAiCompatible => None,
+        _ => None,
     }
 }
 
 pub(super) fn provider_kind_label(provider: &ProviderConfig) -> &'static str {
-    match provider.effective_profile() {
-        ProviderProfile::OpenAi if provider.kind == ProviderKind::ChatGptCodex => "chatgpt/codex",
-        ProviderProfile::OpenAi => "openai",
-        ProviderProfile::OpenRouter => "openrouter",
-        ProviderProfile::Moonshot => "moonshot",
-        ProviderProfile::Venice => "venice",
-        ProviderProfile::Anthropic => "anthropic",
-        ProviderProfile::Ollama => "ollama",
-        ProviderProfile::LocalOpenAiCompatible => "openai-compatible (local)",
-        ProviderProfile::GenericOpenAiCompatible => {
+    match provider.kind {
+        ProviderKind::ChatGptCodex => "chatgpt/codex",
+        ProviderKind::OpenAiCompatible => {
             if provider.local {
                 "openai-compatible (local)"
             } else {
                 "openai-compatible"
             }
         }
+        ProviderKind::Anthropic => {
+            if provider.local {
+                "anthropic (local)"
+            } else {
+                "anthropic"
+            }
+        }
+        ProviderKind::Ollama => "ollama",
     }
 }
 

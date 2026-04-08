@@ -124,7 +124,9 @@ choose_install_dir() {
   fi
 
   if [ -n "${AUTISM_INSTALL_DIR:-}" ]; then
-    step "AUTISM_INSTALL_DIR is deprecated and ignored; using the canonical Nuclear install root"
+    step "AUTISM_INSTALL_DIR is deprecated; using it once for migration compatibility"
+    printf '%s\n' "$AUTISM_INSTALL_DIR"
+    return
   fi
 
   if [ -n "${CARGO_HOME:-}" ] && [ -d "$CARGO_HOME/bin" ]; then

@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -101,8 +100,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--binary-path", required=True)
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--scenario-root", required=True)
-    parser.add_argument("--daemon-port", type=int, default=0)
-    parser.add_argument("--provider-port", type=int, default=0)
+    parser.add_argument("--daemon-port", type=int, default=42931)
+    parser.add_argument("--provider-port", type=int, default=42932)
     return parser.parse_args()
 
 
@@ -170,13 +169,6 @@ def wait_for_http_json(url: str, *, headers: dict[str, str] | None = None, timeo
             if time.time() >= deadline:
                 raise
             time.sleep(0.3)
-
-
-def allocate_local_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as handle:
-        handle.bind(("127.0.0.1", 0))
-        handle.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return int(handle.getsockname()[1])
 
 
 def configure_profile_env(scenario_root: Path) -> dict[str, str]:
@@ -254,26 +246,24 @@ def main() -> int:
     binary_path = Path(args.binary_path).resolve()
     repo_root = Path(args.repo_root).resolve()
     scenario_root = Path(args.scenario_root).resolve()
-    daemon_port = args.daemon_port or allocate_local_port()
-    provider_port = args.provider_port or allocate_local_port()
     if scenario_root.exists():
         shutil.rmtree(scenario_root)
     scenario_root.mkdir(parents=True, exist_ok=True)
 
     env = configure_profile_env(scenario_root)
-    base_url = f"http://127.0.0.1:{daemon_port}"
+    base_url = f"http://127.0.0.1:{args.daemon_port}"
     auth_headers = {"Authorization": f"Bearer {DAEMON_TOKEN}"}
     bundle_dir = scenario_root / "support-bundle"
 
-    server = MockProviderServer("127.0.0.1", provider_port)
+    server = MockProviderServer("127.0.0.1", args.provider_port)
     server.start()
     try:
-        wait_for_http_json(f"http://127.0.0.1:{provider_port}/v1/models")
+        wait_for_http_json(f"http://127.0.0.1:{args.provider_port}/v1/models")
 
         doctor = run_command([str(binary_path), "doctor"], env=env, cwd=repo_root)
         doctor_values = parse_key_value_output(doctor.stdout)
         config_path = Path(doctor_values["config_path"])
-        update_config(config_path, repo_root, daemon_port, provider_port)
+        update_config(config_path, repo_root, args.daemon_port, args.provider_port)
 
         run_command(
             [str(binary_path), "daemon", "start"],

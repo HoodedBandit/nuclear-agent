@@ -172,7 +172,7 @@ impl<'a> TuiApp<'a> {
                         "/v1/autonomy/enable",
                         &AutonomyEnableRequest {
                             mode: Some(AutonomyMode::FreeThinking),
-                            allow_self_edit: None,
+                            allow_self_edit: true,
                         },
                     )
                     .await?

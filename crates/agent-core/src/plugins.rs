@@ -419,7 +419,6 @@ pub fn project_plugin_provider_config(
         display_name: format!("{} / {}", plugin.manifest.name, adapter.id),
         kind: adapter.provider_kind.clone(),
         base_url: format!("plugin://{}/{}", plugin.id, adapter.id),
-        provider_profile: None,
         auth_mode: AuthMode::None,
         default_model: adapter.default_model.clone(),
         keychain_account: None,

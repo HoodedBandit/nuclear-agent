@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use directories::ProjectDirs;
-use keyring::Entry;
+use keyring_core::{set_default_store, Entry};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -13,9 +13,11 @@ use std::{
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use agent_core::{AuthMode, OAuthToken, ProviderConfig, ProviderKind, APP_NAME, KEYCHAIN_SERVICE};
-
-use super::OPENAI_BROWSER_AUTH_ISSUER;
+use super::{
+    AuthMode, OAuthToken, ProviderConfig, ProviderKind, KEYCHAIN_SERVICE,
+    OPENAI_BROWSER_AUTH_ISSUER,
+};
+use agent_core::APP_NAME;
 
 pub(crate) const KEYCHAIN_SECRET_SAFE_UTF16_UNITS: usize = 1024;
 const SEGMENTED_SECRET_STORAGE_FORMAT: &str = "segmented_secret_v1";
@@ -30,10 +32,7 @@ fn oauth_refresh_locks() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<
 }
 
 pub(crate) fn oauth_refresh_lock_for(account: &str) -> Arc<Mutex<()>> {
-    let mut map = oauth_refresh_locks().lock().unwrap_or_else(|poisoned| {
-        warn!("oauth refresh lock map was poisoned; recovering inner state");
-        poisoned.into_inner()
-    });
+    let mut map = oauth_refresh_locks().lock().expect("lock poisoned");
     map.entry(account.to_owned())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -617,8 +616,46 @@ fn initialize_keyring() -> Result<()> {
     static INIT: std::sync::OnceLock<std::result::Result<(), String>> = std::sync::OnceLock::new();
 
     let result = INIT.get_or_init(|| {
-        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         {
+            let store =
+                windows_native_keyring_store::Store::new().map_err(|error| error.to_string())?;
+            set_default_store(store);
+            let probe = Entry::new(KEYCHAIN_SERVICE, "probe").map_err(|error| error.to_string())?;
+            drop(probe);
+            Ok(())
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            match dbus_secret_service_keyring_store::Store::new() {
+                Ok(store) => {
+                    set_default_store(store);
+                    let probe =
+                        Entry::new(KEYCHAIN_SERVICE, "probe").map_err(|error| error.to_string())?;
+                    drop(probe);
+                    Ok(())
+                }
+                Err(dbus_error) => {
+                    let store = linux_keyutils_keyring_store::Store::new().map_err(|error| {
+                        format!(
+                            "failed to initialize Linux secret store: dbus secret service: {dbus_error}; keyutils fallback: {error}"
+                        )
+                    })?;
+                    set_default_store(store);
+                    let probe =
+                        Entry::new(KEYCHAIN_SERVICE, "probe").map_err(|error| error.to_string())?;
+                    drop(probe);
+                    Ok(())
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let store = apple_native_keyring_store::keychain::Store::new()
+                .map_err(|error| error.to_string())?;
+            set_default_store(store);
             let probe = Entry::new(KEYCHAIN_SERVICE, "probe").map_err(|error| error.to_string())?;
             drop(probe);
             Ok(())

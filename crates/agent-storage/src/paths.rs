@@ -1,7 +1,6 @@
 use super::*;
 use agent_core::CONFIG_VERSION;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 
 const PATH_MIGRATION_SCHEMA_VERSION: u32 = 1;
 const LEGACY_APP_NAME: &str = "Agent Builder";
@@ -31,8 +30,6 @@ pub struct PathMigrationRecord {
     #[serde(default)]
     pub copied_paths: Vec<String>,
     #[serde(default)]
-    pub matched_existing: Vec<String>,
-    #[serde(default)]
     pub skipped_existing: Vec<String>,
 }
 
@@ -45,8 +42,8 @@ impl PathMigrationRecord {
         let root_matches = self
             .legacy_root_dir
             .as_deref()
-            .map(PathBuf::from)
-            .is_none_or(|root| root == legacy.root_dir);
+            .map(Path::new)
+            .is_none_or(|root| root == legacy.root_dir.as_path());
 
         root_matches
             && Path::new(&self.legacy_config_dir) == legacy.config_dir.as_path()
@@ -212,7 +209,6 @@ impl AppPaths {
                 legacy_log_dir: legacy.log_dir.display().to_string(),
                 moved_paths: Vec::new(),
                 copied_paths: Vec::new(),
-                matched_existing: Vec::new(),
                 skipped_existing: Vec::new(),
             };
 
@@ -221,7 +217,6 @@ impl AppPaths {
                 &self.config_dir,
                 &mut record.moved_paths,
                 &mut record.copied_paths,
-                &mut record.matched_existing,
                 &mut record.skipped_existing,
             )?;
             migrate_tree(
@@ -229,7 +224,6 @@ impl AppPaths {
                 &self.data_dir,
                 &mut record.moved_paths,
                 &mut record.copied_paths,
-                &mut record.matched_existing,
                 &mut record.skipped_existing,
             )?;
             migrate_tree(
@@ -237,13 +231,11 @@ impl AppPaths {
                 &self.log_dir,
                 &mut record.moved_paths,
                 &mut record.copied_paths,
-                &mut record.matched_existing,
                 &mut record.skipped_existing,
             )?;
 
             if record.moved_paths.is_empty()
                 && record.copied_paths.is_empty()
-                && record.matched_existing.is_empty()
                 && record.skipped_existing.is_empty()
             {
                 continue;
@@ -308,7 +300,6 @@ fn migrate_tree(
     canonical: &Path,
     moved_paths: &mut Vec<String>,
     copied_paths: &mut Vec<String>,
-    matched_existing: &mut Vec<String>,
     skipped_existing: &mut Vec<String>,
 ) -> Result<()> {
     if !legacy.exists() {
@@ -337,33 +328,20 @@ fn migrate_tree(
                 return Ok(());
             }
             Err(_) => {
-                copy_tree_with_conflict_detection(
-                    legacy,
-                    canonical,
-                    copied_paths,
-                    matched_existing,
-                    skipped_existing,
-                )?;
+                copy_tree_if_missing(legacy, canonical, copied_paths, skipped_existing)?;
                 return Ok(());
             }
         }
     }
 
-    copy_tree_with_conflict_detection(
-        legacy,
-        canonical,
-        copied_paths,
-        matched_existing,
-        skipped_existing,
-    )?;
+    copy_tree_if_missing(legacy, canonical, copied_paths, skipped_existing)?;
     Ok(())
 }
 
-fn copy_tree_with_conflict_detection(
+fn copy_tree_if_missing(
     source: &Path,
     destination: &Path,
     copied_paths: &mut Vec<String>,
-    matched_existing: &mut Vec<String>,
     skipped_existing: &mut Vec<String>,
 ) -> Result<()> {
     if !source.exists() {
@@ -372,23 +350,8 @@ fn copy_tree_with_conflict_detection(
 
     if source.is_file() {
         if destination.exists() {
-            if destination.is_dir() {
-                return Err(anyhow!(
-                    "legacy migration conflict: source file {} cannot replace canonical directory {}",
-                    source.display(),
-                    destination.display()
-                ));
-            }
-            if files_equal(source, destination)? {
-                matched_existing.push(format!("{} == {}", source.display(), destination.display()));
-                return Ok(());
-            }
-            skipped_existing.push(format!("{} != {}", source.display(), destination.display()));
-            return Err(anyhow!(
-                "legacy migration conflict: {} differs from existing canonical path {}",
-                source.display(),
-                destination.display()
-            ));
+            skipped_existing.push(destination.display().to_string());
+            return Ok(());
         }
         let parent = destination.parent().ok_or_else(|| {
             anyhow!(
@@ -423,54 +386,14 @@ fn copy_tree_with_conflict_detection(
         let entry = entry?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
-        copy_tree_with_conflict_detection(
+        copy_tree_if_missing(
             &source_path,
             &destination_path,
             copied_paths,
-            matched_existing,
             skipped_existing,
         )?;
     }
     Ok(())
-}
-
-fn files_equal(source: &Path, destination: &Path) -> Result<bool> {
-    let source_metadata = fs::metadata(source)
-        .with_context(|| format!("failed to inspect source file {}", source.display()))?;
-    let destination_metadata = fs::metadata(destination).with_context(|| {
-        format!(
-            "failed to inspect destination file {}",
-            destination.display()
-        )
-    })?;
-    if source_metadata.len() != destination_metadata.len() {
-        return Ok(false);
-    }
-
-    let mut source_file =
-        fs::File::open(source).with_context(|| format!("failed to open {}", source.display()))?;
-    let mut destination_file = fs::File::open(destination)
-        .with_context(|| format!("failed to open {}", destination.display()))?;
-
-    let mut source_buffer = [0_u8; 8192];
-    let mut destination_buffer = [0_u8; 8192];
-    loop {
-        let source_read = source_file
-            .read(&mut source_buffer)
-            .with_context(|| format!("failed to read {}", source.display()))?;
-        let destination_read = destination_file
-            .read(&mut destination_buffer)
-            .with_context(|| format!("failed to read {}", destination.display()))?;
-        if source_read != destination_read {
-            return Ok(false);
-        }
-        if source_read == 0 {
-            return Ok(true);
-        }
-        if source_buffer[..source_read] != destination_buffer[..destination_read] {
-            return Ok(false);
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -522,11 +445,10 @@ mod tests {
         let mut copied_paths = Vec::new();
         let mut skipped_existing = Vec::new();
 
-        super::copy_tree_with_conflict_detection(
+        super::copy_tree_if_missing(
             &source,
             &destination,
             &mut copied_paths,
-            &mut Vec::new(),
             &mut skipped_existing,
         )
         .unwrap();
@@ -556,7 +478,6 @@ mod tests {
         assert!(
             !first.copied_paths.is_empty()
                 || !first.moved_paths.is_empty()
-                || !first.matched_existing.is_empty()
                 || !first.skipped_existing.is_empty()
         );
         assert!(legacy.config_path.exists());
@@ -576,27 +497,6 @@ mod tests {
             .unwrap()
             .expect("expected migration record to remain after second run");
         assert_eq!(stored_again, first);
-
-        let _ = std::fs::remove_dir_all(&temp);
-    }
-
-    #[test]
-    fn migrate_legacy_candidates_errors_on_conflicting_existing_file() {
-        let temp =
-            std::env::temp_dir().join(format!("agent-storage-paths-test-{}", uuid::Uuid::new_v4()));
-        let canonical = super::AppPaths::under_root(temp.join("canonical"));
-        let legacy = super::AppPaths::under_root(temp.join("legacy"));
-
-        canonical.ensure().unwrap();
-        legacy.ensure().unwrap();
-        std::fs::write(&canonical.config_path, br#"{"version":2}"#).unwrap();
-        std::fs::write(&legacy.config_path, br#"{"version":1}"#).unwrap();
-
-        let error = canonical
-            .migrate_legacy_candidates(vec![legacy], None)
-            .expect_err("expected migration conflict to fail");
-        assert!(error.to_string().contains("legacy migration conflict"));
-        assert!(!canonical.migration_path.exists());
 
         let _ = std::fs::remove_dir_all(&temp);
     }

@@ -53,15 +53,12 @@ def main() -> int:
             "internalParameters": {
                 "script": "scripts/package-release",
                 "created_at": manifest.get("created_at"),
-                "git_tree_state": "dirty" if manifest.get("commit_dirty") else "clean",
-                "dirty_paths": manifest.get("dirty_paths") or [],
             },
             "resolvedDependencies": [
                 {
                     "uri": "git+local",
                     "digest": {
                         "gitCommit": manifest.get("commit_sha") or "unknown",
-                        "gitTreeState": "dirty" if manifest.get("commit_dirty") else "clean",
                     },
                 }
             ],
@@ -106,14 +103,6 @@ def main() -> int:
         ],
         "predicateType": "https://slsa.dev/provenance/v1",
         "predicate": predicate,
-        "annotations": [
-            {
-                "annotationDate": utc_now_iso(),
-                "annotationType": "OTHER",
-                "annotator": "Tool: scripts/generate_provenance.py",
-                "comment": f"git_tree_state={'dirty' if manifest.get('commit_dirty') else 'clean'}",
-            }
-        ],
     }
 
     output_path.write_text(json.dumps(statement, indent=2), encoding="utf-8")

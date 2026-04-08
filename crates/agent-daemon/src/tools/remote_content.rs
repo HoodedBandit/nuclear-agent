@@ -498,16 +498,12 @@ fn provider_web_search_text(reply: &ProviderReply) -> String {
                 hosted_kind: Some(HostedToolKind::WebSearch),
                 arguments_json: Some(arguments_json),
                 ..
-            } => {
-                push_fragment(&mut fragments, arguments_json);
-            }
+            } => push_fragment(&mut fragments, arguments_json),
             ProviderOutputItem::ToolResult {
                 hosted_kind: Some(HostedToolKind::WebSearch),
                 content: Some(content),
                 ..
-            } => {
-                push_fragment(&mut fragments, content);
-            }
+            } => push_fragment(&mut fragments, content),
             _ => {}
         }
     }

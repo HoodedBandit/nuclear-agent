@@ -100,9 +100,6 @@ impl AppConfig {
                     provider.id
                 ));
             }
-            if let Some(error) = provider.explicit_profile_compatibility_error() {
-                return Err(anyhow!("provider '{}' {}", provider.id, error));
-            }
         }
 
         for alias in &self.aliases {
@@ -668,36 +665,4 @@ fn validate_unique_non_empty<'a>(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validate_dashboard_mutation_rejects_incompatible_provider_profile() {
-        let mut config = AppConfig::default();
-        config.providers.push(ProviderConfig {
-            id: "openai".to_string(),
-            display_name: "OpenAI".to_string(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: DEFAULT_OPENAI_URL.to_string(),
-            provider_profile: Some(ProviderProfile::Anthropic),
-            auth_mode: AuthMode::ApiKey,
-            default_model: Some("gpt-5".to_string()),
-            keychain_account: Some("openai-key".to_string()),
-            oauth: None,
-            local: false,
-        });
-
-        let error = config
-            .validate_dashboard_mutation()
-            .expect_err("incompatible provider profile should be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("provider_profile is incompatible"),
-            "unexpected error: {error}"
-        );
-    }
 }

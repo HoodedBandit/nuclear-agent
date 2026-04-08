@@ -25,7 +25,6 @@ fn sample_provider(id: &str, display_name: &str, model: &str) -> ProviderConfig 
         display_name: display_name.to_string(),
         kind: ProviderKind::OpenAiCompatible,
         base_url: "http://127.0.0.1:11434".to_string(),
-        provider_profile: None,
         auth_mode: AuthMode::None,
         default_model: Some(model.to_string()),
         keychain_account: None,
@@ -227,11 +226,6 @@ fn picker_state_filters_models_by_query() {
                 description: Some("Latest frontier agentic coding model.".to_string()),
                 context_window: Some(272_000),
                 effective_context_window_percent: Some(90),
-                action: PickerAction::SetProviderModel {
-                    provider_id: "codex".to_string(),
-                    model_id: "gpt-5.4".to_string(),
-                    set_as_main: false,
-                },
             },
             ModelPickerEntry {
                 id: "gpt-oss-20b".to_string(),
@@ -239,11 +233,6 @@ fn picker_state_filters_models_by_query() {
                 description: Some("Open weights".to_string()),
                 context_window: None,
                 effective_context_window_percent: None,
-                action: PickerAction::SetProviderModel {
-                    provider_id: "codex".to_string(),
-                    model_id: "gpt-oss-20b".to_string(),
-                    set_as_main: false,
-                },
             },
         ],
         items: Vec::new(),
@@ -382,7 +371,6 @@ fn hosted_kind_for_provider_maps_known_remote_urls() {
         display_name: "OpenRouter".to_string(),
         kind: ProviderKind::OpenAiCompatible,
         base_url: DEFAULT_OPENROUTER_URL.to_string(),
-        provider_profile: None,
         auth_mode: AuthMode::ApiKey,
         default_model: None,
         keychain_account: None,
@@ -429,22 +417,6 @@ async fn onboard_slash_command_sets_external_action() {
 }
 
 #[tokio::test]
-async fn auth_slash_command_sets_external_action() {
-    let storage = temp_storage();
-    let mut app = build_test_app(&storage);
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-
-    app.handle_slash_command(crate::InteractiveCommand::AuthAddProvider, &tx)
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        app.pending_external_action,
-        Some(super::ExternalAction::AddProvider)
-    ));
-}
-
-#[tokio::test]
 async fn mode_slash_command_updates_task_mode() {
     let storage = temp_storage();
     let mut app = build_test_app(&storage);
@@ -458,59 +430,6 @@ async fn mode_slash_command_updates_task_mode() {
     .unwrap();
 
     assert_eq!(app.task_mode, Some(TaskMode::Daily));
-}
-
-#[tokio::test]
-async fn model_show_opens_guided_switcher_entries() {
-    let storage = temp_storage();
-    let mut app = build_test_app(&storage);
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-
-    app.handle_slash_command(crate::InteractiveCommand::ModelShow, &tx)
-        .await
-        .unwrap();
-
-    let picker = app.picker.expect("model switcher should open");
-    assert!(matches!(picker.mode, PickerMode::Alias));
-    let labels = picker
-        .items
-        .iter()
-        .map(|item| item.label.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        labels,
-        vec![
-            "Change current chat provider and model",
-            "Switch current chat alias",
-            "Change current provider model",
-            "Change default main provider and model",
-            "Change default main model",
-            "Set default main alias",
-        ]
-    );
-}
-
-#[tokio::test]
-async fn provider_model_switcher_includes_logged_in_provider_without_alias() {
-    let storage = temp_storage();
-    let mut app = build_test_app(&storage);
-    let mut config = storage.load_config().unwrap();
-    config
-        .providers
-        .push(sample_provider("moonshot", "Moonshot", "kimi-k2"));
-    storage.save_config(&config).unwrap();
-
-    app.open_provider_model_switch_picker(false).unwrap();
-
-    let picker = app.picker.expect("provider switch picker should open");
-    assert!(matches!(picker.mode, PickerMode::Provider));
-    assert!(picker.items.iter().any(|item| {
-        item.label == "Moonshot"
-            && item
-                .detail
-                .as_deref()
-                .is_some_and(|detail| detail.contains("no alias yet"))
-    }));
 }
 
 #[tokio::test]
@@ -531,11 +450,10 @@ async fn provider_show_opens_switch_picker_with_logged_in_providers() {
         .map(|item| item.label.as_str())
         .collect::<Vec<_>>();
     assert_eq!(labels, vec!["Anthropic", "Codex"]);
-    assert!(picker.items.iter().any(|item| {
-        item.detail
-            .as_deref()
-            .is_some_and(|detail| detail.contains("alias main"))
-    }));
+    assert!(picker.items.iter().any(|item| item
+        .detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("alias main"))));
 }
 
 #[tokio::test]

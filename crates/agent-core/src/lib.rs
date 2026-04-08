@@ -1,20 +1,16 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
 mod app_config;
 mod control;
 mod plugins;
-mod requests;
 mod workspace;
 
 pub use control::*;
 pub use plugins::*;
-pub use requests::*;
 pub use workspace::*;
 
 pub const APP_NAME: &str = "Nuclear";
@@ -60,154 +56,6 @@ pub fn truncate_with_suffix(text: &str, max_bytes: usize, suffix: &str) -> Strin
     format!("{}{}", truncate_utf8(text, max_bytes), suffix)
 }
 
-pub fn responses_strict_json_schema(schema: &Value) -> Result<Value> {
-    normalize_responses_strict_schema(schema, true)
-}
-
-fn normalize_responses_strict_schema(schema: &Value, root: bool) -> Result<Value> {
-    let Some(object) = schema.as_object() else {
-        return Ok(schema.clone());
-    };
-
-    let mut normalized = object.clone();
-
-    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
-        let required_names = object
-            .get("required")
-            .and_then(Value::as_array)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .collect::<std::collections::HashSet<_>>()
-            })
-            .unwrap_or_default();
-
-        let mut normalized_properties = Map::new();
-        let mut required = Vec::with_capacity(properties.len());
-        for (name, property_schema) in properties {
-            let property_schema = normalize_responses_strict_schema(property_schema, false)?;
-            let property_schema = if required_names.contains(name) {
-                property_schema
-            } else {
-                make_nullable_schema(property_schema)
-            };
-            normalized_properties.insert(name.clone(), property_schema);
-            required.push(Value::String(name.clone()));
-        }
-
-        normalized.insert(
-            "properties".to_string(),
-            Value::Object(normalized_properties),
-        );
-        normalized.insert("required".to_string(), Value::Array(required));
-    } else if matches!(
-        object.get("type"),
-        Some(Value::String(kind)) if kind == "object"
-    ) {
-        normalized.insert("required".to_string(), Value::Array(Vec::new()));
-    }
-
-    if let Some(items) = object.get("items") {
-        normalized.insert(
-            "items".to_string(),
-            normalize_responses_strict_schema(items, false)?,
-        );
-    }
-
-    if let Some(Value::Object(_)) = object.get("additionalProperties") {
-        normalized.insert(
-            "additionalProperties".to_string(),
-            normalize_responses_strict_schema(&object["additionalProperties"], false)?,
-        );
-    }
-
-    for combinator in ["anyOf", "oneOf", "allOf"] {
-        if let Some(entries) = object.get(combinator).and_then(Value::as_array) {
-            let mut normalized_entries = Vec::with_capacity(entries.len());
-            for entry in entries {
-                normalized_entries.push(normalize_responses_strict_schema(entry, false)?);
-            }
-            normalized.insert(combinator.to_string(), Value::Array(normalized_entries));
-        }
-    }
-
-    if root {
-        let root_type = normalized.get("type").and_then(Value::as_str);
-        if root_type != Some("object") && !normalized.contains_key("properties") {
-            return Err(anyhow!(
-                "Responses strict function schemas must use an object root"
-            ));
-        }
-    }
-
-    Ok(Value::Object(normalized))
-}
-
-fn make_nullable_schema(schema: Value) -> Value {
-    let Some(object) = schema.as_object() else {
-        return json!({
-            "anyOf": [schema, {"type": "null"}]
-        });
-    };
-
-    if schema_allows_null(object) {
-        return schema;
-    }
-
-    if let Some(Value::String(kind)) = object.get("type") {
-        let mut updated = object.clone();
-        updated.insert(
-            "type".to_string(),
-            Value::Array(vec![
-                Value::String(kind.clone()),
-                Value::String("null".to_string()),
-            ]),
-        );
-        return Value::Object(updated);
-    }
-
-    if let Some(Value::Array(kinds)) = object.get("type") {
-        if kinds.iter().any(|value| value.as_str() == Some("null")) {
-            return schema;
-        }
-        let mut updated = object.clone();
-        let mut merged = kinds.clone();
-        merged.push(Value::String("null".to_string()));
-        updated.insert("type".to_string(), Value::Array(merged));
-        return Value::Object(updated);
-    }
-
-    json!({
-        "anyOf": [schema, {"type": "null"}]
-    })
-}
-
-fn schema_allows_null(schema: &Map<String, Value>) -> bool {
-    if matches!(schema.get("type"), Some(Value::String(kind)) if kind == "null") {
-        return true;
-    }
-
-    if let Some(Value::Array(kinds)) = schema.get("type") {
-        if kinds.iter().any(|value| value.as_str() == Some("null")) {
-            return true;
-        }
-    }
-
-    for combinator in ["anyOf", "oneOf"] {
-        if let Some(Value::Array(entries)) = schema.get(combinator) {
-            if entries.iter().any(|entry| {
-                entry.as_object().is_some_and(schema_allows_null) || entry.as_str() == Some("null")
-            }) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistenceMode {
@@ -232,19 +80,6 @@ pub enum ProviderKind {
     ChatGptCodex,
     Anthropic,
     Ollama,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderProfile {
-    OpenAi,
-    OpenRouter,
-    Moonshot,
-    Venice,
-    Anthropic,
-    Ollama,
-    LocalOpenAiCompatible,
-    GenericOpenAiCompatible,
 }
 
 impl ProviderKind {
@@ -677,8 +512,6 @@ pub struct ProviderConfig {
     pub display_name: String,
     pub kind: ProviderKind,
     pub base_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_profile: Option<ProviderProfile>,
     pub auth_mode: AuthMode,
     pub default_model: Option<String>,
     pub keychain_account: Option<String>,
@@ -688,89 +521,6 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
-    pub fn effective_profile(&self) -> ProviderProfile {
-        self.provider_profile
-            .clone()
-            .unwrap_or_else(|| self.infer_profile())
-    }
-
-    pub fn infer_profile(&self) -> ProviderProfile {
-        let provider_id = self.id.trim().to_ascii_lowercase();
-        let normalized_base_url = self.base_url.trim_end_matches('/').to_ascii_lowercase();
-
-        match self.kind {
-            ProviderKind::Anthropic => ProviderProfile::Anthropic,
-            ProviderKind::Ollama => ProviderProfile::Ollama,
-            ProviderKind::ChatGptCodex => ProviderProfile::OpenAi,
-            ProviderKind::OpenAiCompatible => {
-                if self.local {
-                    return ProviderProfile::LocalOpenAiCompatible;
-                }
-
-                let default_openai = DEFAULT_OPENAI_URL
-                    .trim_end_matches('/')
-                    .to_ascii_lowercase();
-                let default_openrouter = DEFAULT_OPENROUTER_URL
-                    .trim_end_matches('/')
-                    .to_ascii_lowercase();
-                let default_moonshot = DEFAULT_MOONSHOT_URL
-                    .trim_end_matches('/')
-                    .to_ascii_lowercase();
-                let default_venice = DEFAULT_VENICE_URL
-                    .trim_end_matches('/')
-                    .to_ascii_lowercase();
-
-                if provider_id == "openai" || normalized_base_url == default_openai {
-                    ProviderProfile::OpenAi
-                } else if provider_id == "openrouter" || normalized_base_url == default_openrouter {
-                    ProviderProfile::OpenRouter
-                } else if provider_id == "moonshot" || normalized_base_url == default_moonshot {
-                    ProviderProfile::Moonshot
-                } else if provider_id == "venice" || normalized_base_url == default_venice {
-                    ProviderProfile::Venice
-                } else {
-                    ProviderProfile::GenericOpenAiCompatible
-                }
-            }
-        }
-    }
-
-    pub fn with_inferred_profile(mut self) -> Self {
-        if self.provider_profile.is_none() {
-            self.provider_profile = Some(self.infer_profile());
-        }
-        self
-    }
-
-    pub fn explicit_profile_compatibility_error(&self) -> Option<&'static str> {
-        let profile = self.provider_profile.as_ref()?;
-        let compatible = match self.kind {
-            ProviderKind::Anthropic => *profile == ProviderProfile::Anthropic,
-            ProviderKind::Ollama => *profile == ProviderProfile::Ollama,
-            ProviderKind::ChatGptCodex => *profile == ProviderProfile::OpenAi,
-            ProviderKind::OpenAiCompatible => {
-                if self.local {
-                    *profile == ProviderProfile::LocalOpenAiCompatible
-                } else {
-                    matches!(
-                        profile,
-                        ProviderProfile::OpenAi
-                            | ProviderProfile::OpenRouter
-                            | ProviderProfile::Moonshot
-                            | ProviderProfile::Venice
-                            | ProviderProfile::GenericOpenAiCompatible
-                    )
-                }
-            }
-        };
-
-        if compatible {
-            None
-        } else {
-            Some("provider_profile is incompatible with provider kind/local settings")
-        }
-    }
-
     pub fn has_saved_access_reference(&self) -> bool {
         matches!(self.auth_mode, AuthMode::None)
             || self
@@ -1993,11 +1743,921 @@ pub struct HomeAssistantConnectorConfig {
     #[serde(default)]
     pub cwd: Option<PathBuf>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalConnectorConfig {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub enabled: bool,
+    pub account: String,
+    #[serde(default)]
+    pub cli_path: Option<PathBuf>,
+    #[serde(default = "default_true")]
+    pub require_pairing_approval: bool,
+    #[serde(default)]
+    pub monitored_group_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_group_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_user_ids: Vec<String>,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BraveConnectorConfig {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_key_keychain_account: Option<String>,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectorApprovalRecord {
+    pub id: String,
+    pub connector_kind: ConnectorKind,
+    pub connector_id: String,
+    pub connector_name: String,
+    pub status: ConnectorApprovalStatus,
+    pub title: String,
+    pub details: String,
+    pub source_key: String,
+    #[serde(default)]
+    pub source_event_id: Option<String>,
+    #[serde(default)]
+    pub external_chat_id: Option<String>,
+    #[serde(default)]
+    pub external_chat_display: Option<String>,
+    #[serde(default)]
+    pub external_user_id: Option<String>,
+    #[serde(default)]
+    pub external_user_display: Option<String>,
+    #[serde(default)]
+    pub message_preview: Option<String>,
+    #[serde(default)]
+    pub queued_mission_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub reviewed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub review_note: Option<String>,
+}
+
+impl ConnectorApprovalRecord {
+    pub fn new(
+        connector_kind: ConnectorKind,
+        connector_id: String,
+        connector_name: String,
+        title: String,
+        details: String,
+        source_key: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            connector_kind,
+            connector_id,
+            connector_name,
+            status: ConnectorApprovalStatus::Pending,
+            title,
+            details,
+            source_key,
+            source_event_id: None,
+            external_chat_id: None,
+            external_chat_display: None,
+            external_user_id: None,
+            external_user_display: None,
+            message_preview: None,
+            queued_mission_id: None,
+            created_at: now,
+            updated_at: now,
+            reviewed_at: None,
+            review_note: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubAgentTask {
+    pub prompt: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default)]
+    pub task_mode: Option<TaskMode>,
+    #[serde(default)]
+    pub output_schema_json: Option<String>,
+    #[serde(default)]
+    pub strategy: Option<SubAgentStrategy>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskMode {
+    Build,
+    Daily,
+}
+
+impl TaskMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Daily => "daily",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SubAgentStrategy {
+    #[default]
+    SingleBest,
+    ParallelBestEffort,
+    ParallelAll,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubAgentResult {
+    pub alias: String,
+    pub provider_id: String,
+    pub model: String,
+    pub success: bool,
+    pub response: String,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub structured_output_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionOutcome {
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolExecutionRecord {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+    pub outcome: ToolExecutionOutcome,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunTaskRequest {
+    pub prompt: String,
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    pub session_id: Option<String>,
+    pub cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default)]
+    pub attachments: Vec<InputAttachment>,
+    #[serde(default)]
+    pub permission_preset: Option<PermissionPreset>,
+    #[serde(default)]
+    pub task_mode: Option<TaskMode>,
+    #[serde(default)]
+    pub output_schema_json: Option<String>,
+    #[serde(default)]
+    pub ephemeral: bool,
+    #[serde(default)]
+    pub remote_content_policy_override: Option<RemoteContentPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunTaskResponse {
+    pub session_id: String,
+    pub alias: String,
+    pub provider_id: String,
+    pub model: String,
+    pub response: String,
+    #[serde(default)]
+    pub tool_events: Vec<ToolExecutionRecord>,
+    #[serde(default)]
+    pub structured_output_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RunTaskStreamEvent {
+    SessionStarted {
+        session_id: String,
+        alias: String,
+        provider_id: String,
+        model: String,
+    },
+    Message {
+        message: SessionMessage,
+    },
+    RemoteContent {
+        artifact: RemoteContentArtifact,
+    },
+    Completed {
+        response: RunTaskResponse,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchTaskRequest {
+    pub tasks: Vec<SubAgentTask>,
+    pub cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default)]
+    pub task_mode: Option<TaskMode>,
+    #[serde(default)]
+    pub strategy: Option<SubAgentStrategy>,
+    #[serde(default)]
+    pub parent_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchTaskResponse {
+    pub summary: String,
+    pub results: Vec<SubAgentResult>,
+    #[serde(default)]
+    pub all_succeeded: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelegationTarget {
+    pub alias: String,
+    pub provider_id: String,
+    pub provider_display_name: String,
+    pub model: String,
+    #[serde(default)]
+    pub target_names: Vec<String>,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AliasUpsertRequest {
+    pub alias: ModelAlias,
+    pub set_as_main: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRenameRequest {
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderUpsertRequest {
+    pub provider: ProviderConfig,
+    pub api_key: Option<String>,
+    pub oauth_token: Option<OAuthToken>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSuggestionRequest {
+    pub preferred_provider_id: String,
+    #[serde(default)]
+    pub preferred_alias_name: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub editing_provider_id: Option<String>,
+    #[serde(default)]
+    pub editing_alias_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSuggestionResponse {
+    pub provider_id: String,
+    #[serde(default)]
+    pub alias_name: Option<String>,
+    #[serde(default)]
+    pub alias_model: Option<String>,
+    pub would_be_first_main: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserProviderAuthKind {
+    Codex,
+    Claude,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserProviderAuthSessionStatus {
+    Pending,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserProviderAuthStartRequest {
+    pub kind: BrowserProviderAuthKind,
+    pub provider_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub alias_name: Option<String>,
+    #[serde(default)]
+    pub alias_model: Option<String>,
+    #[serde(default)]
+    pub alias_description: Option<String>,
+    #[serde(default)]
+    pub set_as_main: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserProviderAuthStartResponse {
+    pub session_id: String,
+    pub status: BrowserProviderAuthSessionStatus,
+    #[serde(default)]
+    pub authorization_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserProviderAuthStatusResponse {
+    pub session_id: String,
+    pub kind: BrowserProviderAuthKind,
+    pub provider_id: String,
+    pub display_name: String,
+    pub status: BrowserProviderAuthSessionStatus,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrustUpdateRequest {
+    pub trusted_path: Option<PathBuf>,
+    pub allow_shell: Option<bool>,
+    pub allow_network: Option<bool>,
+    pub allow_full_disk: Option<bool>,
+    pub allow_self_edit: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonConfigUpdateRequest {
+    pub persistence_mode: Option<PersistenceMode>,
+    pub auto_start: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelegationConfigUpdateRequest {
+    #[serde(default)]
+    pub max_depth: Option<DelegationLimit>,
+    #[serde(default)]
+    pub max_parallel_subagents: Option<DelegationLimit>,
+    #[serde(default)]
+    pub disabled_provider_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionUpdateRequest {
+    pub permission_preset: PermissionPreset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutonomyEnableRequest {
+    #[serde(default)]
+    pub mode: Option<AutonomyMode>,
+    pub allow_self_edit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolveStartRequest {
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub budget_friendly: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutopilotUpdateRequest {
+    #[serde(default)]
+    pub state: Option<AutopilotState>,
+    #[serde(default)]
+    pub max_concurrent_missions: Option<u8>,
+    #[serde(default)]
+    pub wake_interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub allow_background_shell: Option<bool>,
+    #[serde(default)]
+    pub allow_background_network: Option<bool>,
+    #[serde(default)]
+    pub allow_background_self_edit: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MissionControlRequest {
+    #[serde(default)]
+    pub wake_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub clear_wake_at: bool,
+    #[serde(default)]
+    pub repeat_interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub clear_repeat_interval_seconds: bool,
+    #[serde(default)]
+    pub watch_path: Option<PathBuf>,
+    #[serde(default)]
+    pub clear_watch_path: bool,
+    #[serde(default)]
+    pub watch_recursive: Option<bool>,
+    #[serde(default)]
+    pub clear_session_id: bool,
+    #[serde(default)]
+    pub clear_handoff_summary: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpServerUpsertRequest {
+    pub server: McpServerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppConnectorUpsertRequest {
+    pub connector: AppConnectorConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebhookConnectorUpsertRequest {
+    pub connector: WebhookConnectorConfig,
+    #[serde(default)]
+    pub webhook_token: Option<String>,
+    #[serde(default)]
+    pub clear_webhook_token: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxConnectorUpsertRequest {
+    pub connector: InboxConnectorConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelegramConnectorUpsertRequest {
+    pub connector: TelegramConnectorConfig,
+    #[serde(default)]
+    pub bot_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscordConnectorUpsertRequest {
+    pub connector: DiscordConnectorConfig,
+    #[serde(default)]
+    pub bot_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlackConnectorUpsertRequest {
+    pub connector: SlackConnectorConfig,
+    #[serde(default)]
+    pub bot_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HomeAssistantConnectorUpsertRequest {
+    pub connector: HomeAssistantConnectorConfig,
+    #[serde(default)]
+    pub access_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalConnectorUpsertRequest {
+    pub connector: SignalConnectorConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebhookEventRequest {
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub details: Option<String>,
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebhookEventResponse {
+    pub connector_id: String,
+    pub mission_id: String,
+    pub title: String,
+    pub status: MissionStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxPollResponse {
+    pub connector_id: String,
+    pub processed_files: usize,
+    pub queued_missions: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelegramPollResponse {
+    pub connector_id: String,
+    pub processed_updates: usize,
+    pub queued_missions: usize,
+    #[serde(default)]
+    pub pending_approvals: usize,
+    #[serde(default)]
+    pub last_update_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscordPollResponse {
+    pub connector_id: String,
+    pub processed_messages: usize,
+    pub queued_missions: usize,
+    #[serde(default)]
+    pub pending_approvals: usize,
+    #[serde(default)]
+    pub updated_channels: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlackPollResponse {
+    pub connector_id: String,
+    pub processed_messages: usize,
+    pub queued_missions: usize,
+    #[serde(default)]
+    pub pending_approvals: usize,
+    #[serde(default)]
+    pub updated_channels: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HomeAssistantPollResponse {
+    pub connector_id: String,
+    pub processed_entities: usize,
+    pub queued_missions: usize,
+    #[serde(default)]
+    pub updated_entities: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalPollResponse {
+    pub connector_id: String,
+    pub processed_messages: usize,
+    pub queued_missions: usize,
+    #[serde(default)]
+    pub pending_approvals: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectorApprovalUpdateRequest {
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelegramSendRequest {
+    pub chat_id: i64,
+    pub text: String,
+    #[serde(default)]
+    pub disable_notification: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelegramSendResponse {
+    pub connector_id: String,
+    pub chat_id: i64,
+    #[serde(default)]
+    pub message_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscordSendRequest {
+    pub channel_id: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscordSendResponse {
+    pub connector_id: String,
+    pub channel_id: String,
+    #[serde(default)]
+    pub message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlackSendRequest {
+    pub channel_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlackSendResponse {
+    pub connector_id: String,
+    pub channel_id: String,
+    #[serde(default)]
+    pub message_ts: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HomeAssistantEntityState {
+    pub entity_id: String,
+    pub state: String,
+    #[serde(default)]
+    pub friendly_name: Option<String>,
+    #[serde(default)]
+    pub last_changed: Option<String>,
+    #[serde(default)]
+    pub last_updated: Option<String>,
+    #[serde(default)]
+    pub attributes: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HomeAssistantServiceCallRequest {
+    pub domain: String,
+    pub service: String,
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    #[serde(default)]
+    pub service_data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HomeAssistantServiceCallResponse {
+    pub connector_id: String,
+    pub domain: String,
+    pub service: String,
+    pub changed_entities: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalSendRequest {
+    #[serde(default)]
+    pub recipient: Option<String>,
+    #[serde(default)]
+    pub group_id: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalSendResponse {
+    pub connector_id: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailConnectorConfig {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub oauth_keychain_account: Option<String>,
+    #[serde(default = "default_true")]
+    pub require_pairing_approval: bool,
+    #[serde(default)]
+    pub allowed_sender_addresses: Vec<String>,
+    #[serde(default)]
+    pub label_filter: Option<String>,
+    #[serde(default)]
+    pub last_history_id: Option<String>,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailConnectorUpsertRequest {
+    pub connector: GmailConnectorConfig,
+    #[serde(default)]
+    pub oauth_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BraveConnectorUpsertRequest {
+    pub connector: BraveConnectorConfig,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailPollResponse {
+    pub connector_id: String,
+    pub processed_messages: usize,
+    pub queued_missions: usize,
+    #[serde(default)]
+    pub pending_approvals: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailSendRequest {
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GmailSendResponse {
+    pub connector_id: String,
+    #[serde(default)]
+    pub message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillUpdateRequest {
+    pub enabled_skills: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonStatus {
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+    pub persistence_mode: PersistenceMode,
+    pub auto_start: bool,
+    #[serde(default)]
+    pub main_agent_alias: Option<String>,
+    #[serde(default)]
+    pub main_target: Option<MainTargetSummary>,
+    #[serde(default)]
+    pub onboarding_complete: bool,
+    pub autonomy: AutonomyProfile,
+    #[serde(default)]
+    pub evolve: EvolveConfig,
+    pub autopilot: AutopilotConfig,
+    pub delegation: DelegationConfig,
+    pub providers: usize,
+    pub aliases: usize,
+    #[serde(default)]
+    pub plugins: usize,
+    pub delegation_targets: usize,
+    #[serde(default)]
+    pub webhook_connectors: usize,
+    #[serde(default)]
+    pub inbox_connectors: usize,
+    #[serde(default)]
+    pub telegram_connectors: usize,
+    #[serde(default)]
+    pub discord_connectors: usize,
+    #[serde(default)]
+    pub slack_connectors: usize,
+    #[serde(default)]
+    pub home_assistant_connectors: usize,
+    #[serde(default)]
+    pub signal_connectors: usize,
+    #[serde(default)]
+    pub gmail_connectors: usize,
+    #[serde(default)]
+    pub brave_connectors: usize,
+    #[serde(default)]
+    pub pending_connector_approvals: usize,
+    pub missions: usize,
+    pub active_missions: usize,
+    pub memories: usize,
+    #[serde(default)]
+    pub pending_memory_reviews: usize,
+    #[serde(default)]
+    pub skill_drafts: usize,
+    #[serde(default)]
+    pub published_skills: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MainTargetSummary {
+    pub alias: String,
+    pub provider_id: String,
+    pub provider_display_name: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MainAliasUpdateRequest {
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DashboardBootstrapResponse {
+    pub status: DaemonStatus,
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
+    #[serde(default)]
+    pub aliases: Vec<ModelAlias>,
+    #[serde(default)]
+    pub delegation_targets: Vec<DelegationTarget>,
+    #[serde(default)]
+    pub telegram_connectors: Vec<TelegramConnectorConfig>,
+    #[serde(default)]
+    pub discord_connectors: Vec<DiscordConnectorConfig>,
+    #[serde(default)]
+    pub slack_connectors: Vec<SlackConnectorConfig>,
+    #[serde(default)]
+    pub signal_connectors: Vec<SignalConnectorConfig>,
+    #[serde(default)]
+    pub home_assistant_connectors: Vec<HomeAssistantConnectorConfig>,
+    #[serde(default)]
+    pub webhook_connectors: Vec<WebhookConnectorConfig>,
+    #[serde(default)]
+    pub inbox_connectors: Vec<InboxConnectorConfig>,
+    #[serde(default)]
+    pub gmail_connectors: Vec<GmailConnectorConfig>,
+    #[serde(default)]
+    pub brave_connectors: Vec<BraveConnectorConfig>,
+    #[serde(default)]
+    pub plugins: Vec<InstalledPluginConfig>,
+    #[serde(default)]
+    pub sessions: Vec<SessionSummary>,
+    #[serde(default)]
+    pub events: Vec<LogEntry>,
+    pub permissions: PermissionPreset,
+    pub trust: TrustPolicy,
+    pub delegation_config: DelegationConfig,
+    #[serde(default)]
+    pub provider_capabilities: Vec<ProviderCapabilitySummary>,
+    #[serde(default)]
+    pub remote_content_policy: RemoteContentPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DashboardLaunchResponse {
+    pub launch_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderHealth {
+    pub id: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HealthReport {
+    pub daemon_running: bool,
+    pub config_path: String,
+    pub data_path: String,
+    pub keyring_ok: bool,
+    pub providers: Vec<ProviderHealth>,
+    #[serde(default)]
+    pub plugins: Vec<PluginDoctorReport>,
+    #[serde(default)]
+    pub remote_content_policy: RemoteContentPolicy,
+    #[serde(default)]
+    pub provider_capabilities: Vec<ProviderCapabilitySummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionTranscript {
+    pub session: SessionSummary,
+    pub messages: Vec<SessionMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionResumePacket {
+    pub session: SessionSummary,
+    pub generated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub recent_messages: Vec<SessionMessage>,
+    #[serde(default)]
+    pub linked_memories: Vec<MemoryRecord>,
+    #[serde(default)]
+    pub related_transcript_hits: Vec<SessionSearchHit>,
+}
+
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
-    use super::{responses_strict_json_schema, truncate_utf8, truncate_with_suffix};
+    use super::{truncate_utf8, truncate_with_suffix};
 
     #[test]
     fn truncate_utf8_preserves_char_boundaries() {
@@ -2009,66 +2669,5 @@ mod tests {
     fn truncate_with_suffix_appends_suffix_after_safe_truncation() {
         let text = "hello😀world";
         assert_eq!(truncate_with_suffix(text, 8, " [cut]"), "hello [cut]");
-    }
-
-    #[test]
-    fn responses_strict_json_schema_requires_all_properties_and_nullables_optionals() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "max_entries": { "type": "integer", "minimum": 1 }
-            },
-            "required": ["path"],
-            "additionalProperties": false
-        });
-
-        let normalized = responses_strict_json_schema(&schema).unwrap();
-
-        let required = normalized["required"]
-            .as_array()
-            .expect("required should be an array")
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect::<Vec<_>>();
-        assert_eq!(required.len(), 2);
-        assert!(required.contains(&"path"));
-        assert!(required.contains(&"max_entries"));
-        assert_eq!(normalized["properties"]["path"]["type"], json!("string"));
-        assert_eq!(
-            normalized["properties"]["max_entries"]["type"],
-            json!(["integer", "null"])
-        );
-    }
-
-    #[test]
-    fn responses_strict_json_schema_normalizes_nested_objects() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "headers": {
-                    "type": "object",
-                    "properties": {
-                        "authorization": { "type": "string" },
-                        "trace": { "type": "string" }
-                    },
-                    "required": ["authorization"],
-                    "additionalProperties": false
-                }
-            },
-            "additionalProperties": false
-        });
-
-        let normalized = responses_strict_json_schema(&schema).unwrap();
-
-        assert_eq!(normalized["required"], json!(["headers"]));
-        assert_eq!(
-            normalized["properties"]["headers"]["required"],
-            json!(["authorization", "trace"])
-        );
-        assert_eq!(
-            normalized["properties"]["headers"]["properties"]["trace"]["type"],
-            json!(["string", "null"])
-        );
     }
 }

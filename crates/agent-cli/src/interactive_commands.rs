@@ -54,7 +54,6 @@ pub(crate) enum InteractiveCommand {
     Compact,
     Init,
     Onboard,
-    AuthAddProvider,
     ModelShow,
     ModelSet(String),
     ProviderShow,
@@ -169,12 +168,6 @@ pub(crate) fn parse_interactive_command(line: &str) -> Result<Option<Interactive
         "compact" => InteractiveCommand::Compact,
         "init" => InteractiveCommand::Init,
         "onboard" => InteractiveCommand::Onboard,
-        "auth" => {
-            if args.is_some() {
-                bail!("usage: /auth");
-            }
-            InteractiveCommand::AuthAddProvider
-        }
         "alias" | "model" => match args {
             Some(value) => InteractiveCommand::ModelSet(value.to_string()),
             None => InteractiveCommand::ModelShow,
@@ -524,21 +517,4 @@ fn parse_watch_command_args(args: Option<&str>) -> Result<(PathBuf, String)> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("usage: /watch <path> <title>"))?;
     Ok((PathBuf::from(path), title.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_auth_command_without_arguments() {
-        let command = parse_interactive_command("/auth").unwrap();
-        assert_eq!(command, Some(InteractiveCommand::AuthAddProvider));
-    }
-
-    #[test]
-    fn rejects_auth_command_arguments() {
-        let error = parse_interactive_command("/auth extra").unwrap_err();
-        assert!(error.to_string().contains("usage: /auth"));
-    }
 }

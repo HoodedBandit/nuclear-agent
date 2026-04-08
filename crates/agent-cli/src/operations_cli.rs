@@ -650,7 +650,7 @@ pub(crate) async fn dashboard_command(storage: &Storage, args: DashboardArgs) ->
     }
 
     if !args.no_open {
-        match webbrowser::open(&launch_url) {
+        match opener::open_browser(&launch_url) {
             Ok(_) => {
                 if !args.print_url {
                     println!("Reusable dashboard URL: {ui_url}");

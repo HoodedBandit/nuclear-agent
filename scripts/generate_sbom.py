@@ -19,13 +19,11 @@ def read_json(path: Path) -> Any:
 
 def cargo_metadata(repo_root: Path) -> dict[str, Any]:
     completed = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--locked"],
+        ["cargo", "metadata", "--format-version", "1", "--locked", "--no-deps"],
         cwd=str(repo_root),
         check=True,
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     return json.loads(completed.stdout)
 
@@ -84,22 +82,18 @@ def main() -> int:
 
     repo_root = Path(args.repo_root).resolve()
     output_path = Path(args.output_path).resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     metadata = cargo_metadata(repo_root)
     rust_packages = []
     for package in metadata.get("packages", []):
         if not isinstance(package, dict):
             continue
-        source = package.get("source")
-        if not isinstance(source, str) or not source:
-            source = package.get("manifest_path") or "NOASSERTION"
         rust_packages.append(
             {
                 "name": package.get("name", "unknown"),
                 "version": package.get("version", "unknown"),
                 "license": package.get("license") or "NOASSERTION",
-                "download": source,
+                "download": package.get("source") or "NOASSERTION",
             }
         )
 

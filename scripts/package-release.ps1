@@ -61,33 +61,19 @@ function Get-ArchTag {
 function Get-SourceSnapshotItems {
     return @(
         ".cargo",
-        ".github",
         "benchmarks",
         "crates",
         "docs",
-        "harness",
         "scripts",
         "tests",
-        ".gitignore",
         "Cargo.lock",
         "Cargo.toml",
-        "LICENSE",
         "deny.toml",
-        "install",
-        "install.cmd",
-        "install.ps1",
         "package-lock.json",
         "package.json",
         "playwright.config.cjs",
         "README.md",
-        "PACKAGE_README.md",
-        "ui/dashboard/eslint.config.js",
-        "ui/dashboard/index.html",
-        "ui/dashboard/package-lock.json",
-        "ui/dashboard/package.json",
-        "ui/dashboard/src",
-        "ui/dashboard/tsconfig.json",
-        "ui/dashboard/vite.config.ts"
+        "PACKAGE_README.md"
     )
 }
 
@@ -124,35 +110,6 @@ function Get-GitCommitSha {
     }
 
     return ""
-}
-
-function Get-GitTreeState {
-    param([string]$RepoRoot)
-
-    try {
-        $status = (& git -C $RepoRoot status --short --untracked-files=all 2>$null | Out-String).Trim()
-        if ([string]::IsNullOrWhiteSpace($status)) {
-            return @{
-                CommitDirty = $false
-                DirtyPaths  = @()
-            }
-        }
-
-        $paths = $status -split "`r?`n" |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            ForEach-Object {
-                if ($_.Length -gt 3) { $_.Substring(3).Trim() } else { $_.Trim() }
-            }
-        return @{
-            CommitDirty = $true
-            DirtyPaths  = $paths
-        }
-    } catch {
-        return @{
-            CommitDirty = $false
-            DirtyPaths  = @()
-        }
-    }
 }
 
 function Get-ReleaseBinaryPath {
@@ -234,7 +191,6 @@ $provenancePath = Join-Path $outputRoot "$bundleName.provenance.json"
 $signingStatusPath = Join-Path $outputRoot "$bundleName.signing.json"
 $manifestPath = Join-Path $outputRoot "$bundleName.manifest.json"
 $commitSha = Get-GitCommitSha -RepoRoot $repoRoot
-$gitTreeState = Get-GitTreeState -RepoRoot $repoRoot
 $releaseBinaries = Ensure-ReleaseBinaries -RepoRoot $repoRoot
 $pythonCommand = Resolve-PythonCommand
 
@@ -272,8 +228,6 @@ $internalManifest = @{
     platform   = $platformTag
     created_at = (Get-Date).ToUniversalTime().ToString("o")
     commit_sha = $commitSha
-    commit_dirty = $gitTreeState.CommitDirty
-    dirty_paths = $gitTreeState.DirtyPaths
     binaries   = @{
         canonical = @{
             name   = "nuclear.exe"
@@ -314,8 +268,6 @@ $manifest = @{
     platform          = $platformTag
     created_at        = (Get-Date).ToUniversalTime().ToString("o")
     commit_sha        = $commitSha
-    commit_dirty      = $gitTreeState.CommitDirty
-    dirty_paths       = $gitTreeState.DirtyPaths
     bundle_dir        = $bundleDir
     archive_path      = $archivePath
     archive_sha256    = $archiveHash

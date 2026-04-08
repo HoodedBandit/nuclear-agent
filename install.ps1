@@ -87,6 +87,22 @@ function Should-UseLegacyProgramRoot {
 }
 
 function Choose-DefaultInstallDir {
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $candidates = @()
+
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $candidates += (Join-Path $env:USERPROFILE ".cargo\bin")
+        $candidates += (Join-Path $env:USERPROFILE ".local\bin")
+    }
+
+    foreach ($candidate in $candidates) {
+        $currentPathHasCandidate = Path-Contains -PathValue $env:Path -Entry $candidate
+        $userPathHasCandidate = Path-Contains -PathValue $userPath -Entry $candidate
+        if ($currentPathHasCandidate -or $userPathHasCandidate) {
+            return $candidate
+        }
+    }
+
     return Get-CanonicalInstallDir
 }
 
@@ -996,31 +1012,7 @@ function Ensure-InstallDir {
     }
 }
 
-function Test-FileContentMatch {
-    param(
-        [string]$Source,
-        [string]$Destination
-    )
-
-    if (-not (Test-Path $Source) -or -not (Test-Path $Destination)) {
-        return $false
-    }
-
-    $sourceItem = Get-Item -LiteralPath $Source
-    $destinationItem = Get-Item -LiteralPath $Destination
-    if ($sourceItem.PSIsContainer -or $destinationItem.PSIsContainer) {
-        return $false
-    }
-    if ($sourceItem.Length -ne $destinationItem.Length) {
-        return $false
-    }
-
-    $sourceHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
-    $destinationHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
-    return $sourceHash -eq $destinationHash
-}
-
-function Merge-TreeWithConflictCheck {
+function Merge-TreeIfMissing {
     param(
         [string]$Source,
         [string]$Destination
@@ -1032,28 +1024,11 @@ function Merge-TreeWithConflictCheck {
 
     $sourceItem = Get-Item -LiteralPath $Source
     if ($sourceItem.PSIsContainer) {
-        if (Test-Path $Destination) {
-            $destinationItem = Get-Item -LiteralPath $Destination
-            if (-not $destinationItem.PSIsContainer) {
-                throw "Managed install migration conflict: $Destination is a file but $Source is a directory."
-            }
-        }
         if (-not (Test-Path $Destination)) {
             New-Item -ItemType Directory -Force -Path $Destination | Out-Null
         }
         Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
-            Merge-TreeWithConflictCheck -Source $_.FullName -Destination (Join-Path $Destination $_.Name)
-        }
-        return
-    }
-
-    if (Test-Path $Destination) {
-        $destinationItem = Get-Item -LiteralPath $Destination
-        if ($destinationItem.PSIsContainer) {
-            throw "Managed install migration conflict: $Destination is a directory but $Source is a file."
-        }
-        if (-not (Test-FileContentMatch -Source $Source -Destination $Destination)) {
-            throw "Managed install migration conflict: existing file $Destination differs from legacy file $Source."
+            Merge-TreeIfMissing -Source $_.FullName -Destination (Join-Path $Destination $_.Name)
         }
         return
     }
@@ -1093,7 +1068,7 @@ function Migrate-LegacyManagedInstall {
     }
 
     Write-Step "Merging managed legacy install root into $canonicalRoot"
-    Merge-TreeWithConflictCheck -Source $legacyRoot -Destination $canonicalRoot
+    Merge-TreeIfMissing -Source $legacyRoot -Destination $canonicalRoot
     Remove-Item -LiteralPath $legacyRoot -Recurse -Force
     return $legacyRoot
 }
@@ -1208,8 +1183,8 @@ try {
         $InstallDir = if (-not [string]::IsNullOrWhiteSpace($env:NUCLEAR_INSTALL_DIR)) {
             $env:NUCLEAR_INSTALL_DIR
         } elseif (-not [string]::IsNullOrWhiteSpace($env:AUTISM_INSTALL_DIR)) {
-            Write-Step "AUTISM_INSTALL_DIR is deprecated and ignored; migrating to the canonical install root"
-            $null
+            Write-Step "AUTISM_INSTALL_DIR is deprecated; using it once for migration compatibility"
+            $env:AUTISM_INSTALL_DIR
         } else {
             $null
         }
@@ -1217,13 +1192,6 @@ try {
 
     if ([string]::IsNullOrWhiteSpace($InstallDir)) {
         $InstallDir = Choose-DefaultInstallDir
-    }
-
-    $legacyInstallDir = [System.IO.Path]::GetFullPath((Get-LegacyInstallDir))
-    $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)
-    if ($resolvedInstallDir -ieq $legacyInstallDir) {
-        Write-Step "Legacy install root requested; migrating to the canonical install root instead"
-        $InstallDir = Get-CanonicalInstallDir
     }
 
     $binaryPath = Join-Path $InstallDir "nuclear.exe"

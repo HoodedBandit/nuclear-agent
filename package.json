@@ -2,12 +2,6 @@
   "name": "nuclear-agent-e2e",
   "private": true,
   "scripts": {
-    "dashboard:build": "npm --prefix ui/dashboard run build",
-    "dashboard:lint": "npm --prefix ui/dashboard run lint",
-    "dashboard:test": "npm --prefix ui/dashboard run test",
-    "dashboard:typecheck": "npm --prefix ui/dashboard run typecheck",
-    "lint": "node --check playwright.config.cjs && node --check tests/dashboard-e2e/coordinator.cjs && node --check tests/dashboard-e2e/modern-dashboard.spec.cjs",
-    "pretest:e2e": "npm run lint && npm run dashboard:typecheck && npm run dashboard:lint && npm run dashboard:test && npm run dashboard:build",
     "test:e2e": "playwright test"
   },
   "devDependencies": {

@@ -104,7 +104,7 @@ pub(crate) fn record_patterns(
         let workspace_key = pattern.workspace_key.as_deref();
         if let Some(existing) = state
             .storage
-            .find_pattern(&pattern.description, workspace_key)?
+            .find_pattern_by_description(&pattern.description, workspace_key)?
         {
             state.storage.increment_pattern_frequency(&existing.id)?;
         } else {

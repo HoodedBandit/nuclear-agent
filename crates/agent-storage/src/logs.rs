@@ -1,6 +1,13 @@
 use super::*;
 
 impl Storage {
+    pub(crate) fn connection(&self) -> Result<Connection> {
+        let connection = Connection::open(&self.paths.db_path)
+            .with_context(|| format!("failed to open database {}", self.paths.db_path.display()))?;
+        configure_connection(&connection)?;
+        Ok(connection)
+    }
+
     pub fn append_log(&self, entry: &LogEntry) -> Result<()> {
         let connection = self.connection()?;
         connection.execute(

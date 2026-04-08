@@ -1,50 +1,44 @@
 # Nuclear Agent Package
 
-This bundle is the managed install surface for Nuclear Agent. It is meant for people who want the packaged runtime, rollback support, and a source snapshot for rebuild fallback without cloning the full repo first.
-
-## What's In The Bundle
-
-- `bin/`: packaged binaries for the target platform
-- `source/`: source snapshot used for rebuild fallback and provenance
-- `install.ps1`, `install.cmd`, `install`: platform installers
-- release metadata, SBOM, provenance, and signing status outputs generated during packaging
+This package is the Windows release bundle for Nuclear Agent.
 
 ## Install
 
-Windows:
+Run one of the packaged installers from this directory:
 
-```powershell
-.\install.cmd
-```
+- `install.cmd`
+- `install.ps1`
 
-or
+The installer places `nuclear` on the user PATH for normal use and migrates any
+legacy managed install into the canonical Nuclear root.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
+## What Is Included
 
-Linux:
+- `bin/windows-x64/`: bundled Windows release binaries
+- `source/`: source snapshot used for fallback local builds
+- `install.ps1` and `install.cmd`: Windows installers
+- `install`: Linux installer copied for source-tree parity
 
-```bash
-./install
-```
+## Notes
 
-The installer places `nuclear` on the user PATH, records managed install metadata, and enables rollback/recovery flows for future updates.
+- Fresh installs default to the canonical `nuclear` install root.
+- Existing legacy `autism` installs are migrated into the canonical Nuclear root
+  during upgrade.
+- If Windows application control blocks the bundled binary, `install.ps1` falls
+  back to building from `source/` and installs `rustup` automatically when
+  needed.
+- Packaged installs write rollback state and install rollback companions.
 
-## Upgrade Behavior
+## Verify
 
-- fresh installs use the canonical Nuclear paths
-- legacy managed installs are migrated one-way into canonical Nuclear paths
-- new state is written only to the canonical `nuclear` layout
-
-If local application control blocks the packaged binary, the installer can fall back to rebuilding from the packaged source snapshot.
-
-## Verification
-
-Installer smoke:
+From the repo root, the packaged installer path is covered by:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-smoke.ps1
 ```
 
-For the full release flow, use the repo-level release scripts described in the main [README](README.md) and [docs/release-checklist.md](docs/release-checklist.md).
+The full GA verification stack is:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\finalize-release.ps1 -Token "<daemon-token>" -Workspace .
+```

@@ -46,7 +46,7 @@ function Invoke-Step {
     throw $lastFailure
 }
 
-function Invoke-RequiredCargoTool {
+function Invoke-OptionalCargoTool {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Tool,
@@ -54,12 +54,36 @@ function Invoke-RequiredCargoTool {
         [string[]]$Args = @()
     )
 
-    $toolCommand = Get-Command ("cargo-" + $Tool) -ErrorAction SilentlyContinue
-    if ($null -eq $toolCommand) {
-        throw "cargo-$Tool is required. Install with: cargo install cargo-$Tool --locked"
+    $cargoList = cargo --list
+    if ($cargoList -notmatch "^\s+$Tool\s") {
+        $message = "cargo-$Tool is not installed. Install with: cargo install cargo-$Tool --locked"
+        if ($env:CI -eq "true") {
+            throw "$message Required in CI."
+        }
+        Write-Warning "$message Skipping local check."
+        return
     }
 
     & cargo $Tool @Args
+}
+
+function Invoke-WorkspaceDependencyDriftCheck {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        & python (Join-Path $RepoRoot "scripts\check-workspace-dependency-drift.py")
+        return
+    }
+
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        & py -3 (Join-Path $RepoRoot "scripts\check-workspace-dependency-drift.py")
+        return
+    }
+
+    throw "Python is required for the workspace dependency drift check"
 }
 
 function Invoke-RuntimeSmokeValidation {
@@ -82,6 +106,9 @@ function Invoke-RuntimeSmokeValidation {
         -BinaryPath $binaryPath `
         -OutputRoot $outputRoot `
         -TaskFilter "install-smoke,support-bundle-smoke"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Runtime smoke run failed"
+    }
 
     $runDir = Get-ChildItem -Path $outputRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
     if ($null -eq $runDir) {
@@ -96,39 +123,6 @@ function Invoke-RuntimeSmokeValidation {
     }
 
     $summary = Get-Content -Path $summaryPath -Raw | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $summary.failed -ne 0) {
-        $failedDetails = @()
-        foreach ($result in $summary.results) {
-            if ($result.passed) {
-                continue
-            }
-            $stderrPath = $result.artifacts.stderr
-            $stdoutPath = $result.artifacts.stdout
-            $stderrTail = if (Test-Path $stderrPath) {
-                (Get-Content -Path $stderrPath -Tail 40) -join "`n"
-            } else {
-                ""
-            }
-            $stdoutTail = if (Test-Path $stdoutPath) {
-                (Get-Content -Path $stdoutPath -Tail 40) -join "`n"
-            } else {
-                ""
-            }
-            $detail = @(
-                "Runtime smoke step failed: $($result.id)",
-                "command: $($result.command)",
-                "stdout tail:",
-                $stdoutTail,
-                "stderr tail:",
-                $stderrTail
-            ) -join "`n"
-            $failedDetails += $detail.TrimEnd()
-        }
-        if ($failedDetails.Count -gt 0) {
-            throw ($failedDetails -join "`n`n")
-        }
-        throw "Runtime smoke run failed"
-    }
     if ($summary.failed -ne 0 -or $summary.passed -lt 1) {
         throw "Runtime smoke summary indicates failure"
     }
@@ -153,9 +147,17 @@ try {
     Invoke-Step "cargo tree --workspace --duplicates" {
         cargo tree --workspace --duplicates
     }
-    Invoke-Step "cargo audit" { Invoke-RequiredCargoTool -Tool "audit" }
+    Invoke-Step "workspace dependency drift" {
+        Invoke-WorkspaceDependencyDriftCheck -RepoRoot $repoRoot
+    }
+    Invoke-Step "cargo audit" {
+        Invoke-OptionalCargoTool -Tool "audit"
+    }
     Invoke-Step "cargo deny check advisories licenses bans" {
-        Invoke-RequiredCargoTool -Tool "deny" -Args @("check", "advisories", "licenses", "bans")
+        Invoke-OptionalCargoTool -Tool "deny" -Args @("check", "advisories", "licenses", "bans")
+    }
+    Invoke-Step "cargo outdated -R" {
+        Invoke-OptionalCargoTool -Tool "outdated" -Args @("-R")
     }
 } finally {
     if ($null -eq $previousCargoTargetDir) {

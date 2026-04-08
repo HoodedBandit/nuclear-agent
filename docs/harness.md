@@ -1,14 +1,14 @@
 # Harness
 
-The release harness is organized into explicit lanes.
+The release harness is organized into explicit lanes:
 
 - `runtime-cert`: installer smoke, support-bundle smoke, daemon lifecycle, and operator-surface certification
 - `coding-deterministic`: blocking fixture-repo coding evaluation with scripted provider turns
-- `coding-reference`: fixture-repo coding evaluation using the configured `main` alias or an explicit provider profile
-- `analysis-smoke`: supplemental structured-output and read-style smoke
-- `soak`: long-running operational verification
+- `coding-reference`: fixture-repo coding evaluation using the configured `main` alias by default or an explicit provider profile
+- `analysis-smoke`: supplemental read/review/structured-output smoke
+- `soak`: long-running operational soak
 
-## Entry Points
+## Canonical entrypoints
 
 Windows:
 
@@ -22,45 +22,57 @@ Linux:
 ./scripts/run-harness.sh --lane runtime-cert
 ```
 
-Top-level release wrappers:
+Top-level release entrypoints:
 
-- `scripts/verify-workspace.*`
-- `scripts/verify-ga.*`
-- `scripts/finalize-release.*`
+- `scripts/verify-workspace.ps1` / `scripts/verify-workspace.sh`
+- `scripts/verify-ga.ps1` / `scripts/verify-ga.sh`
+- `scripts/finalize-release.ps1` / `scripts/finalize-release.sh`
 
-## Task Sources
+## Task files and schemas
 
 - analysis smoke tasks: `harness/tasks/analysis-smoke/tasks.jsonl`
 - coding tasks: `harness/tasks/coding/tasks.json`
 - coding task schema: `harness/schemas/coding-task.schema.json`
 - provider profile schema: `harness/schemas/provider-profile.schema.json`
 
-Coding tasks are manifest-driven. They define:
+Coding tasks are manifest-driven. Required fields include:
 
-- fixture repo
-- operator prompt
+- task id
+- fixture path
+- suite label
+- prompt
 - setup and success commands
-- allowed and forbidden change boundaries
-- tool and duration budgets
+- allowed and forbidden change globs
+- duration and tool-call budgets
+- required tools
 - final response assertions
 
-## Fixture Behavior
+Optional fields include:
 
-The harness always copies fixtures into a scratch workspace, initializes a local git repository there, and evaluates the agent in that isolated copy. It never mutates the main repo during coding evaluation.
+- precondition commands
+- expected failing commands before the run
+- post-run assertions
+- expected changed paths
+- cleanup commands
+- deterministic script path
+
+## Fixture behavior
+
+The coding harness always copies fixtures into a scratch workspace, initializes a local git repository, and runs the task there. It never mutates the main repo during evaluation.
 
 Current fixture coverage includes:
 
 - bug fix
-- failing-test repair
+- failing-test repair with recovery from an insufficient first edit
 - bounded refactor
-- config or migration repair
+- config migration repair
 - docs and code consistency repair
 
-## Provider Profiles
+## Provider profiles
 
-`coding-reference` uses the configured `main` alias by default. It can be overridden with:
+`coding-reference` uses the configured `main` alias by default. You can override it with:
 
-- `--profile`
+- `--profile <json>`
 - `--alias`
 - `--provider-id`
 - `--model`
@@ -68,19 +80,19 @@ Current fixture coverage includes:
 - `--base-url`
 - `--api-key-env`
 
-Precedence:
+Precedence is:
 
-1. CLI flags
-2. profile file
-3. configured `main` alias
+- CLI flags
+- profile file
+- configured `main` alias
 
-## Release Integration
+## Release integration
 
 `verify-workspace`:
 
-- source and dependency gates
+- source/build/test
 - release build
-- fast runtime smoke
+- fast runtime smoke through `runtime-cert` filtered to installer and support-bundle checks
 
 `verify-ga`:
 
@@ -93,6 +105,7 @@ Precedence:
 `finalize-release`:
 
 - `verify-ga`
-- packaging, signing, SBOM, provenance, and release record generation
+- package/sign/SBOM/provenance
 - optional `coding-reference`
 - optional `soak`
+- production release record

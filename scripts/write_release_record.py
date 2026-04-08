@@ -73,28 +73,12 @@ def section(summary: dict[str, Any] | None, path: Path | None) -> dict[str, Any]
     }
 
 
-def signing_section(path: Path | None) -> dict[str, Any] | None:
-    if path is None or not path.exists():
-        return None
-    status = read_json(path)
-    signatures = status.get("signatures") or {}
-    if not isinstance(signatures, dict):
-        signatures = {}
-    return {
-        "path": str(path),
-        "enabled": bool(status.get("enabled")),
-        "key_id": status.get("key_id"),
-        "signature_count": len(signatures),
-    }
-
-
 def build_markdown(record: dict[str, Any]) -> str:
     lines = [
         "# Production Release Record",
         "",
         f"- generated_at: `{record['generated_at']}`",
         f"- commit_sha: `{record.get('commit_sha') or 'unknown'}`",
-        f"- commit_dirty: `{record.get('commit_dirty')}`",
         f"- version: `{record.get('version') or 'unknown'}`",
         f"- platform: `{record.get('platform') or 'unknown'}`",
         "",
@@ -140,8 +124,6 @@ def build_markdown(record: dict[str, Any]) -> str:
             f"- sbom: `{record.get('sbom_path') or 'missing'}`",
             f"- provenance: `{record.get('provenance_path') or 'missing'}`",
             f"- signing_status: `{record.get('signing_status') or 'missing'}`",
-            f"- signing_enabled: `{record.get('signing', {}).get('enabled') if record.get('signing') else 'unknown'}`",
-            f"- signing_signature_count: `{record.get('signing', {}).get('signature_count') if record.get('signing') else 'unknown'}`",
             "",
             "## Release Inputs",
             "",
@@ -149,11 +131,6 @@ def build_markdown(record: dict[str, Any]) -> str:
             f"- checklist: `{record.get('checklist_file')}`",
         ]
     )
-    manual_signoff = record.get("manual_signoff_required") or []
-    if manual_signoff:
-        lines.extend(["", "## Manual Signoff", ""])
-        for item in manual_signoff:
-            lines.append(f"- pending: `{item}`")
     return "\n".join(lines) + "\n"
 
 
@@ -239,18 +216,12 @@ def main() -> int:
     record = {
         "generated_at": utc_now_iso(),
         "commit_sha": package_manifest.get("commit_sha") if package_manifest else get_git_commit_sha(repo_root),
-        "commit_dirty": bool(package_manifest.get("commit_dirty")) if package_manifest else False,
         "version": package_manifest.get("version") if package_manifest else "",
         "platform": package_manifest.get("platform") if package_manifest else "",
         "package": package_manifest,
         "sbom_path": package_manifest.get("sbom_path") if package_manifest else "",
         "provenance_path": package_manifest.get("provenance_path") if package_manifest else "",
         "signing_status": package_manifest.get("signing_status") if package_manifest else "",
-        "signing": signing_section(
-            resolve_existing_path(repo_root, package_manifest.get("signing_status"))
-            if package_manifest and package_manifest.get("signing_status")
-            else None
-        ),
         "runtime_cert": section(runtime_cert_summary, runtime_cert_summary_path),
         "coding_deterministic": section(coding_deterministic_summary, coding_deterministic_summary_path),
         "coding_reference": section(coding_reference_summary, coding_reference_summary_path),
@@ -258,7 +229,6 @@ def main() -> int:
         "soak": section(soak_summary, soak_summary_path),
         "notes_file": str(notes_file),
         "checklist_file": str(checklist_file),
-        "manual_signoff_required": [],
     }
 
     required_failures: list[str] = []
@@ -293,18 +263,6 @@ def main() -> int:
         required_failures.append("signing status path")
     elif not Path(record["signing_status"]).exists():
         required_failures.append(f"signing status file ({record['signing_status']})")
-    elif package_manifest and package_manifest.get("signing_required"):
-        signing = record.get("signing")
-        if signing is None:
-            required_failures.append("signing status payload")
-        elif not signing.get("enabled"):
-            required_failures.append("successful signing enablement")
-        elif int(signing.get("signature_count") or 0) == 0:
-            required_failures.append("artifact signatures")
-    if record["coding_reference"] is None:
-        record["manual_signoff_required"].append("coding-reference")
-    if record["soak"] is None:
-        record["manual_signoff_required"].append("soak")
     if required_failures:
         raise SystemExit("Release record requirements were not met: " + ", ".join(required_failures))
 

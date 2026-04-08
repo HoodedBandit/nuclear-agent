@@ -51,9 +51,8 @@ pub(crate) fn print_interactive_help() {
     println!("/skills publish <id>      approve a learned skill draft");
     println!("/skills reject <id>       discard a learned skill draft");
     println!(
-        "/model [name]             open the guided provider/model switcher or switch the current alias/model"
+        "/model [name]             open the provider switcher or switch the current alias/model"
     );
-    println!("/auth                     add a new provider with guided authentication");
     println!("/provider [name]          list or switch between logged-in providers");
     println!("/mode [value]             set task mode: default, build, or daily");
     println!("/fast                     set thinking to minimal");

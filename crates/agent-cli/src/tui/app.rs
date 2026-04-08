@@ -24,7 +24,8 @@ use agent_core::{
     SlackConnectorConfig, SlackConnectorUpsertRequest, SlackPollResponse, TaskMode,
     TelegramConnectorConfig, TelegramConnectorUpsertRequest, TelegramPollResponse, ThinkingLevel,
     ToolCall, TrustUpdateRequest, WakeTrigger, WebhookConnectorConfig,
-    WebhookConnectorUpsertRequest,
+    WebhookConnectorUpsertRequest, DEFAULT_CHATGPT_CODEX_URL, DEFAULT_MOONSHOT_URL,
+    DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL, DEFAULT_VENICE_URL,
 };
 use agent_providers::{list_model_descriptors, ModelDescriptor};
 use agent_storage::Storage;
@@ -40,9 +41,8 @@ mod settings_pickers;
 mod slash_commands;
 mod state;
 mod support;
-
-use state::*;
-pub(crate) use state::{OverlayState, PickerMode, TuiApp};
+#[cfg(test)]
+mod tests;
 
 use crate::{
     autonomy_summary, browser_hosted_kind_to_provider_kind, build_compact_prompt,
@@ -68,6 +68,7 @@ use support::{
 };
 
 use super::events::{spawn_prompt_task, AppEvent, AppEventSender, PromptTask};
+pub(crate) use state::*;
 
 pub(super) const SESSION_PICKER_LIMIT: usize = crate::SESSION_PICKER_LIMIT;
 const UI_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -972,5 +973,3 @@ impl<'a> TuiApp<'a> {
         self.input_cursor = line_column_to_offset(&self.input, target_line, column);
     }
 }
-#[cfg(test)]
-mod tests;

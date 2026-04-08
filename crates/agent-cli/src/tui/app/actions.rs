@@ -1,5 +1,4 @@
 use super::*;
-use crate::provider_auth::hosted_kind_to_provider_profile;
 
 impl<'a> TuiApp<'a> {
     pub(crate) async fn run_external_action(&mut self, action: ExternalAction) -> Result<()> {
@@ -61,7 +60,7 @@ impl<'a> TuiApp<'a> {
     pub(super) async fn open_dashboard(&mut self) -> Result<()> {
         let ui_url = dashboard_ui_url(self.storage)?;
         let launch_url = dashboard_launch_url(self.storage).await?;
-        match webbrowser::open(&launch_url) {
+        match opener::open_browser(&launch_url) {
             Ok(_) => self.open_static_overlay(
                 "Dashboard",
                 format!(
@@ -560,7 +559,6 @@ impl<'a> TuiApp<'a> {
             BrowserLoginResult::ApiKey(api_key) => {
                 updated_provider.kind = hosted_kind_to_provider_kind(kind);
                 updated_provider.base_url = default_hosted_url(kind).to_string();
-                updated_provider.provider_profile = Some(hosted_kind_to_provider_profile(kind));
                 updated_provider.auth_mode = AuthMode::ApiKey;
                 updated_provider.oauth = None;
                 let _: agent_core::ProviderConfig = self
@@ -578,7 +576,6 @@ impl<'a> TuiApp<'a> {
             BrowserLoginResult::OAuthToken(token) => {
                 updated_provider.kind = browser_hosted_kind_to_provider_kind(kind);
                 updated_provider.base_url = default_browser_hosted_url(kind).to_string();
-                updated_provider.provider_profile = Some(hosted_kind_to_provider_profile(kind));
                 updated_provider.auth_mode = AuthMode::OAuth;
                 updated_provider.oauth = Some(openai_browser_oauth_config());
                 let _: agent_core::ProviderConfig = self

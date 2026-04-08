@@ -33,14 +33,13 @@ use crate::{
     delete_brave_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_mcp_server, delete_plugin,
     delete_provider, delete_signal_connector, delete_slack_connector, delete_telegram_connector,
-    delete_webhook_connector, discover_provider, discover_provider_models, doctor, enable_autonomy,
-    evolve_status, export_config, forget_memory, fork_session, get_brave_connector,
-    get_discord_connector, get_gmail_connector, get_home_assistant_connector,
-    get_home_assistant_entity_state_route, get_inbox_connector, get_mission, get_permission_preset,
-    get_plugin, get_plugin_doctor_report, get_provider_browser_auth_status, get_session,
-    get_session_resume_packet, get_signal_connector, get_skill_draft, get_slack_connector,
-    get_telegram_connector, get_trust, get_webhook_connector, import_config,
-    inspect_workspace_route, install_plugin, list_aliases, list_app_connectors,
+    delete_webhook_connector, doctor, enable_autonomy, evolve_status, export_config, forget_memory,
+    fork_session, get_brave_connector, get_discord_connector, get_gmail_connector,
+    get_home_assistant_connector, get_home_assistant_entity_state_route, get_inbox_connector,
+    get_mission, get_permission_preset, get_plugin, get_plugin_doctor_report,
+    get_provider_browser_auth_status, get_session, get_session_resume_packet, get_signal_connector,
+    get_skill_draft, get_slack_connector, get_telegram_connector, get_trust, get_webhook_connector,
+    import_config, inspect_workspace_route, install_plugin, list_aliases, list_app_connectors,
     list_brave_connectors, list_connector_approvals, list_delegation_targets,
     list_discord_connectors, list_enabled_skills, list_events, list_gmail_connectors,
     list_home_assistant_connectors, list_inbox_connectors, list_logs, list_mcp_servers,
@@ -63,7 +62,7 @@ use crate::{
     upsert_alias, upsert_app_connector, upsert_brave_connector, upsert_discord_connector,
     upsert_gmail_connector, upsert_home_assistant_connector, upsert_inbox_connector,
     upsert_mcp_server, upsert_memory, upsert_provider, upsert_signal_connector,
-    upsert_slack_connector, upsert_telegram_connector, upsert_webhook_connector, validate_provider,
+    upsert_slack_connector, upsert_telegram_connector, upsert_webhook_connector,
     workspace_diff_route, workspace_init_agents_route, workspace_shell_route, ApiError, AppState,
 };
 use crate::{
@@ -92,12 +91,6 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/config", get(export_config).put(import_config))
         .route("/v1/providers", get(list_providers).post(upsert_provider))
-        .route(
-            "/v1/providers/discover-models",
-            post(discover_provider_models),
-        )
-        .route("/v1/providers/discover", post(discover_provider))
-        .route("/v1/providers/validate", post(validate_provider))
         .route("/v1/providers/suggest", post(suggest_provider_defaults))
         .route("/v1/providers/{provider_id}", delete(delete_provider))
         .route(

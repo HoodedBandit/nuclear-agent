@@ -657,28 +657,14 @@ fn validate_tool_arguments(tool_name: &str, args: &Value, schema: &Value) -> Res
     let schema = schema.clone();
     let compiled = JSONSchema::compile(&schema)
         .map_err(|error| anyhow!("tool '{tool_name}' has an invalid input schema: {error}"))?;
-    if compiled.validate(args).is_ok() {
-        return Ok(());
+    if let Err(errors) = compiled.validate(args) {
+        let details = errors
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("tool arguments for '{tool_name}' did not match the input schema: {details}");
     }
-
-    if let Ok(strict_schema) = agent_core::responses_strict_json_schema(&schema) {
-        let compiled_strict = JSONSchema::compile(&strict_schema).map_err(|error| {
-            anyhow!("tool '{tool_name}' has an invalid strict input schema: {error}")
-        })?;
-        if compiled_strict.validate(args).is_ok() {
-            return Ok(());
-        }
-    }
-
-    let details = compiled
-        .validate(args)
-        .err()
-        .into_iter()
-        .flatten()
-        .map(|error| error.to_string())
-        .collect::<Vec<_>>()
-        .join("; ");
-    bail!("tool arguments for '{tool_name}' did not match the input schema: {details}");
+    Ok(())
 }
 
 fn push_unique_tool(tools: &mut Vec<ToolDefinition>, tool: ToolDefinition) -> Result<()> {
@@ -1298,28 +1284,5 @@ mod tests {
             .record
             .output
             .contains("did not match the input schema"));
-    }
-
-    #[test]
-    fn validate_tool_arguments_accepts_nullable_optional_fields_for_strict_schemas() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "max_entries": { "type": "integer", "minimum": 1 }
-            },
-            "required": ["path"],
-            "additionalProperties": false
-        });
-
-        validate_tool_arguments(
-            "list_dir",
-            &json!({
-                "path": ".",
-                "max_entries": Value::Null
-            }),
-            &schema,
-        )
-        .expect("nullable optional strict arguments should validate");
     }
 }

@@ -6,8 +6,8 @@ use agent_core::{
 };
 use agent_storage::Storage;
 use anyhow::{anyhow, bail, Context, Result};
-use arboard::Clipboard;
 use chrono::Utc;
+use copypasta::{ClipboardContext, ClipboardProvider};
 use dialoguer::{theme::ColorfulTheme, FuzzySelect, Select};
 use uuid::Uuid;
 
@@ -202,10 +202,11 @@ fn latest_nonempty_assistant_message<'a>(
 }
 
 pub(crate) fn copy_to_clipboard(text: &str) -> Result<()> {
-    let mut clipboard = Clipboard::new().context("failed to access system clipboard")?;
+    let mut clipboard = ClipboardContext::new()
+        .map_err(|error| anyhow!("failed to access system clipboard: {error}"))?;
     clipboard
-        .set_text(text.to_string())
-        .context("failed to write to system clipboard")
+        .set_contents(text.to_string())
+        .map_err(|error| anyhow!("failed to write to system clipboard: {error}"))
 }
 
 pub(crate) fn init_agents_file(path: &Path) -> Result<bool> {

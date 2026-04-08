@@ -7,10 +7,9 @@ use std::{
 use agent_core::{
     truncate_with_suffix, AuthMode, AutonomyMode, AutonomyState, BatchTaskRequest,
     BatchTaskResponse, ConversationMessage, InputAttachment, MessageRole, ModelAlias,
-    PermissionPreset, ProviderConfig, ProviderOutputItem, ProviderProfile, ProviderReply,
-    RemoteContentArtifact, RemoteContentPolicy, RunTaskResponse, RunTaskStreamEvent,
-    SessionMessage, SessionSummary, SubAgentResult, TaskMode, ThinkingLevel, ToolCall,
-    ToolExecutionOutcome, ToolExecutionRecord,
+    PermissionPreset, ProviderConfig, ProviderReply, RemoteContentPolicy, RunTaskResponse,
+    RunTaskStreamEvent, SessionMessage, SessionSummary, SubAgentResult, TaskMode, ThinkingLevel,
+    ToolCall, ToolExecutionOutcome, ToolExecutionRecord,
 };
 use agent_policy::permission_summary;
 use agent_providers::{load_api_key, load_oauth_token, run_prompt};
@@ -426,18 +425,6 @@ pub(crate) fn provider_has_runnable_access(provider: &ProviderConfig) -> bool {
 }
 
 fn verify_runtime_provider_credentials(provider: &ProviderConfig) -> Result<(), ApiError> {
-    if provider.effective_profile() == ProviderProfile::Anthropic
-        && provider.auth_mode != AuthMode::ApiKey
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "provider '{}' requires API-key authentication for Anthropic access",
-                provider.id
-            ),
-        ));
-    }
-
     match provider.auth_mode {
         AuthMode::None => Ok(()),
         AuthMode::ApiKey => {
@@ -529,7 +516,9 @@ where
             reply.remote_content =
                 crate::tools::remote_content::provider_reply_remote_artifacts(&reply);
         }
-        remember_remote_artifacts(context, &reply.remote_content).await?;
+        for artifact in &reply.remote_content {
+            crate::tools::remote_content::remember_remote_artifact(context, artifact).await?;
+        }
 
         if reply.tool_calls.is_empty() {
             emit_stream_event(
@@ -544,7 +533,15 @@ where
                 },
             )
             .await?;
-            emit_remote_content_events(emit, &reply.remote_content).await?;
+            for artifact in &reply.remote_content {
+                emit_stream_event(
+                    emit,
+                    RunTaskStreamEvent::RemoteContent {
+                        artifact: artifact.clone(),
+                    },
+                )
+                .await?;
+            }
             return Ok(TaskExecution {
                 structured_output_json: maybe_validate_structured_output(
                     &reply.content,
@@ -578,11 +575,19 @@ where
             },
         )
         .await?;
-        emit_remote_content_events(emit, &reply.remote_content).await?;
+        for artifact in &reply.remote_content {
+            emit_stream_event(
+                emit,
+                RunTaskStreamEvent::RemoteContent {
+                    artifact: artifact.clone(),
+                },
+            )
+            .await?;
+        }
         transcript_messages.push(assistant_message.clone());
         messages.push(assistant_message);
 
-        let mut current_tool_batch = Vec::with_capacity(reply.tool_calls.len());
+        let mut current_tool_batch = Vec::new();
         for tool_call in &reply.tool_calls {
             ensure_execution_active(cancellation)?;
             let tool_execution = execute_tool_call_with_cancellation(
@@ -604,7 +609,15 @@ where
                 },
             )
             .await?;
-            emit_remote_content_events(emit, &tool_execution.remote_content).await?;
+            for artifact in &tool_execution.remote_content {
+                emit_stream_event(
+                    emit,
+                    RunTaskStreamEvent::RemoteContent {
+                        artifact: artifact.clone(),
+                    },
+                )
+                .await?;
+            }
             append_log(
                 state,
                 if tool_execution.message.content.starts_with("ERROR:") {
@@ -637,14 +650,11 @@ where
             repeated_tool_batch_count += 1;
         } else {
             repeated_tool_batch_count = 1;
+            last_tool_batch = Some(current_tool_batch.clone());
         }
-        last_tool_batch = Some(current_tool_batch);
 
         if repeated_tool_batch_count >= REPEATED_TOOL_BATCH_LIMIT {
-            match repeated_tool_loop_resolution(
-                last_tool_batch.as_deref().unwrap_or_default(),
-                output_schema_json,
-            ) {
+            match repeated_tool_loop_resolution(&current_tool_batch, output_schema_json) {
                 ToolLoopResolution::Success(content) => {
                     let reply = ProviderReply {
                         provider_id: reply.provider_id.clone(),
@@ -820,7 +830,7 @@ fn stream_session_message_from_reply(
     )
     .with_tool_calls(sanitized_tool_calls(&reply.tool_calls))
     .with_provider_payload(reply.provider_payload_json.clone())
-    .with_provider_output_items(reply_provider_output_items(reply))
+    .with_provider_output_items(reply.output_items.clone())
 }
 
 fn stream_session_message_from_conversation(
@@ -911,17 +921,14 @@ fn persist_execution(state: &AppState, input: PersistExecutionInput<'_>) -> Resu
         cwd,
     } = input;
     let initial_title = is_new_session.then(|| derive_session_title(prompt));
-    let mut persisted_messages = Vec::with_capacity(transcript_messages.len() + 2);
-    persisted_messages.push(
-        SessionMessage::new(
-            session_id.to_string(),
-            MessageRole::User,
-            prompt.to_string(),
-            Some(provider.id.clone()),
-            Some(reply.model.clone()),
-        )
-        .with_attachments(attachments.to_vec()),
-    );
+    let mut persisted_messages = vec![SessionMessage::new(
+        session_id.to_string(),
+        MessageRole::User,
+        prompt.to_string(),
+        Some(provider.id.clone()),
+        Some(reply.model.clone()),
+    )
+    .with_attachments(attachments.to_vec())];
     persisted_messages.extend(transcript_messages.iter().map(|message| {
         SessionMessage::new(
             session_id.to_string(),
@@ -937,7 +944,6 @@ fn persist_execution(state: &AppState, input: PersistExecutionInput<'_>) -> Resu
             message.provider_payload_json.clone(),
         ))
         .with_attachments(message.attachments.clone())
-        .with_provider_output_items(message.provider_output_items.clone())
     }));
     persisted_messages.push(
         SessionMessage::new(
@@ -951,8 +957,7 @@ fn persist_execution(state: &AppState, input: PersistExecutionInput<'_>) -> Resu
         .with_provider_payload(sanitized_provider_payload(
             &reply.tool_calls,
             reply.provider_payload_json.clone(),
-        ))
-        .with_provider_output_items(reply_provider_output_items(reply)),
+        )),
     );
     state
         .storage
@@ -982,48 +987,6 @@ fn sanitized_provider_payload(
     } else {
         provider_payload_json
     }
-}
-
-fn reply_provider_output_items(reply: &ProviderReply) -> Vec<ProviderOutputItem> {
-    let mut items = reply.output_items.clone();
-    items.extend(
-        reply
-            .remote_content
-            .iter()
-            .cloned()
-            .map(|artifact| ProviderOutputItem::RemoteContent { artifact }),
-    );
-    items
-}
-
-async fn remember_remote_artifacts(
-    context: &ToolContext,
-    artifacts: &[RemoteContentArtifact],
-) -> Result<(), ApiError> {
-    for artifact in artifacts {
-        crate::tools::remote_content::remember_remote_artifact(context, artifact).await?;
-    }
-    Ok(())
-}
-
-async fn emit_remote_content_events<F, Fut>(
-    emit: &mut F,
-    artifacts: &[RemoteContentArtifact],
-) -> Result<(), ApiError>
-where
-    F: FnMut(RunTaskStreamEvent) -> Fut,
-    Fut: Future<Output = bool>,
-{
-    for artifact in artifacts {
-        emit_stream_event(
-            emit,
-            RunTaskStreamEvent::RemoteContent {
-                artifact: artifact.clone(),
-            },
-        )
-        .await?;
-    }
-    Ok(())
 }
 
 fn load_history_messages(
@@ -1417,16 +1380,10 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_session_cwd, effective_task_mode, provider_has_runnable_access,
-        reply_provider_output_items, sanitized_provider_payload, sanitized_tool_calls,
-        system_message,
+        effective_session_cwd, effective_task_mode, sanitized_provider_payload,
+        sanitized_tool_calls, system_message,
     };
-    use agent_core::{
-        AuthMode, MessageRole, PermissionPreset, ProviderConfig, ProviderKind, ProviderOutputItem,
-        ProviderProfile, ProviderReply, RemoteContentArtifact, RemoteContentAssessment,
-        RemoteContentRisk, RemoteContentSource, RemoteContentSourceKind, SessionSummary, TaskMode,
-        ToolCall,
-    };
+    use agent_core::{PermissionPreset, SessionSummary, TaskMode, ToolCall};
     use chrono::Utc;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
@@ -1487,49 +1444,6 @@ mod tests {
             sanitized_provider_payload(&tool_calls, Some("{\"raw\":true}".to_string())),
             Some("{\"raw\":true}".to_string())
         );
-    }
-
-    #[test]
-    fn reply_provider_output_items_includes_remote_content_artifacts() {
-        let reply = ProviderReply {
-            provider_id: "openai".to_string(),
-            model: "gpt-4.1".to_string(),
-            content: "done".to_string(),
-            tool_calls: Vec::new(),
-            provider_payload_json: None,
-            output_items: vec![ProviderOutputItem::Message {
-                role: MessageRole::Assistant,
-                content: "hello".to_string(),
-            }],
-            artifacts: Vec::new(),
-            remote_content: vec![RemoteContentArtifact {
-                id: "artifact-1".to_string(),
-                source: RemoteContentSource {
-                    kind: RemoteContentSourceKind::WebPage,
-                    label: Some("Example".to_string()),
-                    url: Some("https://example.com".to_string()),
-                    host: Some("example.com".to_string()),
-                },
-                title: Some("Example".to_string()),
-                mime_type: Some("text/plain".to_string()),
-                excerpt: Some("content".to_string()),
-                content_sha256: Some("abc".to_string()),
-                assessment: RemoteContentAssessment {
-                    risk: RemoteContentRisk::Medium,
-                    blocked: false,
-                    reasons: vec!["reason".to_string()],
-                    warnings: vec!["warning".to_string()],
-                },
-            }],
-        };
-
-        let items = reply_provider_output_items(&reply);
-
-        assert_eq!(items.len(), 2);
-        assert!(matches!(
-            items.last(),
-            Some(ProviderOutputItem::RemoteContent { .. })
-        ));
     }
 
     #[test]
@@ -1612,23 +1526,5 @@ mod tests {
             effective_session_cwd(None, Some(&session)),
             Some(PathBuf::from("J:/repo"))
         );
-    }
-
-    #[test]
-    fn anthropic_oauth_provider_is_not_runnable() {
-        let provider = ProviderConfig {
-            id: "anthropic".to_string(),
-            display_name: "Anthropic".to_string(),
-            kind: ProviderKind::Anthropic,
-            base_url: "https://api.anthropic.com".to_string(),
-            provider_profile: Some(ProviderProfile::Anthropic),
-            auth_mode: AuthMode::OAuth,
-            default_model: Some("claude-sonnet-4-20250514".to_string()),
-            keychain_account: Some("anthropic-oauth".to_string()),
-            oauth: None,
-            local: false,
-        };
-
-        assert!(!provider_has_runnable_access(&provider));
     }
 }
