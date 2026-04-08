@@ -1,7 +1,8 @@
 use agent_core::{
-    AttachmentKind, AuthMode, ConversationMessage, InputAttachment, MessageRole, OAuthConfig,
-    OAuthToken, ProviderConfig, ProviderHealth, ProviderKind, ProviderReply, ThinkingLevel,
-    ToolCall, ToolDefinition, KEYCHAIN_SERVICE,
+    AttachmentKind, AuthMode, ConversationMessage, HostedToolKind, InputAttachment, MessageRole,
+    ModelToolCapabilities, OAuthConfig, OAuthToken, ProviderConfig, ProviderHealth, ProviderKind,
+    ProviderOutputItem, ProviderReply, ThinkingLevel, ToolBackend, ToolCall, ToolDefinition,
+    KEYCHAIN_SERVICE,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -12,6 +13,8 @@ use serde_json::{json, Value};
 use std::{fs, path::Path, sync::OnceLock};
 use tracing::warn;
 use url::Url;
+
+pub use agent_core::{ModelDescriptor, ReasoningLevelDescriptor};
 
 const OAUTH_REFRESH_SKEW_SECONDS: i64 = 60;
 const OPENAI_BROWSER_AUTH_ISSUER: &str = "https://auth.openai.com";
@@ -34,30 +37,6 @@ use keyring_store::{
     serialize_oauth_token_secret, serialize_secret_storage, split_secret_chunks,
     SerializedOAuthTokenSecret, SerializedSecret, KEYCHAIN_SECRET_SAFE_UTF16_UNITS,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReasoningLevelDescriptor {
-    pub effort: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelDescriptor {
-    pub id: String,
-    pub display_name: Option<String>,
-    pub description: Option<String>,
-    pub context_window: Option<i64>,
-    pub effective_context_window_percent: Option<i64>,
-    pub show_in_picker: bool,
-    pub default_reasoning_effort: Option<String>,
-    pub supported_reasoning_levels: Vec<ReasoningLevelDescriptor>,
-    pub supports_reasoning_summaries: bool,
-    pub default_reasoning_summary: Option<String>,
-    pub support_verbosity: bool,
-    pub default_verbosity: Option<String>,
-    pub supports_parallel_tool_calls: bool,
-    pub priority: Option<i64>,
-}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ChatGptCodexModelsResponse {
@@ -92,11 +71,19 @@ struct ChatGptCodexModelRecord {
     #[serde(default)]
     supports_parallel_tool_calls: Option<bool>,
     #[serde(default)]
+    web_search_tool_type: Option<String>,
+    #[serde(default)]
+    apply_patch_tool_type: Option<String>,
+    #[serde(default)]
+    shell_type: Option<String>,
+    #[serde(default)]
     context_window: Option<i64>,
     #[serde(default)]
     effective_context_window_percent: Option<i64>,
     #[serde(default)]
     available_in_plans: Vec<String>,
+    #[serde(default)]
+    experimental_supported_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -204,6 +191,14 @@ pub async fn list_models(client: &Client, provider: &ProviderConfig) -> Result<V
     list_models_with_overrides(client, provider, None, None).await
 }
 
+pub fn describe_model(provider: &ProviderConfig, model: &str) -> ModelDescriptor {
+    match provider.kind {
+        ProviderKind::ChatGptCodex => resolve_chatgpt_codex_model_descriptor(model)
+            .unwrap_or_else(|| default_model_descriptor(model)),
+        _ => default_model_descriptor(model),
+    }
+}
+
 pub async fn list_model_descriptors(
     client: &Client,
     provider: &ProviderConfig,
@@ -236,6 +231,7 @@ pub async fn list_model_descriptors_with_overrides(
                 default_verbosity: None,
                 supports_parallel_tool_calls: false,
                 priority: None,
+                capabilities: ModelToolCapabilities::default(),
             })
             .collect()),
         ProviderKind::Anthropic => {
@@ -258,6 +254,7 @@ pub async fn list_model_descriptors_with_overrides(
                         default_verbosity: None,
                         supports_parallel_tool_calls: false,
                         priority: None,
+                        capabilities: ModelToolCapabilities::default(),
                     })
                     .collect(),
             )
@@ -285,6 +282,7 @@ pub async fn list_model_descriptors_with_overrides(
                         default_verbosity: None,
                         supports_parallel_tool_calls: false,
                         priority: None,
+                        capabilities: ModelToolCapabilities::default(),
                     })
                     .collect(),
             )
@@ -590,6 +588,7 @@ async fn list_chatgpt_codex_model_descriptors(
                 default_verbosity: None,
                 supports_parallel_tool_calls: false,
                 priority: None,
+                capabilities: ModelToolCapabilities::default(),
             }])
         } else {
             Ok(Vec::new())
@@ -660,6 +659,13 @@ async fn run_chatgpt_codex(
         } else {
             Some(serde_json::to_string(&streamed.output_items)?)
         },
+        output_items: streamed
+            .output_items
+            .iter()
+            .filter_map(parse_chatgpt_codex_output_item)
+            .collect(),
+        artifacts: Vec::new(),
+        remote_content: Vec::new(),
     })
 }
 
@@ -705,6 +711,7 @@ async fn run_openai_compatible(
         .ok_or_else(|| anyhow!("provider returned no assistant message"))?;
     let content = message.get("content").map(extract_text).unwrap_or_default();
     let tool_calls = parse_openai_tool_calls(message)?;
+    let output_items = openai_output_items(&content, &tool_calls);
     if content.is_empty() && tool_calls.is_empty() {
         bail!("provider returned neither assistant text nor tool calls");
     }
@@ -715,6 +722,9 @@ async fn run_openai_compatible(
         content,
         tool_calls,
         provider_payload_json: None,
+        output_items,
+        artifacts: Vec::new(),
+        remote_content: Vec::new(),
     })
 }
 
@@ -780,6 +790,7 @@ async fn run_anthropic(
         .get("content")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow!("anthropic response contained no content"))?;
+    let output_items = anthropic_output_items(content_blocks);
     let content = content_blocks
         .iter()
         .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
@@ -801,6 +812,9 @@ async fn run_anthropic(
         content,
         tool_calls,
         provider_payload_json: Some(serde_json::to_string(content_blocks)?),
+        output_items,
+        artifacts: Vec::new(),
+        remote_content: Vec::new(),
     })
 }
 
@@ -842,6 +856,7 @@ async fn run_ollama(
         .ok_or_else(|| anyhow!("Ollama response contained no message"))?;
     let content = message.get("content").map(extract_text).unwrap_or_default();
     let tool_calls = parse_ollama_tool_calls(message)?;
+    let output_items = openai_output_items(&content, &tool_calls);
     if content.is_empty() && tool_calls.is_empty() {
         bail!("Ollama response contained neither text nor tool calls");
     }
@@ -852,6 +867,9 @@ async fn run_ollama(
         content,
         tool_calls,
         provider_payload_json: None,
+        output_items,
+        artifacts: Vec::new(),
+        remote_content: Vec::new(),
     })
 }
 
@@ -1046,7 +1064,7 @@ fn chatgpt_codex_payload(
         "model": model,
         "instructions": "",
         "input": messages_to_chatgpt_codex_input(messages)?,
-        "tools": tool_definitions_to_responses_api(tools),
+        "tools": tool_definitions_to_responses_api(tools)?,
         "tool_choice": "auto",
         "parallel_tool_calls": !tools.is_empty() && allow_parallel_tool_calls,
         "store": false,
@@ -1289,6 +1307,7 @@ fn merge_chatgpt_codex_model_record(
 }
 
 fn model_descriptor_from_chatgpt_codex_record(record: ChatGptCodexModelRecord) -> ModelDescriptor {
+    let capabilities = chatgpt_codex_model_capabilities(&record);
     ModelDescriptor {
         id: record.slug,
         display_name: non_empty_option(record.display_name),
@@ -1317,6 +1336,27 @@ fn model_descriptor_from_chatgpt_codex_record(record: ChatGptCodexModelRecord) -
         )),
         supports_parallel_tool_calls: record.supports_parallel_tool_calls.unwrap_or(false),
         priority: record.priority,
+        capabilities,
+    }
+}
+
+fn default_model_descriptor(model: &str) -> ModelDescriptor {
+    ModelDescriptor {
+        id: model.to_string(),
+        display_name: None,
+        description: None,
+        context_window: None,
+        effective_context_window_percent: None,
+        show_in_picker: true,
+        default_reasoning_effort: None,
+        supported_reasoning_levels: Vec::new(),
+        supports_reasoning_summaries: false,
+        default_reasoning_summary: None,
+        support_verbosity: false,
+        default_verbosity: None,
+        supports_parallel_tool_calls: false,
+        priority: None,
+        capabilities: ModelToolCapabilities::default(),
     }
 }
 
@@ -1827,6 +1867,12 @@ fn validate_tool_definitions(tools: &[ToolDefinition], provider_label: &str) -> 
         if tool.name.trim().is_empty() {
             bail!("{provider_label} tool definition is missing a name");
         }
+        if !matches!(tool.backend, ToolBackend::LocalFunction) && tool.hosted_kind.is_none() {
+            bail!(
+                "{provider_label} tool '{}' is missing hosted tool metadata",
+                tool.name
+            );
+        }
         if !tool.input_schema.is_object() {
             bail!(
                 "{provider_label} tool '{}' must use an object JSON schema for parameters",
@@ -1837,19 +1883,48 @@ fn validate_tool_definitions(tools: &[ToolDefinition], provider_label: &str) -> 
     Ok(())
 }
 
-fn tool_definitions_to_responses_api(tools: &[ToolDefinition]) -> Vec<Value> {
-    tools
-        .iter()
-        .map(|tool| {
-            json!({
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.input_schema,
-                "strict": false,
-            })
-        })
-        .collect()
+fn tool_definitions_to_responses_api(tools: &[ToolDefinition]) -> Result<Vec<Value>> {
+    tools.iter().map(responses_api_tool_definition).collect()
+}
+
+fn responses_api_tool_definition(tool: &ToolDefinition) -> Result<Value> {
+    match tool.backend {
+        ToolBackend::LocalFunction => Ok(json!({
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema,
+            "strict": tool.strict_schema,
+        })),
+        ToolBackend::ProviderBuiltin | ToolBackend::ProviderProtocol => {
+            let hosted_kind = tool.hosted_kind.ok_or_else(|| {
+                anyhow!(
+                    "Responses tool '{}' is missing a hosted tool kind for backend {:?}",
+                    tool.name,
+                    tool.backend
+                )
+            })?;
+            Ok(json!({
+                "type": responses_api_hosted_tool_type(hosted_kind),
+            }))
+        }
+    }
+}
+
+fn responses_api_hosted_tool_type(hosted_kind: HostedToolKind) -> &'static str {
+    match hosted_kind {
+        HostedToolKind::WebSearch => "web_search",
+        HostedToolKind::FileSearch => "file_search",
+        HostedToolKind::ImageGeneration => "image_generation",
+        HostedToolKind::CodeInterpreter => "code_interpreter",
+        HostedToolKind::ComputerUse => "computer_use",
+        HostedToolKind::RemoteMcp => "remote_mcp",
+        HostedToolKind::ToolSearch => "tool_search",
+        HostedToolKind::Shell => "shell",
+        HostedToolKind::ApplyPatch => "apply_patch",
+        HostedToolKind::LocalShell => "local_shell",
+        HostedToolKind::Skills => "skills",
+    }
 }
 
 fn tool_definitions_to_anthropic(tools: &[ToolDefinition]) -> Vec<Value> {
@@ -1933,6 +2008,194 @@ fn parse_chatgpt_codex_tool_call(value: &Value) -> Result<Option<ToolCall>> {
             .to_string(),
         arguments: parse_argument_string(value.get("arguments").unwrap_or(&Value::Null)),
     }))
+}
+
+fn parse_chatgpt_codex_output_item(value: &Value) -> Option<ProviderOutputItem> {
+    let item_type = value.get("type").and_then(Value::as_str)?;
+    match item_type {
+        "message" => {
+            let role = match value.get("role").and_then(Value::as_str) {
+                Some("assistant") => MessageRole::Assistant,
+                Some("user") => MessageRole::User,
+                Some("developer") | Some("system") => MessageRole::System,
+                Some("tool") => MessageRole::Tool,
+                _ => return None,
+            };
+            Some(ProviderOutputItem::Message {
+                role,
+                content: extract_chatgpt_codex_item_text(value),
+            })
+        }
+        "function_call" => parse_chatgpt_codex_tool_call(value)
+            .ok()
+            .flatten()
+            .map(|call| ProviderOutputItem::FunctionCall { call }),
+        "function_call_output" => Some(ProviderOutputItem::ToolResult {
+            call_id: value
+                .get("call_id")
+                .or_else(|| value.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            name: value
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("function")
+                .to_string(),
+            backend: ToolBackend::LocalFunction,
+            hosted_kind: None,
+            status: value
+                .get("status")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            content: value
+                .get("output")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        }),
+        other => {
+            let (backend, hosted_kind) = responses_tool_backend(other);
+            let call_id = value
+                .get("call_id")
+                .or_else(|| value.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if call_id.is_empty() {
+                return None;
+            }
+            Some(ProviderOutputItem::ToolCall {
+                call_id,
+                name: other.to_string(),
+                backend,
+                hosted_kind,
+                status: value
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                arguments_json: Some(value.to_string()),
+            })
+        }
+    }
+}
+
+fn openai_output_items(content: &str, tool_calls: &[ToolCall]) -> Vec<ProviderOutputItem> {
+    let mut items = Vec::new();
+    if !content.is_empty() {
+        items.push(ProviderOutputItem::Message {
+            role: MessageRole::Assistant,
+            content: content.to_string(),
+        });
+    }
+    items.extend(
+        tool_calls
+            .iter()
+            .cloned()
+            .map(|call| ProviderOutputItem::FunctionCall { call }),
+    );
+    items
+}
+
+fn anthropic_output_items(content_blocks: &[Value]) -> Vec<ProviderOutputItem> {
+    let mut items = Vec::new();
+    for block in content_blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    items.push(ProviderOutputItem::Message {
+                        role: MessageRole::Assistant,
+                        content: text.to_string(),
+                    });
+                }
+            }
+            Some("tool_use") => {
+                if let Ok(call) = parse_anthropic_tool_call(block) {
+                    items.push(ProviderOutputItem::FunctionCall { call });
+                }
+            }
+            _ => {}
+        }
+    }
+    items
+}
+
+fn chatgpt_codex_model_capabilities(record: &ChatGptCodexModelRecord) -> ModelToolCapabilities {
+    let mut capabilities = ModelToolCapabilities {
+        web_search: record.web_search_tool_type.is_some()
+            || record
+                .experimental_supported_tools
+                .iter()
+                .any(|tool| tool.eq_ignore_ascii_case("web_search")),
+        apply_patch: record.apply_patch_tool_type.is_some()
+            || record
+                .experimental_supported_tools
+                .iter()
+                .any(|tool| tool.eq_ignore_ascii_case("apply_patch")),
+        shell: record.shell_type.is_some()
+            || record
+                .experimental_supported_tools
+                .iter()
+                .any(|tool| tool.eq_ignore_ascii_case("shell")),
+        ..Default::default()
+    };
+    for tool in &record.experimental_supported_tools {
+        match tool.trim().to_ascii_lowercase().as_str() {
+            "file_search" => capabilities.file_search = true,
+            "image_generation" => capabilities.image_generation = true,
+            "code_interpreter" => capabilities.code_interpreter = true,
+            "computer_use" => capabilities.computer_use = true,
+            "remote_mcp" => capabilities.remote_mcp = true,
+            "tool_search" => capabilities.tool_search = true,
+            "local_shell" => capabilities.local_shell = true,
+            "skills" => capabilities.skills = true,
+            _ => {}
+        }
+    }
+    capabilities
+}
+
+fn responses_tool_backend(item_type: &str) -> (ToolBackend, Option<HostedToolKind>) {
+    let normalized = item_type.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "web_search_call" | "web_search" => (
+            ToolBackend::ProviderBuiltin,
+            Some(HostedToolKind::WebSearch),
+        ),
+        "file_search_call" | "file_search" => (
+            ToolBackend::ProviderBuiltin,
+            Some(HostedToolKind::FileSearch),
+        ),
+        "image_generation_call" | "image_generation" => (
+            ToolBackend::ProviderBuiltin,
+            Some(HostedToolKind::ImageGeneration),
+        ),
+        "code_interpreter_call" | "code_interpreter" => (
+            ToolBackend::ProviderBuiltin,
+            Some(HostedToolKind::CodeInterpreter),
+        ),
+        "computer_call" | "computer_use" | "computer_use_call" => (
+            ToolBackend::ProviderProtocol,
+            Some(HostedToolKind::ComputerUse),
+        ),
+        "remote_mcp_call" | "remote_mcp" => (
+            ToolBackend::ProviderBuiltin,
+            Some(HostedToolKind::RemoteMcp),
+        ),
+        "tool_search_call" | "tool_search" => (
+            ToolBackend::ProviderBuiltin,
+            Some(HostedToolKind::ToolSearch),
+        ),
+        "shell_call" | "shell" => (ToolBackend::ProviderProtocol, Some(HostedToolKind::Shell)),
+        "apply_patch_call" | "apply_patch" => (
+            ToolBackend::ProviderProtocol,
+            Some(HostedToolKind::ApplyPatch),
+        ),
+        "local_shell_call" | "local_shell" => (
+            ToolBackend::ProviderProtocol,
+            Some(HostedToolKind::LocalShell),
+        ),
+        _ => (ToolBackend::ProviderBuiltin, None),
+    }
 }
 
 fn extract_chatgpt_codex_item_text(value: &Value) -> String {
@@ -2052,6 +2315,10 @@ struct LoadedImageAttachment {
 fn load_image_attachment(attachment: &InputAttachment) -> Result<LoadedImageAttachment> {
     match attachment.kind {
         AttachmentKind::Image => load_image_attachment_from_path(&attachment.path),
+        AttachmentKind::File => bail!(
+            "provider attachment '{}' is a generic file; file attachments are only supported through hosted tool flows",
+            attachment.path.display()
+        ),
     }
 }
 
@@ -2692,7 +2959,7 @@ mod tests {
                 scopes: vec!["profile".to_string(), "offline_access".to_string()],
                 extra_authorize_params: vec![KeyValuePair {
                     key: "audience".to_string(),
-                    value: "agent-builder".to_string(),
+                    value: "nuclear".to_string(),
                 }],
                 extra_token_params: Vec::new(),
             }),
@@ -2710,7 +2977,7 @@ mod tests {
         assert!(url.contains("response_type=code"));
         assert!(url.contains("client_id=client"));
         assert!(url.contains("code_challenge=challenge"));
-        assert!(url.contains("audience=agent-builder"));
+        assert!(url.contains("audience=nuclear"));
     }
 
     #[test]
@@ -2843,6 +3110,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     provider_payload_json: None,
                     attachments: Vec::new(),
+                    provider_output_items: Vec::new(),
                 }],
                 Some("gpt-test"),
                 None,
@@ -2857,6 +3125,9 @@ mod tests {
                         },
                         "required": ["path"]
                     }),
+                    backend: ToolBackend::LocalFunction,
+                    hosted_kind: None,
+                    strict_schema: true,
                 }],
             ))
             .unwrap();
@@ -2903,6 +3174,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     provider_payload_json: None,
                     attachments: Vec::new(),
+                    provider_output_items: Vec::new(),
                 }],
                 Some("gpt-test"),
                 None,
@@ -2950,6 +3222,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     provider_payload_json: None,
                     attachments: Vec::new(),
+                    provider_output_items: Vec::new(),
                 }],
                 Some("openai/gpt-4.1"),
                 None,
@@ -3173,6 +3446,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     provider_payload_json: None,
                     attachments: Vec::new(),
+                    provider_output_items: Vec::new(),
                 }],
                 Some("session-123"),
                 None,
@@ -3186,6 +3460,9 @@ mod tests {
                         },
                         "required": ["path"]
                     }),
+                    backend: ToolBackend::LocalFunction,
+                    hosted_kind: None,
+                    strict_schema: true,
                 }],
                 Some(&token),
             ))
@@ -3230,6 +3507,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             }],
             None,
             &[],
@@ -3255,6 +3533,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             }],
             None,
             &[ToolDefinition {
@@ -3267,6 +3546,9 @@ mod tests {
                     },
                     "required": ["path"]
                 }),
+                backend: ToolBackend::LocalFunction,
+                hosted_kind: None,
+                strict_schema: true,
             }],
             None,
         )
@@ -3275,9 +3557,45 @@ mod tests {
         assert_eq!(payload["tools"][0]["type"], "function");
         assert_eq!(payload["tools"][0]["name"], "read_file");
         assert_eq!(payload["tools"][0]["description"], "Read a file");
-        assert_eq!(payload["tools"][0]["strict"], false);
+        assert_eq!(payload["tools"][0]["strict"], true);
         assert_eq!(payload["tools"][0]["parameters"]["type"], "object");
         assert!(payload["tools"][0].get("function").is_none());
+    }
+
+    #[test]
+    fn chatgpt_codex_payload_uses_provider_builtin_web_search_tool_shape() {
+        let payload = chatgpt_codex_payload(
+            "gpt-5",
+            &[ConversationMessage {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: Vec::new(),
+                provider_payload_json: None,
+                attachments: Vec::new(),
+                provider_output_items: Vec::new(),
+            }],
+            None,
+            &[ToolDefinition {
+                name: "web_search".to_string(),
+                description: "Search the web".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                backend: ToolBackend::ProviderBuiltin,
+                hosted_kind: Some(HostedToolKind::WebSearch),
+                strict_schema: false,
+            }],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(payload["tools"][0]["type"], "web_search");
+        assert!(payload["tools"][0].get("name").is_none());
+        assert!(payload["tools"][0].get("parameters").is_none());
     }
 
     #[test]
@@ -3294,6 +3612,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             }],
             None,
             &[],
@@ -3350,6 +3669,7 @@ mod tests {
             default_verbosity: Some("unsupported".to_string()),
             supports_parallel_tool_calls: true,
             priority: None,
+            capabilities: ModelToolCapabilities::default(),
         };
         let payload = chatgpt_codex_payload(
             "gpt-test",
@@ -3361,6 +3681,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             }],
             None,
             &[],
@@ -3382,6 +3703,9 @@ mod tests {
                     "type": "object",
                     "properties": {}
                 }),
+                backend: ToolBackend::LocalFunction,
+                hosted_kind: None,
+                strict_schema: true,
             }],
             "ChatGPT/Codex",
         )
@@ -3397,6 +3721,9 @@ mod tests {
                 name: "read_file".to_string(),
                 description: "broken".to_string(),
                 input_schema: json!(["not", "an", "object"]),
+                backend: ToolBackend::LocalFunction,
+                hosted_kind: None,
+                strict_schema: true,
             }],
             "ChatGPT/Codex",
         )
@@ -3416,6 +3743,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             },
             ConversationMessage {
                 role: MessageRole::Assistant,
@@ -3429,6 +3757,7 @@ mod tests {
                 }],
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             },
             ConversationMessage {
                 role: MessageRole::Tool,
@@ -3438,6 +3767,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             },
         ])
         .unwrap();
@@ -3458,6 +3788,7 @@ mod tests {
             tool_calls: Vec::new(),
             provider_payload_json: None,
             attachments: vec![image.attachment()],
+            provider_output_items: Vec::new(),
         }])
         .unwrap();
 
@@ -3480,6 +3811,7 @@ mod tests {
             tool_calls: Vec::new(),
             provider_payload_json: None,
             attachments: vec![image.attachment()],
+            provider_output_items: Vec::new(),
         }])
         .unwrap();
 
@@ -3503,6 +3835,7 @@ mod tests {
             tool_calls: Vec::new(),
             provider_payload_json: None,
             attachments: vec![image.attachment()],
+            provider_output_items: Vec::new(),
         }])
         .unwrap();
 
@@ -3752,7 +4085,7 @@ mod tests {
                 extra_authorize_params: Vec::new(),
                 extra_token_params: vec![KeyValuePair {
                     key: "audience".to_string(),
-                    value: "agent-builder".to_string(),
+                    value: "nuclear".to_string(),
                 }],
             }),
             local: false,

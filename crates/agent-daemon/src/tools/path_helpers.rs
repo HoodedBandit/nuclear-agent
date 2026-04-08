@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 pub(super) fn resolve_existing_path(context: &ToolContext, path: Option<&str>) -> Result<PathBuf> {

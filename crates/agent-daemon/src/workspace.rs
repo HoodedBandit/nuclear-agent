@@ -7,7 +7,7 @@ use std::{
 };
 
 use agent_core::{
-    AutonomyProfile, TrustPolicy, WorkspaceFileStat, WorkspaceInspectRequest,
+    truncate_with_suffix, AutonomyProfile, TrustPolicy, WorkspaceFileStat, WorkspaceInspectRequest,
     WorkspaceInspectResponse, WorkspaceLanguageStat, WorkspacePathStat,
 };
 use agent_policy::{allow_shell, path_is_trusted};
@@ -572,13 +572,8 @@ fn git_capture(root: &Path, args: &[&str], max_len: usize) -> Result<String> {
     ))
 }
 
-fn truncate_text(mut text: String, max_len: usize) -> String {
-    if text.len() <= max_len {
-        return text;
-    }
-    text.truncate(max_len);
-    text.push_str("\n\n[truncated]");
-    text
+fn truncate_text(text: String, max_len: usize) -> String {
+    truncate_with_suffix(&text, max_len, "\n\n[truncated]")
 }
 
 fn init_agents_file(path: &Path) -> Result<bool> {

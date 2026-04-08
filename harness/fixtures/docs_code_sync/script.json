@@ -1,0 +1,31 @@
+{
+  "model": "scripted-harness-model",
+  "turns": [
+    {
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "release_info.py" } },
+        { "name": "read_file", "arguments": { "path": "README.md" } },
+        { "name": "read_file", "arguments": { "path": "tests/test_docs_sync.py" } }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "apply_patch", "patch_file": "fix.patch" }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "run_shell",
+          "arguments": {
+            "command": "python -m unittest discover -s tests -p 'test_*.py'",
+            "timeout_seconds": 30
+          }
+        }
+      ]
+    },
+    {
+      "response": "Updated the README to match the current version constant and reran the consistency tests successfully."
+    }
+  ]
+}

@@ -55,6 +55,7 @@ pub(super) fn spawn_prompt_task(client: DaemonClient, task: PromptTask, sender: 
                     permission_preset: task.permission_preset,
                     output_schema_json: task.output_schema_json,
                     ephemeral: task.ephemeral,
+                    remote_content_policy_override: None,
                 },
                 |event| {
                     if let RunTaskStreamEvent::Completed { response } = &event {

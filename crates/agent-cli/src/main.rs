@@ -36,7 +36,7 @@ use integrations_cli::{app_command, mcp_command, AppCommands, McpCommands};
 use integrations_cli::{AppAddArgs, McpAddArgs};
 use operations_cli::{
     autonomy_command, autopilot_command, dashboard_command, doctor_command, evolve_command,
-    logs_command, memory_command, mission_command, session_command,
+    logs_command, memory_command, mission_command, session_command, support_bundle_command,
 };
 use plugins_cli::{plugin_command, PluginCommands};
 pub(crate) use repo_cli::{
@@ -307,6 +307,8 @@ enum Commands {
     },
     Dashboard(DashboardArgs),
     Doctor,
+    #[command(name = "support-bundle")]
+    SupportBundle(SupportBundleArgs),
     #[command(name = "__daemon", hide = true)]
     InternalDaemon,
 }
@@ -1014,6 +1016,16 @@ struct DashboardArgs {
 }
 
 #[derive(Args)]
+struct SupportBundleArgs {
+    #[arg(long = "output-dir")]
+    output_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 200)]
+    log_limit: usize,
+    #[arg(long, default_value_t = 25)]
+    session_limit: usize,
+}
+
+#[derive(Args)]
 struct InboxAddArgs {
     #[arg(long)]
     id: String,
@@ -1546,6 +1558,7 @@ async fn main() -> Result<()> {
         Some(Commands::Logs { limit, follow }) => logs_command(&storage, limit, follow).await?,
         Some(Commands::Dashboard(args)) => dashboard_command(&storage, args).await?,
         Some(Commands::Doctor) => doctor_command(&storage).await?,
+        Some(Commands::SupportBundle(args)) => support_bundle_command(&storage, args).await?,
         Some(Commands::InternalDaemon) => unreachable!(),
     }
 
@@ -4242,6 +4255,7 @@ async fn execute_prompt(
                 permission_preset,
                 output_schema_json,
                 ephemeral,
+                remote_content_policy_override: None,
             },
         )
         .await
@@ -4613,13 +4627,8 @@ fn normalize_prompt_input(prompt: Option<String>) -> Result<Option<String>> {
     Ok(Some(prompt))
 }
 
-fn truncate_for_prompt(mut text: String, max_len: usize) -> String {
-    if text.len() <= max_len {
-        return text;
-    }
-    text.truncate(max_len);
-    text.push_str("\n\n[truncated]");
-    text
+fn truncate_for_prompt(text: String, max_len: usize) -> String {
+    agent_core::truncate_with_suffix(&text, max_len, "\n\n[truncated]")
 }
 
 fn determine_logout_targets(config: &AppConfig, args: &LogoutArgs) -> Result<Vec<String>> {
@@ -6572,18 +6581,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_command_alias_still_parses() {
-        let cli = Cli::parse_from([agent_core::LEGACY_COMMAND_NAME, "resume", "--last"]);
-        match cli.command {
-            Some(Commands::Resume(args)) => {
-                assert!(args.last);
-                assert!(args.session_id.is_none());
-            }
-            _ => panic!("expected resume command"),
-        }
-    }
-
-    #[test]
     fn hosted_kind_accepts_openai_alias() {
         assert_eq!(
             HostedKindArg::from_str("openai", true).unwrap(),
@@ -7335,6 +7332,14 @@ mod tests {
         let prompt = build_compact_prompt(&transcript).unwrap();
         assert!(prompt.contains("Fix auth"));
         assert!(prompt.contains("Working on it"));
+    }
+
+    #[test]
+    fn truncate_for_prompt_preserves_utf8_boundaries() {
+        let text = format!("{}😀tail", "a".repeat(19_997));
+        let truncated = truncate_for_prompt(text, 20_000);
+        assert!(truncated.ends_with("\n\n[truncated]"));
+        assert!(!truncated.contains("😀tail"));
     }
 
     #[test]

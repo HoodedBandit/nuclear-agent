@@ -5,11 +5,11 @@ use std::{
 };
 
 use agent_core::{
-    AuthMode, AutonomyMode, AutonomyState, BatchTaskRequest, BatchTaskResponse,
-    ConversationMessage, InputAttachment, MessageRole, ModelAlias, PermissionPreset,
-    ProviderConfig, ProviderReply, RunTaskResponse, RunTaskStreamEvent, SessionMessage,
-    SessionSummary, SubAgentResult, TaskMode, ThinkingLevel, ToolCall, ToolExecutionOutcome,
-    ToolExecutionRecord,
+    truncate_with_suffix, AuthMode, AutonomyMode, AutonomyState, BatchTaskRequest,
+    BatchTaskResponse, ConversationMessage, InputAttachment, MessageRole, ModelAlias,
+    PermissionPreset, ProviderConfig, ProviderReply, RemoteContentPolicy, RunTaskResponse,
+    RunTaskStreamEvent, SessionMessage, SessionSummary, SubAgentResult, TaskMode, ThinkingLevel,
+    ToolCall, ToolExecutionOutcome, ToolExecutionRecord,
 };
 use agent_policy::permission_summary;
 use agent_providers::{load_api_key, load_oauth_token, run_prompt};
@@ -44,6 +44,7 @@ pub(crate) struct TaskRequestInput {
     pub(crate) permission_preset: Option<PermissionPreset>,
     pub(crate) task_mode: Option<TaskMode>,
     pub(crate) output_schema_json: Option<String>,
+    pub(crate) remote_content_policy_override: Option<RemoteContentPolicy>,
     pub(crate) persist: bool,
     pub(crate) background: bool,
     pub(crate) delegation_depth: u8,
@@ -135,6 +136,7 @@ where
         permission_preset,
         task_mode,
         output_schema_json,
+        remote_content_policy_override,
         persist,
         background,
         delegation_depth,
@@ -143,6 +145,7 @@ where
     ensure_execution_active(cancellation.as_ref())?;
     let is_new_session = session_id.is_none();
     let session_id = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let model = requested_model.as_deref().unwrap_or(&alias.model);
     let existing_session = if persist {
         state.storage.get_session(&session_id)?
     } else {
@@ -152,7 +155,11 @@ where
     let cwd = resolve_request_cwd(effective_session_cwd(cwd, existing_session.as_ref()))?;
     let mut messages =
         load_history_messages(state, if persist { Some(&session_id) } else { None })?;
+    let allowed_direct_urls =
+        crate::tools::remote_content::extract_user_allowed_urls(&messages, &prompt);
     let permission_preset = resolve_permission_preset(state, permission_preset).await;
+    let remote_content_policy =
+        resolve_remote_content_policy(state, remote_content_policy_override).await;
     sync_system_profile_memories(state, Some(&cwd), Some(&provider.id))?;
     let skill_guidance =
         load_enabled_skill_guidance(state, &prompt, Some(&cwd), Some(&provider.id)).await;
@@ -166,12 +173,16 @@ where
     let context = tool_context(
         state,
         alias,
+        provider,
+        model,
         cwd.clone(),
         permission_preset,
         thinking_level,
         task_mode,
         background,
         delegation_depth,
+        remote_content_policy,
+        allowed_direct_urls,
     )
     .await;
     let delegation_hint = delegation_guidance(&context);
@@ -198,6 +209,7 @@ where
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             },
         );
     }
@@ -220,6 +232,7 @@ where
                 tool_calls: Vec::new(),
                 provider_payload_json: None,
                 attachments: Vec::new(),
+                provider_output_items: Vec::new(),
             },
         );
     }
@@ -231,6 +244,7 @@ where
         tool_calls: Vec::new(),
         provider_payload_json: None,
         attachments: attachments.clone(),
+        provider_output_items: Vec::new(),
     });
     emit_stream_event(
         emit,
@@ -238,16 +252,14 @@ where
             session_id: session_id.clone(),
             alias: alias.alias.clone(),
             provider_id: provider.id.clone(),
-            model: requested_model
-                .clone()
-                .unwrap_or_else(|| alias.model.clone()),
+            model: model.to_string(),
         },
     )
     .await?;
     let execution = drive_tool_loop(
         state,
         provider,
-        requested_model.as_deref().unwrap_or(&alias.model),
+        model,
         &session_id,
         messages,
         thinking_level,
@@ -367,6 +379,7 @@ pub(crate) async fn execute_batch_request(
                     permission_preset: options.permission_preset,
                     task_mode: task.task_mode,
                     output_schema_json: task.output_schema_json,
+                    remote_content_policy_override: None,
                     persist: false,
                     background: options.background,
                     delegation_depth: child_depth,
@@ -470,11 +483,16 @@ where
     F: FnMut(RunTaskStreamEvent) -> Fut,
     Fut: Future<Output = bool>,
 {
-    let tools = effective_tool_definitions(context);
-    let allowed_tool_names = tools
+    let tools = effective_tool_definitions(context).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("failed to assemble tool registry: {error}"),
+        )
+    })?;
+    let allowed_tools = tools
         .iter()
-        .map(|tool| tool.name.clone())
-        .collect::<std::collections::HashSet<_>>();
+        .map(|tool| (tool.name.clone(), tool.input_schema.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
     let mut transcript_messages = Vec::new();
     let mut tool_events = Vec::new();
     let mut last_tool_batch: Option<Vec<ToolBatchExecution>> = None;
@@ -483,7 +501,7 @@ where
     for _ in 0..MAX_TOOL_LOOP_ITERATIONS {
         wait_for_rate_limit(state, &provider.id, cancellation).await?;
         ensure_execution_active(cancellation)?;
-        let reply = run_prompt_with_cancellation(
+        let mut reply = run_prompt_with_cancellation(
             state,
             provider,
             &messages,
@@ -494,6 +512,13 @@ where
             cancellation,
         )
         .await?;
+        if reply.remote_content.is_empty() {
+            reply.remote_content =
+                crate::tools::remote_content::provider_reply_remote_artifacts(&reply);
+        }
+        for artifact in &reply.remote_content {
+            crate::tools::remote_content::remember_remote_artifact(context, artifact).await?;
+        }
 
         if reply.tool_calls.is_empty() {
             emit_stream_event(
@@ -508,6 +533,15 @@ where
                 },
             )
             .await?;
+            for artifact in &reply.remote_content {
+                emit_stream_event(
+                    emit,
+                    RunTaskStreamEvent::RemoteContent {
+                        artifact: artifact.clone(),
+                    },
+                )
+                .await?;
+            }
             return Ok(TaskExecution {
                 structured_output_json: maybe_validate_structured_output(
                     &reply.content,
@@ -527,6 +561,7 @@ where
             tool_calls: reply.tool_calls.clone(),
             provider_payload_json: reply.provider_payload_json.clone(),
             attachments: Vec::new(),
+            provider_output_items: reply.output_items.clone(),
         };
         emit_stream_event(
             emit,
@@ -540,6 +575,15 @@ where
             },
         )
         .await?;
+        for artifact in &reply.remote_content {
+            emit_stream_event(
+                emit,
+                RunTaskStreamEvent::RemoteContent {
+                    artifact: artifact.clone(),
+                },
+            )
+            .await?;
+        }
         transcript_messages.push(assistant_message.clone());
         messages.push(assistant_message);
 
@@ -549,7 +593,7 @@ where
             let tool_execution = execute_tool_call_with_cancellation(
                 context,
                 tool_call,
-                &allowed_tool_names,
+                &allowed_tools,
                 cancellation,
             )
             .await?;
@@ -565,6 +609,15 @@ where
                 },
             )
             .await?;
+            for artifact in &tool_execution.remote_content {
+                emit_stream_event(
+                    emit,
+                    RunTaskStreamEvent::RemoteContent {
+                        artifact: artifact.clone(),
+                    },
+                )
+                .await?;
+            }
             append_log(
                 state,
                 if tool_execution.message.content.starts_with("ERROR:") {
@@ -609,6 +662,9 @@ where
                         content,
                         tool_calls: Vec::new(),
                         provider_payload_json: reply.provider_payload_json.clone(),
+                        output_items: Vec::new(),
+                        artifacts: Vec::new(),
+                        remote_content: Vec::new(),
                     };
                     return Ok(TaskExecution {
                         structured_output_json: None,
@@ -731,16 +787,16 @@ async fn execute_provider_prompt(
 async fn execute_tool_call_with_cancellation(
     context: &ToolContext,
     tool_call: &ToolCall,
-    allowed_tool_names: &std::collections::HashSet<String>,
+    allowed_tools: &std::collections::HashMap<String, serde_json::Value>,
     cancellation: Option<&ExecutionCancellation>,
 ) -> Result<crate::tools::ToolCallExecution, ApiError> {
     if let Some(cancellation) = cancellation.cloned() {
         tokio::select! {
             _ = cancellation.cancelled() => Err(execution_cancelled_error()),
-            execution = execute_tool_call(context, tool_call, allowed_tool_names) => Ok(execution),
+            execution = execute_tool_call(context, tool_call, allowed_tools) => Ok(execution),
         }
     } else {
-        Ok(execute_tool_call(context, tool_call, allowed_tool_names).await)
+        Ok(execute_tool_call(context, tool_call, allowed_tools).await)
     }
 }
 
@@ -773,6 +829,8 @@ fn stream_session_message_from_reply(
         Some(reply.model.clone()),
     )
     .with_tool_calls(sanitized_tool_calls(&reply.tool_calls))
+    .with_provider_payload(reply.provider_payload_json.clone())
+    .with_provider_output_items(reply.output_items.clone())
 }
 
 fn stream_session_message_from_conversation(
@@ -791,6 +849,8 @@ fn stream_session_message_from_conversation(
     .with_tool_metadata(message.tool_call_id.clone(), message.tool_name.clone())
     .with_tool_calls(sanitized_tool_calls(&message.tool_calls))
     .with_attachments(message.attachments.clone())
+    .with_provider_payload(message.provider_payload_json.clone())
+    .with_provider_output_items(message.provider_output_items.clone())
 }
 
 pub(crate) fn repeated_tool_loop_resolution(
@@ -949,6 +1009,7 @@ fn load_history_messages(
             tool_calls: message.tool_calls,
             provider_payload_json: message.provider_payload_json,
             attachments: message.attachments,
+            provider_output_items: message.provider_output_items,
         })
         .collect())
 }
@@ -971,12 +1032,16 @@ fn effective_session_cwd(
 async fn tool_context(
     state: &AppState,
     alias: &ModelAlias,
+    provider: &ProviderConfig,
+    model: &str,
     cwd: PathBuf,
     permission_preset: PermissionPreset,
     thinking_level: Option<ThinkingLevel>,
     task_mode: Option<TaskMode>,
     background: bool,
     delegation_depth: u8,
+    remote_content_policy: RemoteContentPolicy,
+    allowed_direct_urls: std::collections::HashSet<String>,
 ) -> ToolContext {
     let config = state.config.read().await;
     let background_shell_allowed = !background || config.autopilot.allow_background_shell;
@@ -996,6 +1061,7 @@ async fn tool_context(
         config.delegation.clone()
     };
     let plugin_tools = collect_hosted_plugin_tools(&config);
+    let model_capabilities = agent_providers::describe_model(provider, model).capabilities;
     ToolContext {
         state: state.clone(),
         cwd,
@@ -1017,7 +1083,24 @@ async fn tool_context(
         background_shell_allowed,
         background_network_allowed,
         background_self_edit_allowed,
+        model_capabilities,
+        remote_content_policy,
+        remote_content_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::tools::remote_content::RemoteContentRuntimeState::default(),
+        )),
+        allowed_direct_urls: std::sync::Arc::new(allowed_direct_urls),
     }
+}
+
+async fn resolve_remote_content_policy(
+    state: &AppState,
+    requested: Option<RemoteContentPolicy>,
+) -> RemoteContentPolicy {
+    if let Some(policy) = requested {
+        return policy;
+    }
+    let config = state.config.read().await;
+    config.remote_content_policy
 }
 
 async fn resolve_permission_preset(
@@ -1154,10 +1237,14 @@ fn system_message(
     } else {
         format!("\n\n{delegation_hint}")
     };
+    let remote_content_hint = format!(
+        " {}",
+        crate::tools::remote_content::remote_content_system_guidance()
+    );
     ConversationMessage {
         role: MessageRole::System,
         content: format!(
-            "You are a local work agent running in {}. Handle coding and repo tasks with rigorous engineering discipline, and handle everyday tasks such as research, planning, writing, and operational follow-up with concise, practical help. Use the available tools when you need filesystem, git, environment, shell, or network access. For code changes, prefer apply_patch for precise edits and write_file only for full rewrites or new files. Prefer accurate tool use over guessing. Do not repeat an identical successful tool call batch; after a successful change, summarize completion instead of calling the same tool again.{}{}{}{}{}{}{}",
+            "You are a local work agent running in {}. Handle coding and repo tasks with rigorous engineering discipline, and handle everyday tasks such as research, planning, writing, and operational follow-up with concise, practical help. Use the available tools when you need filesystem, git, environment, shell, or network access. For code changes, prefer apply_patch for precise edits and write_file only for full rewrites or new files. Prefer accurate tool use over guessing. Do not repeat an identical successful tool call batch; after a successful change, summarize completion instead of calling the same tool again.{}{}{}{}{}{}{}{}",
             cwd.display(),
             thinking_hint.unwrap_or_default(),
             permission_hint,
@@ -1166,12 +1253,14 @@ fn system_message(
             agents_hint,
             skills_hint,
             delegation_hint,
+            remote_content_hint,
         ),
         tool_call_id: None,
         tool_name: None,
         tool_calls: Vec::new(),
         provider_payload_json: None,
         attachments: Vec::new(),
+        provider_output_items: Vec::new(),
     }
 }
 
@@ -1266,13 +1355,10 @@ fn load_agents_guidance(cwd: &FsPath) -> String {
             continue;
         }
 
-        let Ok(mut content) = fs::read_to_string(&file) else {
+        let Ok(content) = fs::read_to_string(&file) else {
             continue;
         };
-        if content.len() > MAX_FILE_BYTES {
-            content.truncate(MAX_FILE_BYTES);
-            content.push_str("\n\n[truncated]");
-        }
+        let content = truncate_with_suffix(&content, MAX_FILE_BYTES, "\n\n[truncated]");
 
         let block = format!("--- {}\n{}\n", file.display(), content.trim_end());
         if output.len() + block.len() > MAX_TOTAL_BYTES {

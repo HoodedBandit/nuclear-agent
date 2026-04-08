@@ -514,7 +514,7 @@ pub(crate) async fn complete_openai_browser_login() -> Result<OAuthToken> {
     let authorization_url =
         build_oauth_authorization_url(&provider, &redirect_uri, &state, &challenge)?;
 
-    match webbrowser::open(&authorization_url) {
+    match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for OpenAI sign-in."),
         Err(error) => println!("Could not open browser automatically: {error}"),
     }
@@ -813,7 +813,7 @@ pub(crate) async fn complete_claude_browser_login() -> Result<BrowserLoginResult
         build_oauth_authorization_url(&provider, &redirect_uri, &state, &challenge)?;
 
     let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
-    match webbrowser::open(&authorization_url) {
+    match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for Claude sign-in."),
         Err(error) => println!("Could not open browser automatically: {error}"),
     }
@@ -1178,7 +1178,7 @@ pub(crate) async fn complete_openrouter_browser_login() -> Result<String> {
     }
 
     let callback_task = tokio::spawn(wait_for_code_callback(listener));
-    match webbrowser::open(authorization_url.as_str()) {
+    match opener::open_browser(authorization_url.as_str()) {
         Ok(_) => println!("Opened browser for OpenRouter login."),
         Err(error) => println!("Could not open browser automatically: {error}"),
     }
@@ -1243,7 +1243,7 @@ pub(crate) async fn capture_browser_api_key(
         kind,
         provider_name.to_string(),
     ));
-    match webbrowser::open(&helper_url) {
+    match opener::open_browser(&helper_url) {
         Ok(_) => println!("Opened browser helper for {} login.", provider_name),
         Err(error) => println!("Could not open browser automatically: {error}"),
     }
@@ -1487,7 +1487,7 @@ pub(crate) async fn complete_oauth_login(provider: &ProviderConfig) -> Result<OA
         build_oauth_authorization_url(provider, &redirect_uri, &state, &challenge)?;
 
     let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
-    match webbrowser::open(&authorization_url) {
+    match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for OAuth login."),
         Err(error) => println!("Could not open browser automatically: {error}"),
     }

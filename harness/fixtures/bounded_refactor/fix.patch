@@ -1,0 +1,23 @@
+*** Begin Patch
+*** Update File: text_utils.py
+@@
+-def normalize_title(text):
+-    text = text.strip()
+-    text = " ".join(text.split())
+-    return text.title()
++def _normalize_words(text):
++    return " ".join(text.strip().split())
+ 
+ 
+-def normalize_heading(text):
+-    text = text.strip()
+-    text = " ".join(text.split())
+-    return text.upper()
++def normalize_title(text):
++    return _normalize_words(text).title()
++
++
++def normalize_heading(text):
++    return _normalize_words(text).upper()
+*** End Patch
+

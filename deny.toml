@@ -24,9 +24,32 @@ allow = [
 exceptions = []
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
 wildcards = "allow"
 highlight = "all"
+skip = [
+    # ratatui-core is on hashbrown/foldhash 0.16 while rusqlite/hashlink still anchors 0.15.
+    { crate = "foldhash@0.1.5" },
+    { crate = "hashbrown@0.15.5" },
+    # ring/jsonschema/uuid use getrandom 0.2/0.3 while tempfile currently brings 0.4.
+    { crate = "getrandom@0.2.17" },
+    { crate = "getrandom@0.4.2" },
+    { crate = "r-efi@5.3.0" },
+    # scraper/phf still uses rand 0.8 while tungstenite is on rand 0.9.
+    { crate = "rand@0.8.5" },
+    { crate = "rand_core@0.6.4" },
+    # copypasta's macOS backend and auto-launch's macOS backend are on different objc2 generations.
+    { crate = "objc2@0.5.2" },
+    { crate = "objc2-foundation@0.2.2" },
+    # ring and dbus-secret-service still anchor older target-specific windows-sys lines.
+    { crate = "windows-sys@0.52.0" },
+    { crate = "windows-sys@0.59.0" },
+]
+
+[bans.workspace-dependencies]
+duplicates = "deny"
+unused = "warn"
+include-path-dependencies = false
 
 [sources]
 unknown-registry = "deny"

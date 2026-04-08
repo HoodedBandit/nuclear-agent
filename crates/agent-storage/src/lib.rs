@@ -188,6 +188,12 @@ impl Storage {
         ensure_column(&connection, "messages", "tool_name", "TEXT")?;
         ensure_column(&connection, "messages", "tool_calls_json", "TEXT")?;
         ensure_column(&connection, "messages", "provider_payload_json", "TEXT")?;
+        ensure_column(
+            &connection,
+            "messages",
+            "provider_output_items_json",
+            "TEXT",
+        )?;
         ensure_column(&connection, "missions", "updated_at", "TEXT")?;
         ensure_column(&connection, "missions", "alias", "TEXT")?;
         ensure_column(&connection, "missions", "requested_model", "TEXT")?;
@@ -580,9 +586,10 @@ impl Storage {
             "
             INSERT INTO messages (
                 id, session_id, role_json, content, created_at, provider_id, model,
-                attachments_json, tool_call_id, tool_name, tool_calls_json, provider_payload_json
+                attachments_json, tool_call_id, tool_name, tool_calls_json, provider_payload_json,
+                provider_output_items_json
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ",
             params![
                 message.id,
@@ -597,6 +604,7 @@ impl Storage {
                 message.tool_name,
                 serde_json::to_string(&message.tool_calls)?,
                 message.provider_payload_json,
+                serde_json::to_string(&message.provider_output_items)?,
             ],
         )?;
         connection.execute(
@@ -654,9 +662,10 @@ impl Storage {
                 "
                 INSERT INTO messages (
                     id, session_id, role_json, content, created_at, provider_id, model,
-                    attachments_json, tool_call_id, tool_name, tool_calls_json, provider_payload_json
+                    attachments_json, tool_call_id, tool_name, tool_calls_json, provider_payload_json,
+                    provider_output_items_json
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                 ",
                 params![
                     message.id,
@@ -671,6 +680,7 @@ impl Storage {
                     message.tool_name,
                     serde_json::to_string(&message.tool_calls)?,
                     message.provider_payload_json,
+                    serde_json::to_string(&message.provider_output_items)?,
                 ],
             )?;
         }
@@ -685,7 +695,8 @@ impl Storage {
             "
             SELECT
                 id, session_id, role_json, content, created_at, provider_id, model,
-                attachments_json, tool_call_id, tool_name, tool_calls_json, provider_payload_json
+                attachments_json, tool_call_id, tool_name, tool_calls_json, provider_payload_json,
+                provider_output_items_json
             FROM messages
             WHERE session_id = ?1
             ORDER BY created_at ASC, id ASC
@@ -709,6 +720,13 @@ impl Storage {
                 .transpose()
                 .map_err(json_decode_error)?
                 .unwrap_or_default();
+            let provider_output_items_json: Option<String> = row.get(12)?;
+            let provider_output_items = provider_output_items_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(json_decode_error)?
+                .unwrap_or_default();
             Ok(SessionMessage {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -722,6 +740,7 @@ impl Storage {
                 tool_calls,
                 provider_payload_json: row.get(11)?,
                 attachments,
+                provider_output_items,
             })
         })?;
 

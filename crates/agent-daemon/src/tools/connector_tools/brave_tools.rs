@@ -7,6 +7,7 @@ use url::Url;
 use super::super::argument_helpers::{
     optional_bool, optional_string, optional_u64, required_string, truncate,
 };
+use super::super::remote_content::{register_web_search_result, SafeWebSearchResult};
 use super::*;
 
 const BRAVE_API_BASE_URL: &str = "https://api.search.brave.com";
@@ -48,7 +49,7 @@ struct BraveToolResult {
     query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     more_results_available: Option<bool>,
-    results: Vec<BraveResultItem>,
+    results: Vec<SafeWebSearchResult>,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,7 +79,7 @@ pub(super) fn tool_definitions(context: &ToolContext) -> Vec<ToolDefinition> {
     vec![
         tool(
             "brave_web_search",
-            "Search the web through a configured Brave Search connector. Use this to discover relevant pages before reading them with fetch_url.",
+            "Search the web through a configured Brave Search connector. Use the returned opaque tokens with open_web_result instead of composing raw URLs.",
             common_search_schema(true, false),
         ),
         tool(
@@ -175,6 +176,20 @@ async fn run_brave_search_tool(
     )
     .await?;
 
+    let raw_results = normalize_results(kind, &response.body);
+    let mut safe_results = Vec::with_capacity(raw_results.len());
+    for result in &raw_results {
+        safe_results.push(
+            register_web_search_result(
+                context,
+                &result.title,
+                result.url.as_deref(),
+                result.snippet.as_deref(),
+                result.source.as_deref(),
+            )
+            .await?,
+        );
+    }
     let output = BraveToolResult {
         connector_id: connector.id,
         endpoint: kind.endpoint_label().to_string(),
@@ -190,7 +205,7 @@ async fn run_brave_search_tool(
                     .get("more_results_available")
                     .and_then(Value::as_bool)
             }),
-        results: normalize_results(kind, &response.body),
+        results: safe_results,
     };
     serde_json::to_string_pretty(&output).context("failed to serialize brave search result")
 }
@@ -556,6 +571,12 @@ mod tests {
             background_shell_allowed: true,
             background_network_allowed: true,
             background_self_edit_allowed: true,
+            model_capabilities: agent_core::ModelToolCapabilities::default(),
+            remote_content_policy: RemoteContentPolicy::BlockHighRisk,
+            remote_content_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+                RemoteContentRuntimeState::default(),
+            )),
+            allowed_direct_urls: std::sync::Arc::new(std::collections::HashSet::new()),
         }
     }
 

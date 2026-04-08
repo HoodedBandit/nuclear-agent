@@ -4,11 +4,10 @@ pub(super) fn dynamic_tool_definition(
     name: &str,
     description: &str,
     input_schema_json: &str,
-) -> Option<ToolDefinition> {
-    let Ok(input_schema) = serde_json::from_str::<Value>(input_schema_json) else {
-        return None;
-    };
-    Some(super::tool(name, description, input_schema))
+) -> Result<ToolDefinition> {
+    let input_schema = serde_json::from_str::<Value>(input_schema_json)
+        .with_context(|| format!("tool '{name}' has invalid input schema JSON"))?;
+    Ok(super::tool(name, description, input_schema))
 }
 
 pub(super) async fn execute_dynamic_tool(
@@ -334,6 +333,12 @@ mod tests {
             background_shell_allowed: true,
             background_network_allowed: true,
             background_self_edit_allowed: true,
+            model_capabilities: agent_core::ModelToolCapabilities::default(),
+            remote_content_policy: RemoteContentPolicy::BlockHighRisk,
+            remote_content_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+                RemoteContentRuntimeState::default(),
+            )),
+            allowed_direct_urls: std::sync::Arc::new(std::collections::HashSet::new()),
         }
     }
 
@@ -434,5 +439,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(output, "plugin-ok");
+    }
+
+    #[test]
+    fn dynamic_tool_definition_rejects_invalid_schema() {
+        let error = dynamic_tool_definition("broken_tool", "Broken", "{not json").unwrap_err();
+        assert!(error.to_string().contains("invalid input schema JSON"));
     }
 }

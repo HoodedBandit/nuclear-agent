@@ -1,0 +1,9 @@
+*** Begin Patch
+*** Update File: calculator.py
+@@
+-def add(left, right):
+-    return left - right
++def add(left, right):
++    return left + right
+*** End Patch
+

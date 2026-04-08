@@ -1,5 +1,5 @@
 {
-  "name": "agent-builder-e2e",
+  "name": "nuclear-agent-e2e",
   "private": true,
   "scripts": {
     "test:e2e": "playwright test"

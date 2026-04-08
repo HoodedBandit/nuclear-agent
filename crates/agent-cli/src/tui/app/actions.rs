@@ -60,7 +60,7 @@ impl<'a> TuiApp<'a> {
     pub(super) async fn open_dashboard(&mut self) -> Result<()> {
         let ui_url = dashboard_ui_url(self.storage)?;
         let launch_url = dashboard_launch_url(self.storage).await?;
-        match webbrowser::open(&launch_url) {
+        match opener::open_browser(&launch_url) {
             Ok(_) => self.open_static_overlay(
                 "Dashboard",
                 format!(

@@ -10,6 +10,7 @@ anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true
 directories.workspace = true
+keyring-core.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,13 +19,14 @@ tracing.workspace = true
 url.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+windows-native-keyring-store = "0.5.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["linux-native-sync-persistent", "crypto-rust"] }
+dbus-secret-service-keyring-store = { version = "0.3.3", features = ["crypto-rust", "vendored"] }
+linux-keyutils-keyring-store = "0.2.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
+apple-native-keyring-store = { version = "0.2.3", features = ["keychain"] }
 
 [dev-dependencies]
 tokio.workspace = true

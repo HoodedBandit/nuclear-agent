@@ -5,10 +5,10 @@ use agent_core::{
     AutopilotConfig, AutopilotState, AutopilotUpdateRequest, DaemonConfigUpdateRequest,
     DaemonStatus, DashboardBootstrapResponse, DelegationConfig, DelegationConfigUpdateRequest,
     DelegationTarget, HealthReport, LogEntry, MainAliasUpdateRequest, MainTargetSummary,
-    McpServerConfig, McpServerUpsertRequest, MemoryReviewStatus, ModelAlias, PermissionPreset,
-    PermissionUpdateRequest, ProviderConfig, ProviderSuggestionRequest, ProviderSuggestionResponse,
-    ProviderUpsertRequest, SkillDraftStatus, SkillUpdateRequest, TrustUpdateRequest,
-    CONFIG_VERSION, INTERNAL_DAEMON_ARG,
+    McpServerConfig, McpServerUpsertRequest, MemoryReviewStatus, ModelAlias, ModelDescriptor,
+    PermissionPreset, PermissionUpdateRequest, ProviderCapabilitySummary, ProviderConfig,
+    ProviderSuggestionRequest, ProviderSuggestionResponse, ProviderUpsertRequest, SkillDraftStatus,
+    SkillUpdateRequest, TrustUpdateRequest, CONFIG_VERSION, INTERNAL_DAEMON_ARG,
 };
 use agent_policy::{autonomy_warning, permission_summary};
 use agent_providers::{delete_secret, store_api_key, store_oauth_token};
@@ -105,6 +105,8 @@ pub(crate) fn build_dashboard_bootstrap_response(
         permissions: config.permission_preset,
         trust: config.trust_policy.clone(),
         delegation_config: config.delegation.clone(),
+        provider_capabilities: provider_capability_summaries(config),
+        remote_content_policy: config.remote_content_policy,
     })
 }
 
@@ -443,6 +445,22 @@ pub(crate) async fn list_provider_models(
             agent_providers::list_models(&state.http_client, &provider).await?
         };
     Ok(Json(models))
+}
+
+pub(crate) async fn list_provider_model_descriptors(
+    State(state): State<AppState>,
+    Path(provider_id): Path<String>,
+) -> Result<Json<Vec<ModelDescriptor>>, ApiError> {
+    let provider = {
+        let config = state.config.read().await;
+        config
+            .resolve_provider(&provider_id)
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown provider"))?
+    };
+
+    let descriptors =
+        agent_providers::list_model_descriptors(&state.http_client, &provider).await?;
+    Ok(Json(descriptors))
 }
 
 pub(crate) async fn clear_provider_credentials(
@@ -1003,7 +1021,26 @@ pub(crate) async fn doctor(State(state): State<AppState>) -> Result<Json<HealthR
         keyring_ok: agent_providers::keyring_available(),
         providers: checks,
         plugins: collect_plugin_doctor_reports(&config),
+        remote_content_policy: config.remote_content_policy,
+        provider_capabilities: provider_capability_summaries(&config),
     }))
+}
+
+fn provider_capability_summaries(config: &AppConfig) -> Vec<ProviderCapabilitySummary> {
+    config
+        .all_providers()
+        .into_iter()
+        .filter_map(|provider| {
+            provider.default_model.as_ref().map(|model| {
+                let descriptor = agent_providers::describe_model(&provider, model);
+                ProviderCapabilitySummary {
+                    provider_id: provider.id.clone(),
+                    model: descriptor.id,
+                    capabilities: descriptor.capabilities,
+                }
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn load_events(

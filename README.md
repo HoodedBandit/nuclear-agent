@@ -25,7 +25,7 @@ GUI is intentionally deferred until the CLI path is stable.
 - `crates/agent-providers`: provider adapters and keychain-backed secrets
 - `crates/agent-policy`: trust and autonomy helpers
 - `crates/agent-daemon`: persistent runtime process
-- `crates/agent-cli`: terminal client with a migration-safe legacy backend binary and a user-facing `nuclear` command
+- `crates/agent-cli`: terminal client and the user-facing `nuclear` command
 
 ## Build
 
@@ -45,8 +45,8 @@ Packaged installs also include:
 - `install` for Linux
 - `install.cmd` as a Windows wrapper around `install.ps1`
 
-Those installers place `nuclear` on the user PATH for day-to-day use while preserving legacy `autism` command compatibility.
-On Windows, if the bundled `nuclear.exe` is blocked by application control, `install.ps1` automatically falls back to building from the packaged source tree and will install `rustup` if needed. When the packaged source tree includes the dashboard E2E harness, `install.ps1` also installs the required npm dependencies and Playwright Chromium browser bundle automatically. Existing managed or system installs are reused instead of being overwritten.
+Those installers place `nuclear` on the user PATH for day-to-day use.
+On Windows, if the bundled `nuclear.exe` is blocked by application control, `install.ps1` automatically falls back to building from the packaged source tree and will install `rustup` if needed. When the packaged source tree includes the dashboard E2E harness, `install.ps1` also installs the required npm dependencies and Playwright Chromium browser bundle automatically. Existing legacy managed installs are migrated into the canonical Nuclear root instead of being left in place.
 
 ## Quick Start
 
@@ -242,7 +242,7 @@ Docs:
 - [`docs/benchmarks.md`](docs/benchmarks.md)
 - [`docs/release-checklist.md`](docs/release-checklist.md)
 - [`docs/reliability.md`](docs/reliability.md)
-- [`docs/beta-release-notes.md`](docs/beta-release-notes.md)
+- [`docs/ga-release-notes.md`](docs/ga-release-notes.md)
 
 Inspect and enable local skills:
 
@@ -271,10 +271,10 @@ target\debug\nuclear.exe trust --allow-shell false
 target\debug\nuclear.exe trust --path "J:\Nuclear AI box\Agent builder"
 ```
 
-Run the coding benchmark harness against a built binary and configured local profile:
+Run the canonical coding harness against a built binary:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-bench.ps1 -TaskFile .\benchmarks\coding-smoke\tasks.jsonl
+powershell -ExecutionPolicy Bypass -File .\scripts\run-harness.ps1 -Lane coding-deterministic
 ```
 
 Run the HTTP control-plane soak harness against a live daemon:
@@ -289,10 +289,10 @@ Package the canonical Windows release bundle:
 powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1
 ```
 
-Run the final beta signoff flow with packaging and release record generation:
+Run the final release packaging and record-generation flow:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-phase3.ps1 -Token "<daemon-token>" -Workspace .
+powershell -ExecutionPolicy Bypass -File .\scripts\finalize-release.ps1 -Token "<daemon-token>" -Workspace .
 ```
 
 ## Notes

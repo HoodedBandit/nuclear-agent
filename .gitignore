@@ -18,3 +18,7 @@
 /node_modules
 /test-results
 /playwright-report
+/Microsoft/
+/scripts/__pycache__/
+__pycache__/
+*.pyc

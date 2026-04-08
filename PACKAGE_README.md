@@ -9,8 +9,8 @@ Run one of the packaged installers from this directory:
 - `install.cmd`
 - `install.ps1`
 
-The installer places `nuclear` on the user PATH for normal use and also installs
-the legacy `autism` launcher for compatibility with existing environments.
+The installer places `nuclear` on the user PATH for normal use and migrates any
+legacy managed install into the canonical Nuclear root.
 
 ## What Is Included
 
@@ -22,12 +22,12 @@ the legacy `autism` launcher for compatibility with existing environments.
 ## Notes
 
 - Fresh installs default to the canonical `nuclear` install root.
-- Existing legacy `autism` installs are upgraded in place to avoid breaking PATH
-  assumptions or shortcuts.
+- Existing legacy `autism` installs are migrated into the canonical Nuclear root
+  during upgrade.
 - If Windows application control blocks the bundled binary, `install.ps1` falls
   back to building from `source/` and installs `rustup` automatically when
   needed.
-- The bundled release binary is the preferred beta path on Windows.
+- Packaged installs write rollback state and install rollback companions.
 
 ## Verify
 
@@ -37,8 +37,8 @@ From the repo root, the packaged installer path is covered by:
 powershell -ExecutionPolicy Bypass -File .\scripts\install-smoke.ps1
 ```
 
-The full beta verification stack is:
+The full GA verification stack is:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-phase3.ps1 -Token "<daemon-token>" -Workspace .
+powershell -ExecutionPolicy Bypass -File .\scripts\finalize-release.ps1 -Token "<daemon-token>" -Workspace .
 ```

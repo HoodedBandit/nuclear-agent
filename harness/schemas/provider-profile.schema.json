@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "alias": { "type": "string" },
+    "provider_id": { "type": "string" },
+    "model": { "type": "string" },
+    "provider_kind": {
+      "type": "string",
+      "enum": [
+        "openai-compatible",
+        "anthropic",
+        "moonshot",
+        "openrouter",
+        "venice",
+        "ollama"
+      ]
+    },
+    "base_url": { "type": "string" },
+    "api_key_env": { "type": "string" }
+  },
+  "additionalProperties": false
+}

@@ -650,7 +650,7 @@ pub(crate) async fn dashboard_command(storage: &Storage, args: DashboardArgs) ->
     }
 
     if !args.no_open {
-        match webbrowser::open(&launch_url) {
+        match opener::open_browser(&launch_url) {
             Ok(_) => {
                 if !args.print_url {
                     println!("Reusable dashboard URL: {ui_url}");
@@ -696,10 +696,138 @@ fn dashboard_origin(storage: &Storage) -> Result<String> {
 }
 
 pub(crate) async fn doctor_command(storage: &Storage) -> Result<()> {
+    let report = gather_health_report(storage).await?;
+    print_health_report(report);
+    Ok(())
+}
+
+pub(crate) async fn support_bundle_command(
+    storage: &Storage,
+    args: SupportBundleArgs,
+) -> Result<()> {
+    let bundle_dir = args.output_dir.unwrap_or_else(|| {
+        storage
+            .paths()
+            .data_dir
+            .join("support-bundles")
+            .join(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string())
+    });
+    fs::create_dir_all(&bundle_dir).with_context(|| {
+        format!(
+            "failed to create support bundle directory {}",
+            bundle_dir.display()
+        )
+    })?;
+
+    let config = storage.load_config()?;
+    let doctor = gather_health_report(storage).await?;
+    let daemon_status = if let Some(client) = try_daemon(storage).await? {
+        Some(client.get::<DaemonStatus>("/v1/status").await?)
+    } else {
+        None
+    };
+    let install_state = load_optional_json_file(
+        &std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.parent()
+                    .map(|parent| parent.join("install-state.json"))
+            })
+            .unwrap_or_else(|| PathBuf::from("install-state.json")),
+    )?;
+    let migration_state = load_optional_json_file(&storage.paths().migration_path)?;
+    let logs = storage.list_logs(args.log_limit)?;
+    let sessions = storage.list_sessions(args.session_limit)?;
+    let config_summary = serde_json::json!({
+        "version": config.version,
+        "onboarding_complete": config.onboarding_complete,
+        "config_path": storage.paths().config_path.display().to_string(),
+        "data_path": storage.paths().data_dir.display().to_string(),
+        "main_agent_alias": config.main_agent_alias,
+        "providers": config.providers.iter().map(|provider| serde_json::json!({
+            "id": provider.id,
+            "kind": provider.kind,
+            "display_name": provider.display_name,
+            "base_url": provider.base_url,
+            "auth_mode": provider.auth_mode,
+        })).collect::<Vec<_>>(),
+        "aliases": config.aliases,
+        "plugin_count": config.plugins.len(),
+        "webhook_connectors": config.webhook_connectors.len(),
+        "inbox_connectors": config.inbox_connectors.len(),
+        "telegram_connectors": config.telegram_connectors.len(),
+        "discord_connectors": config.discord_connectors.len(),
+        "slack_connectors": config.slack_connectors.len(),
+        "home_assistant_connectors": config.home_assistant_connectors.len(),
+        "signal_connectors": config.signal_connectors.len(),
+        "gmail_connectors": config.gmail_connectors.len(),
+        "brave_connectors": config.brave_connectors.len(),
+        "enabled_skills": config.enabled_skills,
+        "permission_preset": config.permission_preset,
+        "trust_policy": config.trust_policy,
+        "autonomy": config.autonomy,
+        "autopilot": config.autopilot,
+        "delegation": config.delegation,
+        "embedding": config.embedding,
+    });
+    let manifest = serde_json::json!({
+        "generated_at": chrono::Utc::now(),
+        "bundle_dir": bundle_dir.display().to_string(),
+        "cli_version": env!("CARGO_PKG_VERSION"),
+        "doctor_file": "doctor.json",
+        "daemon_status_file": if daemon_status.is_some() { Some("daemon-status.json") } else { None::<&str> },
+        "config_summary_file": "config-summary.json",
+        "sessions_file": "sessions.json",
+        "logs_file": "logs.json",
+        "install_state_file": install_state.as_ref().map(|_| "install-state.json"),
+        "path_migration_file": migration_state.as_ref().map(|_| "path-migration.json"),
+    });
+
+    write_json_file(&bundle_dir.join("doctor.json"), &doctor)?;
+    write_json_file(&bundle_dir.join("config-summary.json"), &config_summary)?;
+    write_json_file(&bundle_dir.join("sessions.json"), &sessions)?;
+    write_json_file(&bundle_dir.join("logs.json"), &logs)?;
+    write_json_file(&bundle_dir.join("manifest.json"), &manifest)?;
+    if let Some(status) = daemon_status.as_ref() {
+        write_json_file(&bundle_dir.join("daemon-status.json"), status)?;
+    }
+    if let Some(value) = install_state.as_ref() {
+        write_json_file(&bundle_dir.join("install-state.json"), value)?;
+    }
+    if let Some(value) = migration_state.as_ref() {
+        write_json_file(&bundle_dir.join("path-migration.json"), value)?;
+    }
+
+    let readme = [
+        "# Nuclear Agent Support Bundle".to_string(),
+        String::new(),
+        format!("- generated_at: `{}`", chrono::Utc::now().to_rfc3339()),
+        format!("- bundle_dir: `{}`", bundle_dir.display()),
+        format!("- daemon_running: `{}`", doctor.daemon_running),
+        format!("- config_path: `{}`", doctor.config_path),
+        format!("- data_path: `{}`", doctor.data_path),
+        format!("- logs: `{}`", args.log_limit),
+        format!("- sessions: `{}`", args.session_limit),
+        String::new(),
+        "Files:".to_string(),
+        "- `manifest.json`".to_string(),
+        "- `doctor.json`".to_string(),
+        "- `config-summary.json`".to_string(),
+        "- `sessions.json`".to_string(),
+        "- `logs.json`".to_string(),
+    ]
+    .join("\n");
+    fs::write(bundle_dir.join("README.md"), readme)
+        .with_context(|| format!("failed to write {}", bundle_dir.join("README.md").display()))?;
+
+    println!("support_bundle={}", bundle_dir.display());
+    Ok(())
+}
+
+async fn gather_health_report(storage: &Storage) -> Result<HealthReport> {
     if let Some(client) = try_daemon(storage).await? {
         let report: HealthReport = client.get("/v1/doctor").await?;
-        print_health_report(report);
-        return Ok(());
+        return Ok(report);
     }
 
     let config = storage.load_config()?;
@@ -711,7 +839,7 @@ pub(crate) async fn doctor_command(storage: &Storage) -> Result<()> {
             .map(|provider| health_check(&client, provider)),
     )
     .await;
-    let report = HealthReport {
+    Ok(HealthReport {
         daemon_running: try_daemon(storage).await?.is_some(),
         config_path: storage.paths().config_path.display().to_string(),
         data_path: storage.paths().data_dir.display().to_string(),
@@ -722,9 +850,27 @@ pub(crate) async fn doctor_command(storage: &Storage) -> Result<()> {
             .iter()
             .map(storage_plugins::doctor_plugin)
             .collect(),
-    };
-    print_health_report(report);
-    Ok(())
+        remote_content_policy: config.remote_content_policy,
+        provider_capabilities: Vec::new(),
+    })
+}
+
+fn write_json_file(path: &Path, value: &impl Serialize) -> Result<()> {
+    let content =
+        serde_json::to_string_pretty(value).context("failed to serialize bundle content")?;
+    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn load_optional_json_file(path: &Path) -> Result<Option<serde_json::Value>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read optional json file {}", path.display()))?;
+    let value = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse optional json file {}", path.display()))?;
+    Ok(Some(value))
 }
 
 fn print_health_report(report: HealthReport) {
@@ -743,5 +889,44 @@ fn print_health_report(report: HealthReport) {
             "{} ok={} enabled={} trusted={} detail={}",
             plugin.id, plugin.ok, plugin.enabled, plugin.trusted, plugin.detail
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_core::LogEntry;
+
+    fn temp_storage() -> (Storage, PathBuf) {
+        let root = std::env::temp_dir().join(format!("nuclear-support-bundle-{}", Uuid::new_v4()));
+        let storage = Storage::open_at(&root).unwrap();
+        (storage, root)
+    }
+
+    #[tokio::test]
+    async fn support_bundle_command_writes_expected_artifacts() {
+        let (storage, root) = temp_storage();
+        storage
+            .append_log(&LogEntry::new("info", "test", "hello bundle"))
+            .unwrap();
+        let output_dir = root.join("bundle");
+
+        support_bundle_command(
+            &storage,
+            SupportBundleArgs {
+                output_dir: Some(output_dir.clone()),
+                log_limit: 10,
+                session_limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(output_dir.join("manifest.json").exists());
+        assert!(output_dir.join("doctor.json").exists());
+        assert!(output_dir.join("config-summary.json").exists());
+        assert!(output_dir.join("logs.json").exists());
+        assert!(output_dir.join("sessions.json").exists());
+        assert!(output_dir.join("README.md").exists());
     }
 }

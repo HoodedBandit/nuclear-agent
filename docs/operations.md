@@ -25,14 +25,48 @@ Recommended update order:
 
 ## Rollback
 
-This repo does not yet ship a dedicated rollback command. The practical rollback path today is:
+Managed packaged installs now ship rollback companions next to the installed binary.
 
-1. Restore the previous binary or previous git revision.
-2. Restart the daemon with that binary.
-3. Re-run `nuclear plugin doctor`.
-4. Reinstall or update any plugin package whose compatibility or integrity no longer matches the restored host.
+Windows:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\NuclearAI\Nuclear\bin\nuclear-rollback.ps1"
+```
+
+Linux:
+
+```bash
+~/.local/bin/nuclear-rollback
+```
+
+Rollback restores the previous managed binary recorded in `install-state.json`, stops the managed daemon first, and validates the restored binary with `--version`.
+
+After rollback:
+
+1. Run `nuclear doctor`.
+2. Run `nuclear plugin doctor`.
+3. Reinstall or update any plugin package whose compatibility or integrity no longer matches the restored host.
 
 Because plugin installs are copied into the daemon-managed data directory, restoring source files alone does not roll back an already installed plugin. Use `plugin update` or `plugin remove` plus `plugin install`.
+
+## Support Bundle
+
+Export a redacted local diagnostics bundle before manual triage or escalation:
+
+```powershell
+target\debug\nuclear.exe support-bundle
+target\debug\nuclear.exe support-bundle --output-dir .\tmp\support-bundle --log-limit 200 --session-limit 25
+```
+
+The support bundle includes:
+
+- doctor output
+- daemon status when the daemon is running
+- config summary without daemon tokens or provider secrets
+- recent session metadata
+- recent logs
+- install-state metadata when present
+- path-migration metadata when present
 
 ## Recovery
 

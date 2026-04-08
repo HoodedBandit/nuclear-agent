@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use agent_core::{
-    MessageRole, ModelAlias, PermissionPreset, RunTaskResponse, SessionMessage,
-    SessionRenameRequest, SessionResumePacket, SessionSummary, SessionTranscript, TaskMode,
-    ThinkingLevel,
+    truncate_with_suffix, MessageRole, ModelAlias, PermissionPreset, RunTaskResponse,
+    SessionMessage, SessionRenameRequest, SessionResumePacket, SessionSummary, SessionTranscript,
+    TaskMode, ThinkingLevel,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -130,13 +130,8 @@ fn format_session_message_for_display(message: &SessionMessage) -> String {
     }
 }
 
-fn truncate_prompt(mut text: String, max_len: usize) -> String {
-    if text.len() <= max_len {
-        return text;
-    }
-    text.truncate(max_len);
-    text.push_str("\n\n[truncated]");
-    text
+fn truncate_prompt(text: String, max_len: usize) -> String {
+    truncate_with_suffix(&text, max_len, "\n\n[truncated]")
 }
 
 fn build_compact_prompt(transcript: &SessionTranscript) -> Result<String, ApiError> {
@@ -390,6 +385,7 @@ pub(crate) async fn compact_session(
             permission_preset: payload.permission_preset,
             task_mode: payload.task_mode,
             output_schema_json: None,
+            remote_content_policy_override: None,
             persist: false,
             background: false,
             delegation_depth: 0,
@@ -545,5 +541,34 @@ mod tests {
             .any(|hit| hit.session_id == "session-2"));
 
         let _ = std::fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn build_compact_prompt_truncates_multibyte_transcript_safely() {
+        let transcript = SessionTranscript {
+            session: SessionSummary {
+                id: "session-1".to_string(),
+                title: Some("Unicode session".to_string()),
+                alias: "main".to_string(),
+                provider_id: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                message_count: 1,
+                updated_at: Utc::now(),
+                created_at: Utc::now(),
+                cwd: None,
+                task_mode: None,
+            },
+            messages: vec![SessionMessage::new(
+                "session-1".to_string(),
+                MessageRole::User,
+                format!("{}😀tail", "a".repeat(99_990)),
+                Some("openai".to_string()),
+                Some("gpt-5".to_string()),
+            )],
+        };
+
+        let prompt = build_compact_prompt(&transcript).unwrap();
+        assert!(prompt.contains("[truncated]"));
+        assert!(!prompt.contains("😀tail"));
     }
 }

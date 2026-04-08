@@ -16,11 +16,9 @@ const providerPort = 42792;
 const daemonToken = "playwright-daemon-token";
 const windowsExecutables = [
   path.join(repoRoot, "target", "debug", "nuclear.exe"),
-  path.join(repoRoot, "target", "debug", "autism.exe"),
 ];
 const unixExecutables = [
   path.join(repoRoot, "target", "debug", "nuclear"),
-  path.join(repoRoot, "target", "debug", "autism"),
 ];
 const rebuildExtensions = new Set([".rs", ".html", ".css", ".js", ".cjs", ".toml", ".lock"]);
 
@@ -104,12 +102,12 @@ function binaryNeedsRebuild(exe) {
 function ensureBinaryBuilt() {
   const exe = executablePath();
   if (binaryNeedsRebuild(exe)) {
-    const build = spawnSync("cargo", ["build", "-q", "-p", "nuclear", "--bin", "nuclear", "--bin", "autism"], {
+    const build = spawnSync("cargo", ["build", "-q", "-p", "nuclear", "--bin", "nuclear"], {
       cwd: repoRoot,
       stdio: "inherit",
     });
     if (build.status !== 0) {
-      throw new Error("failed to build the nuclear package and legacy compatibility binary for dashboard e2e");
+      throw new Error("failed to build the nuclear package for dashboard e2e");
     }
   }
   if (!fs.existsSync(exe)) {

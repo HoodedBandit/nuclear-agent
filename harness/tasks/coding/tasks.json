@@ -1,0 +1,178 @@
+{
+  "tasks": [
+    {
+      "id": "py-bugfix",
+      "fixture": "../../fixtures/py_bugfix",
+      "suite": "bug-fix",
+      "prompt": "Inspect the repository, fix the broken calculator addition behavior, rerun the tests, and summarize the concrete fix.",
+      "deterministic_script": "../../fixtures/py_bugfix/script.json",
+      "setup_commands": [],
+      "expected_failure_before_run": [
+        {
+          "label": "bug is present before the run",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "expected_exit_code": 1,
+          "timeout_seconds": 30
+        }
+      ],
+      "success_commands": [
+        {
+          "label": "calculator tests pass",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "timeout_seconds": 30
+        }
+      ],
+      "allowed_change_globs": ["calculator.py"],
+      "forbidden_change_globs": ["README.md", "tests/**"],
+      "expected_changed_paths": ["calculator.py"],
+      "max_duration_seconds": 120,
+      "max_tool_calls": 8,
+      "required_tools": ["read_file", "run_shell", "apply_patch"],
+      "requires_network": false,
+      "requires_shell": true,
+      "requires_edit": true,
+      "final_response_assertions": {
+        "contains_all": ["Fixed", "tests"],
+        "not_contains": ["I could not"]
+      }
+    },
+    {
+      "id": "py-repair",
+      "fixture": "../../fixtures/py_repair",
+      "suite": "failing-test-repair",
+      "prompt": "Repair slug generation so the existing unit tests pass. If your first edit is insufficient, inspect the failure, correct it, rerun the tests, and summarize the final fix.",
+      "deterministic_script": "../../fixtures/py_repair/script.json",
+      "setup_commands": [],
+      "expected_failure_before_run": [
+        {
+          "label": "slugify tests fail before the repair",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "expected_exit_code": 1,
+          "timeout_seconds": 30
+        }
+      ],
+      "success_commands": [
+        {
+          "label": "slugify tests pass",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "timeout_seconds": 30
+        }
+      ],
+      "allowed_change_globs": ["formatter.py"],
+      "forbidden_change_globs": ["README.md", "tests/**"],
+      "expected_changed_paths": ["formatter.py"],
+      "max_duration_seconds": 120,
+      "max_tool_calls": 10,
+      "required_tools": ["read_file", "run_shell", "apply_patch"],
+      "requires_network": false,
+      "requires_shell": true,
+      "requires_edit": true,
+      "final_response_assertions": {
+        "contains_all": ["Repaired", "tests"],
+        "contains_any": ["initial patch", "first edit"],
+        "not_contains": ["I could not"]
+      }
+    },
+    {
+      "id": "bounded-refactor",
+      "fixture": "../../fixtures/bounded_refactor",
+      "suite": "bounded-refactor",
+      "prompt": "Refactor the duplicated text normalization logic into a shared helper without changing behavior, rerun the tests, and summarize the refactor.",
+      "deterministic_script": "../../fixtures/bounded_refactor/script.json",
+      "setup_commands": [],
+      "success_commands": [
+        {
+          "label": "refactor tests pass",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "timeout_seconds": 30
+        }
+      ],
+      "allowed_change_globs": ["text_utils.py"],
+      "forbidden_change_globs": ["README.md", "tests/**"],
+      "expected_changed_paths": ["text_utils.py"],
+      "max_duration_seconds": 120,
+      "max_tool_calls": 8,
+      "required_tools": ["read_file", "run_shell", "apply_patch"],
+      "requires_network": false,
+      "requires_shell": true,
+      "requires_edit": true,
+      "final_response_assertions": {
+        "contains_all": ["Refactored", "tests"],
+        "not_contains": ["I could not"]
+      }
+    },
+    {
+      "id": "config-migration",
+      "fixture": "../../fixtures/config_migration",
+      "suite": "config-migration",
+      "prompt": "Update the config loader so it accepts the legacy base_url key as a migration fallback, rerun the tests, and summarize the compatibility fix.",
+      "deterministic_script": "../../fixtures/config_migration/script.json",
+      "setup_commands": [],
+      "expected_failure_before_run": [
+        {
+          "label": "legacy config test fails before the migration fix",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "expected_exit_code": 1,
+          "timeout_seconds": 30
+        }
+      ],
+      "success_commands": [
+        {
+          "label": "migration tests pass",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "timeout_seconds": 30
+        }
+      ],
+      "allowed_change_globs": ["config_loader.py"],
+      "forbidden_change_globs": ["README.md", "tests/**"],
+      "expected_changed_paths": ["config_loader.py"],
+      "max_duration_seconds": 120,
+      "max_tool_calls": 8,
+      "required_tools": ["read_file", "run_shell", "apply_patch"],
+      "requires_network": false,
+      "requires_shell": true,
+      "requires_edit": true,
+      "final_response_assertions": {
+        "contains_all": ["legacy", "tests"],
+        "not_contains": ["I could not"]
+      }
+    },
+    {
+      "id": "docs-code-sync",
+      "fixture": "../../fixtures/docs_code_sync",
+      "suite": "docs-code-sync",
+      "prompt": "Bring the README into sync with the current version constant, rerun the consistency tests, and summarize the documentation fix.",
+      "deterministic_script": "../../fixtures/docs_code_sync/script.json",
+      "setup_commands": [],
+      "expected_failure_before_run": [
+        {
+          "label": "docs mismatch test fails before the documentation fix",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "expected_exit_code": 1,
+          "timeout_seconds": 30
+        }
+      ],
+      "success_commands": [
+        {
+          "label": "docs consistency tests pass",
+          "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+          "timeout_seconds": 30
+        }
+      ],
+      "allowed_change_globs": ["README.md"],
+      "forbidden_change_globs": ["release_info.py", "tests/**"],
+      "expected_changed_paths": ["README.md"],
+      "max_duration_seconds": 120,
+      "max_tool_calls": 8,
+      "required_tools": ["read_file", "run_shell", "apply_patch"],
+      "requires_network": false,
+      "requires_shell": true,
+      "requires_edit": true,
+      "final_response_assertions": {
+        "contains_all": ["README", "tests"],
+        "not_contains": ["I could not"]
+      }
+    }
+  ]
+}
+

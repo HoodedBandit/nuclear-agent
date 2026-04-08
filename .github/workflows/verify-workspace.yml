@@ -1,4 +1,4 @@
-name: verify-workspace
+name: ga-verify
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  verify-ga:
     strategy:
       fail-fast: false
       matrix:
@@ -27,34 +27,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
 
-      - name: Install Linux verify prerequisites
-        if: runner.os != 'Windows'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libdbus-1-dev
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated --locked
 
-      - name: Verify workspace (Linux)
-        if: runner.os != 'Windows'
-        run: bash scripts/verify-workspace.sh
-
-      - name: Verify workspace (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: .\scripts\verify-workspace.ps1
-
-  dashboard-e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -65,11 +47,28 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Linux verify prerequisites
+        if: runner.os != 'Windows'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright Chromium (Linux)
+        if: runner.os != 'Windows'
         run: npx playwright install --with-deps chromium
 
-      - name: Run dashboard E2E
-        run: npm run test:e2e
+      - name: Install Playwright Chromium (Windows)
+        if: runner.os == 'Windows'
+        run: npx playwright install chromium
+
+      - name: Verify GA (Linux)
+        if: runner.os != 'Windows'
+        run: bash scripts/verify-ga.sh
+
+      - name: Verify GA (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\verify-ga.ps1

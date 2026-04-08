@@ -1,6 +1,7 @@
 param(
     [string]$OutputRoot = "",
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$RequireSigning
 )
 
 Set-StrictMode -Version Latest
@@ -9,6 +10,22 @@ $ErrorActionPreference = "Stop"
 function Write-Step {
     param([string]$Message)
     Write-Host "`n==> $Message" -ForegroundColor Cyan
+}
+
+function Resolve-PythonCommand {
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        return [pscustomobject]@{
+            Executable = "python"
+            Arguments  = @()
+        }
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        return [pscustomobject]@{
+            Executable = "py"
+            Arguments  = @("-3")
+        }
+    }
+    throw "Python is required to generate release metadata."
 }
 
 function Get-WorkspaceVersion {
@@ -55,10 +72,7 @@ function Get-SourceSnapshotItems {
         "package-lock.json",
         "package.json",
         "playwright.config.cjs",
-        "PROJECT_REVIEW.md",
         "README.md",
-        "RECOVERY_REPORT.md",
-        "WORKTREE_LOG_2026-03-13.md",
         "PACKAGE_README.md"
     )
 }
@@ -121,19 +135,17 @@ function Ensure-ReleaseBinaries {
     param([string]$RepoRoot)
 
     $nuclearBinary = Get-ReleaseBinaryPath -RepoRoot $RepoRoot -BinaryName "nuclear.exe"
-    $legacyBinary = Get-ReleaseBinaryPath -RepoRoot $RepoRoot -BinaryName "autism.exe"
 
-    if ((Test-Path $nuclearBinary) -and (Test-Path $legacyBinary)) {
+    if (Test-Path $nuclearBinary) {
         return @{
             Nuclear = $nuclearBinary
-            Legacy  = $legacyBinary
         }
     }
 
-    Write-Step "Building release compatibility binaries"
+    Write-Step "Building release binary"
     Push-Location $RepoRoot
     try {
-        & cargo build --release -p nuclear --bin nuclear --bin autism
+        & cargo build --release -p nuclear --bin nuclear
         if ($LASTEXITCODE -ne 0) {
             throw "cargo build failed"
         }
@@ -141,13 +153,12 @@ function Ensure-ReleaseBinaries {
         Pop-Location
     }
 
-    if (-not (Test-Path $nuclearBinary) -or -not (Test-Path $legacyBinary)) {
-        throw "Release build completed but expected binaries were not found."
+    if (-not (Test-Path $nuclearBinary)) {
+        throw "Release build completed but the expected nuclear binary was not found."
     }
 
     return @{
         Nuclear = $nuclearBinary
-        Legacy  = $legacyBinary
     }
 }
 
@@ -175,14 +186,21 @@ $outputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 $bundleDir = Join-Path $outputRoot $bundleName
 $archivePath = Join-Path $outputRoot "$bundleName.zip"
 $archiveHashPath = Join-Path $outputRoot "$bundleName.zip.sha256.txt"
+$sbomPath = Join-Path $outputRoot "$bundleName.sbom.spdx.json"
+$provenancePath = Join-Path $outputRoot "$bundleName.provenance.json"
+$signingStatusPath = Join-Path $outputRoot "$bundleName.signing.json"
 $manifestPath = Join-Path $outputRoot "$bundleName.manifest.json"
 $commitSha = Get-GitCommitSha -RepoRoot $repoRoot
 $releaseBinaries = Ensure-ReleaseBinaries -RepoRoot $repoRoot
+$pythonCommand = Resolve-PythonCommand
 
 if ($Clean) {
     Remove-Item -Recurse -Force $bundleDir -ErrorAction SilentlyContinue
     Remove-Item -Force $archivePath -ErrorAction SilentlyContinue
     Remove-Item -Force $archiveHashPath -ErrorAction SilentlyContinue
+    Remove-Item -Force $sbomPath -ErrorAction SilentlyContinue
+    Remove-Item -Force $provenancePath -ErrorAction SilentlyContinue
+    Remove-Item -Force $signingStatusPath -ErrorAction SilentlyContinue
     Remove-Item -Force $manifestPath -ErrorAction SilentlyContinue
 }
 
@@ -198,7 +216,6 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "PACKAGE_README.md") -Destination (J
 
 Write-Step "Copying bundled release binaries"
 Copy-Item -LiteralPath $releaseBinaries.Nuclear -Destination (Join-Path $bundleDir "bin\$platformTag\nuclear.exe") -Force
-Copy-Item -LiteralPath $releaseBinaries.Legacy -Destination (Join-Path $bundleDir "bin\$platformTag\autism.exe") -Force
 
 Write-Step "Copying source snapshot"
 foreach ($item in Get-SourceSnapshotItems) {
@@ -216,16 +233,10 @@ $internalManifest = @{
             name   = "nuclear.exe"
             sha256 = (Get-FileHash -Path (Join-Path $bundleDir "bin\$platformTag\nuclear.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
         }
-        legacy    = @{
-            name   = "autism.exe"
-            sha256 = (Get-FileHash -Path (Join-Path $bundleDir "bin\$platformTag\autism.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
-        }
     }
     install = @{
         canonical_command = "nuclear"
-        legacy_command    = "autism"
         fresh_root        = "%LOCALAPPDATA%\\Programs\\NuclearAI\\Nuclear\\bin"
-        legacy_root       = "%LOCALAPPDATA%\\Programs\\NuclearAI\\Autism\\bin"
     }
 }
 Write-Json -Path (Join-Path $bundleDir "release-manifest.json") -Payload $internalManifest
@@ -239,6 +250,18 @@ Compress-Archive -Path $bundleDir -DestinationPath $archivePath -Force
 $archiveHash = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -Path $archiveHashPath -Encoding Ascii -Value "$archiveHash  $([System.IO.Path]::GetFileName($archivePath))"
 
+Write-Step "Generating SBOM"
+& $pythonCommand.Executable @($pythonCommand.Arguments) `
+    (Join-Path $PSScriptRoot "generate_sbom.py") `
+    --repo-root $repoRoot `
+    --bundle-name $bundleName `
+    --version $version `
+    --platform $platformTag `
+    --output-path $sbomPath
+if ($LASTEXITCODE -ne 0) {
+    throw "generate_sbom.py failed"
+}
+
 $manifest = @{
     name              = $bundleName
     version           = $version
@@ -251,8 +274,45 @@ $manifest = @{
     checksum_path     = $archiveHashPath
     package_readme    = (Join-Path $bundleDir "README.md")
     internal_manifest = (Join-Path $bundleDir "release-manifest.json")
+    sbom_path         = $sbomPath
+    provenance_path   = $provenancePath
+    signing_status    = $signingStatusPath
+    signing_required  = $RequireSigning.IsPresent
+    signing_hook      = $env:NUCLEAR_SIGNING_HOOK
 }
 Write-Json -Path $manifestPath -Payload $manifest
+
+Write-Step "Generating provenance"
+& $pythonCommand.Executable @($pythonCommand.Arguments) `
+    (Join-Path $PSScriptRoot "generate_provenance.py") `
+    --manifest-path $manifestPath `
+    --archive-path $archivePath `
+    --checksum-path $archiveHashPath `
+    --sbom-path $sbomPath `
+    --output-path $provenancePath
+if ($LASTEXITCODE -ne 0) {
+    throw "generate_provenance.py failed"
+}
+
+Write-Step "Collecting signatures"
+& $pythonCommand.Executable @($pythonCommand.Arguments) `
+    (Join-Path $PSScriptRoot "sign_artifacts.py") `
+    --manifest-path $manifestPath `
+    --artifacts $archivePath $archiveHashPath $manifestPath $sbomPath $provenancePath `
+    --status-path $signingStatusPath
+if ($LASTEXITCODE -ne 0) {
+    throw "sign_artifacts.py failed"
+}
+
+if ($RequireSigning) {
+    $signingStatus = Get-Content -Path $signingStatusPath -Raw | ConvertFrom-Json
+    if (-not $signingStatus.enabled) {
+        throw "Signing is required but NUCLEAR_SIGNING_HOOK was not configured."
+    }
+    if (-not $signingStatus.signatures.PSObject.Properties.Name.Count) {
+        throw "Signing is required but no artifact signatures were recorded."
+    }
+}
 
 Write-Host "Package output written to $bundleDir"
 Write-Host "Archive written to $archivePath"

@@ -13,12 +13,11 @@ pub use control::*;
 pub use plugins::*;
 pub use workspace::*;
 
-pub const APP_NAME: &str = "Agent Builder";
-pub const APP_SLUG: &str = "agent-builder";
+pub const APP_NAME: &str = "Nuclear";
+pub const APP_SLUG: &str = "nuclear";
 pub const DISPLAY_APP_NAME: &str = "Nuclear Agent";
 pub const PRIMARY_COMMAND_NAME: &str = "nuclear";
-pub const LEGACY_COMMAND_NAME: &str = "autism";
-pub const CONFIG_VERSION: u32 = 2;
+pub const CONFIG_VERSION: u32 = 3;
 pub const DEFAULT_DAEMON_HOST: &str = "127.0.0.1";
 pub const DEFAULT_DAEMON_PORT: u16 = 42690;
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
@@ -35,8 +34,27 @@ pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 pub const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-4.1";
 pub const DEFAULT_MOONSHOT_MODEL: &str = "kimi-k2";
 pub const DEFAULT_VENICE_MODEL: &str = "venice-large";
-pub const KEYCHAIN_SERVICE: &str = "agent-builder";
+pub const KEYCHAIN_SERVICE: &str = "nuclear";
 pub const INTERNAL_DAEMON_ARG: &str = "__daemon";
+
+pub fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+pub fn truncate_with_suffix(text: &str, max_bytes: usize, suffix: &str) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    format!("{}{}", truncate_utf8(text, max_bytes), suffix)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -267,12 +285,194 @@ pub enum MessageRole {
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentKind {
     Image,
+    File,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InputAttachment {
     pub kind: AttachmentKind,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteContentPolicy {
+    Allow,
+    WarnOnly,
+    #[default]
+    BlockHighRisk,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteContentRisk {
+    #[default]
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteContentSourceKind {
+    WebSearchResult,
+    WebPage,
+    HostedWebSearch,
+    FileSearch,
+    RemoteMcp,
+    ConnectorText,
+    ExternalTool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteContentSource {
+    pub kind: RemoteContentSourceKind,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RemoteContentAssessment {
+    pub risk: RemoteContentRisk,
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteContentArtifact {
+    pub id: String,
+    pub source: RemoteContentSource,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub excerpt: Option<String>,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+    pub assessment: RemoteContentAssessment,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedToolKind {
+    WebSearch,
+    FileSearch,
+    ImageGeneration,
+    CodeInterpreter,
+    ComputerUse,
+    RemoteMcp,
+    ToolSearch,
+    Shell,
+    ApplyPatch,
+    LocalShell,
+    Skills,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolBackend {
+    #[default]
+    LocalFunction,
+    ProviderBuiltin,
+    ProviderProtocol,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolArtifact {
+    pub id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub base64_data: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReasoningLevelDescriptor {
+    pub effort: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModelToolCapabilities {
+    #[serde(default)]
+    pub web_search: bool,
+    #[serde(default)]
+    pub file_search: bool,
+    #[serde(default)]
+    pub image_generation: bool,
+    #[serde(default)]
+    pub code_interpreter: bool,
+    #[serde(default)]
+    pub computer_use: bool,
+    #[serde(default)]
+    pub remote_mcp: bool,
+    #[serde(default)]
+    pub tool_search: bool,
+    #[serde(default)]
+    pub shell: bool,
+    #[serde(default)]
+    pub apply_patch: bool,
+    #[serde(default)]
+    pub local_shell: bool,
+    #[serde(default)]
+    pub skills: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelDescriptor {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<i64>,
+    #[serde(default)]
+    pub effective_context_window_percent: Option<i64>,
+    #[serde(default = "default_true")]
+    pub show_in_picker: bool,
+    #[serde(default)]
+    pub default_reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub supported_reasoning_levels: Vec<ReasoningLevelDescriptor>,
+    #[serde(default)]
+    pub supports_reasoning_summaries: bool,
+    #[serde(default)]
+    pub default_reasoning_summary: Option<String>,
+    #[serde(default)]
+    pub support_verbosity: bool,
+    #[serde(default)]
+    pub default_verbosity: Option<String>,
+    #[serde(default)]
+    pub supports_parallel_tool_calls: bool,
+    #[serde(default)]
+    pub priority: Option<i64>,
+    #[serde(default)]
+    pub capabilities: ModelToolCapabilities,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderCapabilitySummary {
+    pub provider_id: String,
+    pub model: String,
+    pub capabilities: ModelToolCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1030,6 +1230,8 @@ pub struct SessionMessage {
     pub provider_payload_json: Option<String>,
     #[serde(default)]
     pub attachments: Vec<InputAttachment>,
+    #[serde(default)]
+    pub provider_output_items: Vec<ProviderOutputItem>,
 }
 
 impl SessionMessage {
@@ -1053,6 +1255,7 @@ impl SessionMessage {
             tool_calls: Vec::new(),
             provider_payload_json: None,
             attachments: Vec::new(),
+            provider_output_items: Vec::new(),
         }
     }
 
@@ -1081,6 +1284,14 @@ impl SessionMessage {
         self
     }
 
+    pub fn with_provider_output_items(
+        mut self,
+        provider_output_items: Vec<ProviderOutputItem>,
+    ) -> Self {
+        self.provider_output_items = provider_output_items;
+        self
+    }
+
     pub fn fork_to_session(&self, session_id: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -1095,6 +1306,7 @@ impl SessionMessage {
             tool_calls: self.tool_calls.clone(),
             provider_payload_json: self.provider_payload_json.clone(),
             attachments: self.attachments.clone(),
+            provider_output_items: self.provider_output_items.clone(),
         }
     }
 }
@@ -1171,6 +1383,8 @@ pub struct AppConfig {
     pub delegation: DelegationConfig,
     #[serde(default)]
     pub embedding: EmbeddingConfig,
+    #[serde(default)]
+    pub remote_content_policy: RemoteContentPolicy,
     pub onboarding_complete: bool,
 }
 
@@ -1203,6 +1417,7 @@ impl Default for AppConfig {
             autopilot: AutopilotConfig::default(),
             delegation: DelegationConfig::default(),
             embedding: EmbeddingConfig::default(),
+            remote_content_policy: RemoteContentPolicy::default(),
             onboarding_complete: false,
         }
     }
@@ -1217,6 +1432,12 @@ pub struct ProviderReply {
     pub tool_calls: Vec<ToolCall>,
     #[serde(default)]
     pub provider_payload_json: Option<String>,
+    #[serde(default)]
+    pub output_items: Vec<ProviderOutputItem>,
+    #[serde(default)]
+    pub artifacts: Vec<ToolArtifact>,
+    #[serde(default)]
+    pub remote_content: Vec<RemoteContentArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1226,11 +1447,87 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProviderOutputItem {
+    Message {
+        role: MessageRole,
+        content: String,
+    },
+    FunctionCall {
+        call: ToolCall,
+    },
+    ToolCall {
+        call_id: String,
+        name: String,
+        backend: ToolBackend,
+        #[serde(default)]
+        hosted_kind: Option<HostedToolKind>,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        arguments_json: Option<String>,
+    },
+    ToolResult {
+        call_id: String,
+        name: String,
+        backend: ToolBackend,
+        #[serde(default)]
+        hosted_kind: Option<HostedToolKind>,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        content: Option<String>,
+    },
+    Artifact {
+        artifact: ToolArtifact,
+    },
+    RemoteContent {
+        artifact: RemoteContentArtifact,
+    },
+    Reasoning {
+        #[serde(default)]
+        summary: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    #[serde(default)]
+    pub backend: ToolBackend,
+    #[serde(default)]
+    pub hosted_kind: Option<HostedToolKind>,
+    #[serde(default)]
+    pub strict_schema: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    #[serde(default)]
+    pub backend: ToolBackend,
+    #[serde(default)]
+    pub hosted_kind: Option<HostedToolKind>,
+    #[serde(default)]
+    pub strict_schema: bool,
+}
+
+impl ToolSpec {
+    pub fn as_definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            input_schema: self.input_schema.clone(),
+            backend: self.backend,
+            hosted_kind: self.hosted_kind,
+            strict_schema: self.strict_schema,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1247,6 +1544,8 @@ pub struct ConversationMessage {
     pub provider_payload_json: Option<String>,
     #[serde(default)]
     pub attachments: Vec<InputAttachment>,
+    #[serde(default)]
+    pub provider_output_items: Vec<ProviderOutputItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1651,6 +1950,8 @@ pub struct RunTaskRequest {
     pub output_schema_json: Option<String>,
     #[serde(default)]
     pub ephemeral: bool,
+    #[serde(default)]
+    pub remote_content_policy_override: Option<RemoteContentPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1677,6 +1978,9 @@ pub enum RunTaskStreamEvent {
     },
     Message {
         message: SessionMessage,
+    },
+    RemoteContent {
+        artifact: RemoteContentArtifact,
     },
     Completed {
         response: RunTaskResponse,
@@ -2300,6 +2604,10 @@ pub struct DashboardBootstrapResponse {
     pub permissions: PermissionPreset,
     pub trust: TrustPolicy,
     pub delegation_config: DelegationConfig,
+    #[serde(default)]
+    pub provider_capabilities: Vec<ProviderCapabilitySummary>,
+    #[serde(default)]
+    pub remote_content_policy: RemoteContentPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2323,6 +2631,10 @@ pub struct HealthReport {
     pub providers: Vec<ProviderHealth>,
     #[serde(default)]
     pub plugins: Vec<PluginDoctorReport>,
+    #[serde(default)]
+    pub remote_content_policy: RemoteContentPolicy,
+    #[serde(default)]
+    pub provider_capabilities: Vec<ProviderCapabilitySummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2341,4 +2653,21 @@ pub struct SessionResumePacket {
     pub linked_memories: Vec<MemoryRecord>,
     #[serde(default)]
     pub related_transcript_hits: Vec<SessionSearchHit>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate_utf8, truncate_with_suffix};
+
+    #[test]
+    fn truncate_utf8_preserves_char_boundaries() {
+        let text = "hello😀world";
+        assert_eq!(truncate_utf8(text, 8), "hello");
+    }
+
+    #[test]
+    fn truncate_with_suffix_appends_suffix_after_safe_truncation() {
+        let text = "hello😀world";
+        assert_eq!(truncate_with_suffix(text, 8, " [cut]"), "hello [cut]");
+    }
 }

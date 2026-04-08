@@ -1,0 +1,97 @@
+{
+  "type": "object",
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "fixture",
+          "suite",
+          "prompt",
+          "setup_commands",
+          "success_commands",
+          "allowed_change_globs",
+          "forbidden_change_globs",
+          "max_duration_seconds",
+          "max_tool_calls",
+          "required_tools",
+          "requires_network",
+          "requires_shell",
+          "requires_edit",
+          "final_response_assertions"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "fixture": { "type": "string" },
+          "suite": { "type": "string" },
+          "prompt": { "type": "string" },
+          "deterministic_script": { "type": "string" },
+          "setup_commands": { "$ref": "#/$defs/commandList" },
+          "precondition_commands": { "$ref": "#/$defs/commandList" },
+          "expected_failure_before_run": { "$ref": "#/$defs/commandList" },
+          "success_commands": { "$ref": "#/$defs/commandList" },
+          "post_run_assertions": { "$ref": "#/$defs/commandList" },
+          "cleanup_commands": { "$ref": "#/$defs/commandList" },
+          "allowed_change_globs": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "forbidden_change_globs": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "expected_changed_paths": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "max_duration_seconds": { "type": "integer", "minimum": 1 },
+          "max_tool_calls": { "type": "integer", "minimum": 1 },
+          "required_tools": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "requires_network": { "type": "boolean" },
+          "requires_shell": { "type": "boolean" },
+          "requires_edit": { "type": "boolean" },
+          "final_response_assertions": {
+            "type": "object",
+            "properties": {
+              "contains_all": { "type": "array", "items": { "type": "string" } },
+              "contains_any": { "type": "array", "items": { "type": "string" } },
+              "not_contains": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["tasks"],
+  "additionalProperties": false,
+  "$defs": {
+    "commandList": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["argv"],
+        "properties": {
+          "label": { "type": "string" },
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          },
+          "workdir": { "type": "string" },
+          "expected_exit_code": { "type": "integer" },
+          "timeout_seconds": { "type": "number", "minimum": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}
+
