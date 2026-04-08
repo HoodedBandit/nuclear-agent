@@ -234,6 +234,19 @@ pub enum ProviderKind {
     Ollama,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProfile {
+    OpenAi,
+    OpenRouter,
+    Moonshot,
+    Venice,
+    Anthropic,
+    Ollama,
+    LocalOpenAiCompatible,
+    GenericOpenAiCompatible,
+}
+
 impl ProviderKind {
     pub fn default_base_url(&self) -> &'static str {
         match self {
@@ -664,6 +677,8 @@ pub struct ProviderConfig {
     pub display_name: String,
     pub kind: ProviderKind,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_profile: Option<ProviderProfile>,
     pub auth_mode: AuthMode,
     pub default_model: Option<String>,
     pub keychain_account: Option<String>,
@@ -673,6 +688,89 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
+    pub fn effective_profile(&self) -> ProviderProfile {
+        self.provider_profile
+            .clone()
+            .unwrap_or_else(|| self.infer_profile())
+    }
+
+    pub fn infer_profile(&self) -> ProviderProfile {
+        let provider_id = self.id.trim().to_ascii_lowercase();
+        let normalized_base_url = self.base_url.trim_end_matches('/').to_ascii_lowercase();
+
+        match self.kind {
+            ProviderKind::Anthropic => ProviderProfile::Anthropic,
+            ProviderKind::Ollama => ProviderProfile::Ollama,
+            ProviderKind::ChatGptCodex => ProviderProfile::OpenAi,
+            ProviderKind::OpenAiCompatible => {
+                if self.local {
+                    return ProviderProfile::LocalOpenAiCompatible;
+                }
+
+                let default_openai = DEFAULT_OPENAI_URL
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase();
+                let default_openrouter = DEFAULT_OPENROUTER_URL
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase();
+                let default_moonshot = DEFAULT_MOONSHOT_URL
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase();
+                let default_venice = DEFAULT_VENICE_URL
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase();
+
+                if provider_id == "openai" || normalized_base_url == default_openai {
+                    ProviderProfile::OpenAi
+                } else if provider_id == "openrouter" || normalized_base_url == default_openrouter {
+                    ProviderProfile::OpenRouter
+                } else if provider_id == "moonshot" || normalized_base_url == default_moonshot {
+                    ProviderProfile::Moonshot
+                } else if provider_id == "venice" || normalized_base_url == default_venice {
+                    ProviderProfile::Venice
+                } else {
+                    ProviderProfile::GenericOpenAiCompatible
+                }
+            }
+        }
+    }
+
+    pub fn with_inferred_profile(mut self) -> Self {
+        if self.provider_profile.is_none() {
+            self.provider_profile = Some(self.infer_profile());
+        }
+        self
+    }
+
+    pub fn explicit_profile_compatibility_error(&self) -> Option<&'static str> {
+        let profile = self.provider_profile.as_ref()?;
+        let compatible = match self.kind {
+            ProviderKind::Anthropic => *profile == ProviderProfile::Anthropic,
+            ProviderKind::Ollama => *profile == ProviderProfile::Ollama,
+            ProviderKind::ChatGptCodex => *profile == ProviderProfile::OpenAi,
+            ProviderKind::OpenAiCompatible => {
+                if self.local {
+                    *profile == ProviderProfile::LocalOpenAiCompatible
+                } else {
+                    matches!(
+                        profile,
+                        ProviderProfile::OpenAi
+                            | ProviderProfile::OpenRouter
+                            | ProviderProfile::Moonshot
+                            | ProviderProfile::Venice
+                            | ProviderProfile::GenericOpenAiCompatible
+                    )
+                }
+            }
+        };
+
+        if compatible {
+            None
+        } else {
+            Some("provider_profile is incompatible with provider kind/local settings")
+        }
+    }
+
     pub fn has_saved_access_reference(&self) -> bool {
         matches!(self.auth_mode, AuthMode::None)
             || self

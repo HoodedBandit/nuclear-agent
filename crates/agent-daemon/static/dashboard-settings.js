@@ -88,14 +88,14 @@
         title: "Provider access",
         summary: providerReady
           ? `${data.providers.length} provider(s) configured`
-          : "No providers configured yet. Start with Codex, Claude, OpenAI, or Ollama.",
+          : "No providers configured yet. Start with Codex, OpenAI, Anthropic API key, or Ollama.",
         badges: [
           providerReady ? badge("configured", "good") : badge("needs setup", "warn"),
           badge(`${data.aliases.length} alias(es)`, "info"),
         ].join(""),
         actions: [
           actionButton("Connect Codex", { setupProvider: "codex" }, "button-muted"),
-          actionButton("Connect Claude", { setupProvider: "anthropic" }, "button-muted"),
+          actionButton("Connect Anthropic", { setupProvider: "anthropic" }, "button-muted"),
           actionButton("Open providers", { setupFocus: "providers" }, "button-small--ghost"),
         ].join(""),
       },

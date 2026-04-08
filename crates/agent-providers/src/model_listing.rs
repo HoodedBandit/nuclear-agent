@@ -1,6 +1,6 @@
 use agent_core::{
     ModelDescriptor, ModelToolCapabilities, OAuthToken, ProviderConfig, ProviderHealth,
-    ProviderKind,
+    ProviderKind, ProviderProfile, ReasoningLevelDescriptor,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
@@ -108,29 +108,8 @@ pub async fn list_model_descriptors_with_overrides(
             list_chatgpt_codex_model_descriptors(client, provider, oauth_token_override).await
         }
         ProviderKind::OpenAiCompatible => {
-            Ok(
-                list_openai_models(client, provider, api_key_override, oauth_token_override)
-                    .await?
-                    .into_iter()
-                    .map(|id| ModelDescriptor {
-                        id,
-                        display_name: None,
-                        description: None,
-                        context_window: None,
-                        effective_context_window_percent: None,
-                        show_in_picker: true,
-                        default_reasoning_effort: None,
-                        supported_reasoning_levels: Vec::new(),
-                        supports_reasoning_summaries: false,
-                        default_reasoning_summary: None,
-                        support_verbosity: false,
-                        default_verbosity: None,
-                        supports_parallel_tool_calls: false,
-                        priority: None,
-                        capabilities: ModelToolCapabilities::default(),
-                    })
-                    .collect(),
-            )
+            list_openai_model_descriptors(client, provider, api_key_override, oauth_token_override)
+                .await
         }
     }
 }
@@ -224,12 +203,28 @@ pub(super) fn validate_default_model(provider: &ProviderConfig, models: &[String
     )
 }
 
+#[allow(dead_code)]
 async fn list_openai_models(
     client: &Client,
     provider: &ProviderConfig,
     api_key_override: Option<&str>,
     oauth_token_override: Option<&OAuthToken>,
 ) -> Result<Vec<String>> {
+    Ok(
+        list_openai_model_descriptors(client, provider, api_key_override, oauth_token_override)
+            .await?
+            .into_iter()
+            .map(|model| model.id)
+            .collect(),
+    )
+}
+
+async fn list_openai_model_descriptors(
+    client: &Client,
+    provider: &ProviderConfig,
+    api_key_override: Option<&str>,
+    oauth_token_override: Option<&OAuthToken>,
+) -> Result<Vec<ModelDescriptor>> {
     let url = format!("{}/models", trim_slash(&provider.base_url));
     let request = apply_auth_with_overrides(
         client,
@@ -247,7 +242,12 @@ async fn list_openai_models(
         .context("failed to parse models response")?;
     if !status.is_success() {
         if supports_local_model_listing_fallback(provider, status) {
-            return Ok(provider.default_model.clone().into_iter().collect());
+            return Ok(provider
+                .default_model
+                .clone()
+                .into_iter()
+                .map(|id| default_model_descriptor(&id))
+                .collect());
         }
         bail!("model listing failed: {}", extract_error(&body));
     }
@@ -258,15 +258,14 @@ async fn list_openai_models(
         .map(|entries| {
             entries
                 .iter()
-                .filter_map(|entry| entry.get("id").and_then(Value::as_str))
-                .map(ToOwned::to_owned)
+                .filter_map(|entry| model_descriptor_from_openai_entry(provider, entry))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
 
     if models.is_empty() {
         if let Some(model) = &provider.default_model {
-            Ok(vec![model.clone()])
+            Ok(vec![default_model_descriptor(model)])
         } else {
             Ok(Vec::new())
         }
@@ -279,35 +278,20 @@ async fn list_anthropic_models(
     client: &Client,
     provider: &ProviderConfig,
     api_key_override: Option<&str>,
-    oauth_token_override: Option<&OAuthToken>,
+    _oauth_token_override: Option<&OAuthToken>,
 ) -> Result<Vec<String>> {
+    if !matches!(provider.auth_mode, agent_core::AuthMode::ApiKey) {
+        bail!("anthropic providers require API key authentication");
+    }
     let url = format!("{}/v1/models", trim_slash(&provider.base_url));
-    let request = match provider.auth_mode {
-        agent_core::AuthMode::ApiKey => {
-            let api_key = match api_key_override {
-                Some(api_key) => api_key.to_string(),
-                None => super::keyring_store::api_key_for(provider)?,
-            };
-            client
-                .get(url)
-                .header("anthropic-version", "2023-06-01")
-                .header("x-api-key", api_key)
-        }
-        agent_core::AuthMode::OAuth => {
-            let request = client.get(url).header("anthropic-version", "2023-06-01");
-            apply_auth_with_overrides(
-                client,
-                provider,
-                request,
-                api_key_override,
-                oauth_token_override,
-            )
-            .await?
-        }
-        agent_core::AuthMode::None => {
-            bail!("anthropic providers require API key or OAuth authentication")
-        }
+    let api_key = match api_key_override {
+        Some(api_key) => api_key.to_string(),
+        None => super::keyring_store::api_key_for(provider)?,
     };
+    let request = client
+        .get(url)
+        .header("anthropic-version", "2023-06-01")
+        .header("x-api-key", api_key);
     let response = request
         .send()
         .await
@@ -332,6 +316,109 @@ async fn list_anthropic_models(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default())
+}
+
+fn default_model_descriptor(id: &str) -> ModelDescriptor {
+    ModelDescriptor {
+        id: id.to_string(),
+        display_name: None,
+        description: None,
+        context_window: None,
+        effective_context_window_percent: None,
+        show_in_picker: true,
+        default_reasoning_effort: None,
+        supported_reasoning_levels: Vec::new(),
+        supports_reasoning_summaries: false,
+        default_reasoning_summary: None,
+        support_verbosity: false,
+        default_verbosity: None,
+        supports_parallel_tool_calls: false,
+        priority: None,
+        capabilities: ModelToolCapabilities::default(),
+    }
+}
+
+fn model_descriptor_from_openai_entry(
+    provider: &ProviderConfig,
+    entry: &Value,
+) -> Option<ModelDescriptor> {
+    let id = entry.get("id").and_then(Value::as_str)?.to_string();
+    let supported_parameters = entry
+        .get("supported_parameters")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| value.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let supports_function_calling = entry
+        .get("supportsFunctionCalling")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || supported_parameters.iter().any(|value| {
+            matches!(
+                value.as_str(),
+                "tools" | "tool_choice" | "parallel_tool_calls" | "function_calling"
+            )
+        });
+    let context_window = entry
+        .get("context_length")
+        .and_then(Value::as_i64)
+        .or_else(|| entry.get("context_window").and_then(Value::as_i64))
+        .or_else(|| {
+            entry
+                .get("top_provider")
+                .and_then(|value| value.get("context_length"))
+                .and_then(Value::as_i64)
+        });
+    let display_name = entry
+        .get("name")
+        .or_else(|| entry.get("display_name"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let description = entry
+        .get("description")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let provider_profile = provider.effective_profile();
+    let reasoning_levels = match provider_profile {
+        ProviderProfile::OpenRouter | ProviderProfile::OpenAi | ProviderProfile::Venice => vec![
+            ReasoningLevelDescriptor {
+                effort: "low".to_string(),
+                description: None,
+            },
+            ReasoningLevelDescriptor {
+                effort: "medium".to_string(),
+                description: None,
+            },
+            ReasoningLevelDescriptor {
+                effort: "high".to_string(),
+                description: None,
+            },
+        ],
+        _ => Vec::new(),
+    };
+
+    Some(ModelDescriptor {
+        id,
+        display_name,
+        description,
+        context_window,
+        effective_context_window_percent: None,
+        show_in_picker: true,
+        default_reasoning_effort: None,
+        supported_reasoning_levels: reasoning_levels,
+        supports_reasoning_summaries: false,
+        default_reasoning_summary: None,
+        support_verbosity: false,
+        default_verbosity: None,
+        supports_parallel_tool_calls: supports_function_calling,
+        priority: None,
+        capabilities: ModelToolCapabilities::default(),
+    })
 }
 
 async fn list_ollama_models(client: &Client, provider: &ProviderConfig) -> Result<Vec<String>> {

@@ -7,6 +7,15 @@ export type ProviderKind =
   | "chat_gpt_codex"
   | "anthropic"
   | "ollama";
+export type ProviderProfile =
+  | "open_ai"
+  | "open_router"
+  | "moonshot"
+  | "venice"
+  | "anthropic"
+  | "ollama"
+  | "local_open_ai_compatible"
+  | "generic_open_ai_compatible";
 export type AuthMode = "none" | "api_key" | "oauth";
 
 export interface MainTargetSummary {
@@ -42,6 +51,7 @@ export interface ProviderConfig {
   display_name: string;
   kind: ProviderKind;
   base_url: string;
+  provider_profile?: ProviderProfile | null;
   auth_mode: AuthMode;
   default_model?: string | null;
   keychain_account?: string | null;
@@ -150,6 +160,28 @@ export interface ProviderCapabilitySummary {
   provider_id: string;
   model: string;
   capabilities: Record<string, boolean>;
+}
+
+export interface ModelDescriptor {
+  id: string;
+  display_name?: string | null;
+  description?: string | null;
+  context_window?: number | null;
+  supports_parallel_tool_calls?: boolean;
+  capabilities?: Record<string, boolean>;
+}
+
+export interface ProviderReadinessResult {
+  ok: boolean;
+  model: string;
+  detail: string;
+}
+
+export interface ProviderDiscoveryResponse {
+  models: ModelDescriptor[];
+  recommended_model?: string | null;
+  warnings: string[];
+  readiness?: ProviderReadinessResult | null;
 }
 
 export interface DashboardBootstrapResponse {

@@ -2,6 +2,8 @@ import {
   DashboardBootstrapResponse,
   DashboardSessionRequest,
   ProviderConfig,
+  ProviderDiscoveryResponse,
+  ProviderReadinessResult,
   ProviderUpsertRequest,
   RunTaskRequest,
   RunTaskResponse,
@@ -101,6 +103,20 @@ export function saveProvider(payload: ProviderUpsertRequest) {
 
 export function discoverProviderModels(payload: ProviderUpsertRequest) {
   return apiRequest<string[]>("/v1/providers/discover-models", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function discoverProvider(payload: ProviderUpsertRequest) {
+  return apiRequest<ProviderDiscoveryResponse>("/v1/providers/discover", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function validateProvider(payload: ProviderUpsertRequest) {
+  return apiRequest<ProviderReadinessResult>("/v1/providers/validate", {
     method: "POST",
     body: JSON.stringify(payload)
   });

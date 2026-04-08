@@ -36,9 +36,9 @@
           <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste daemon token">
         </label>
         <div class="auth-panel__actions">
-          <button id="connect-button" type="submit">Connect</button>
-          <button id="refresh-button" type="button" class="button-muted">Refresh</button>
-          <button id="clear-button" type="button" class="button-ghost">Clear</button>
+          <button id="connect-button" type="submit" disabled>Connect</button>
+          <button id="refresh-button" type="button" class="button-muted" disabled>Refresh</button>
+          <button id="clear-button" type="button" class="button-ghost" disabled>Clear</button>
         </div>
         <label class="toggle">
           <input id="autorefresh-input" type="checkbox" checked>
@@ -478,7 +478,7 @@
               <div id="provider-browser-auth-toolbar" class="provider-auth-toolbar">
                 <button id="provider-browser-auth" type="button" class="button-muted">Sign in with browser</button>
                 <p id="provider-browser-auth-status" class="provider-auth-status">
-                  Browser sign-in is available for ChatGPT Codex and Claude.
+                  Browser sign-in is available for ChatGPT Codex only.
                 </p>
               </div>
               <div class="field-grid field-grid--two">

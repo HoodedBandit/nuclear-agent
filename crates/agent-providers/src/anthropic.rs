@@ -1,6 +1,5 @@
 use agent_core::{
-    AuthMode, ConversationMessage, MessageRole, ProviderConfig, ProviderReply, ThinkingLevel,
-    ToolDefinition,
+    ConversationMessage, MessageRole, ProviderConfig, ProviderReply, ThinkingLevel, ToolDefinition,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
@@ -8,12 +7,13 @@ use serde_json::{json, Value};
 
 use super::attachments::load_image_attachment;
 use super::common::{ensure_no_attachments, extract_error, parse_arguments_to_value, trim_slash};
-use super::oauth::apply_auth;
 use super::tooling::{
     anthropic_output_items, parse_anthropic_tool_call, tool_definitions_to_anthropic,
     validate_tool_definitions,
 };
+use super::PromptAuthOverrides;
 
+#[allow(dead_code)]
 pub(super) async fn run_anthropic(
     client: &Client,
     provider: &ProviderConfig,
@@ -22,22 +22,40 @@ pub(super) async fn run_anthropic(
     thinking_level: Option<ThinkingLevel>,
     tools: &[ToolDefinition],
 ) -> Result<ProviderReply> {
+    run_anthropic_with_overrides(
+        client,
+        provider,
+        model,
+        messages,
+        thinking_level,
+        tools,
+        PromptAuthOverrides::default(),
+    )
+    .await
+}
+
+pub(super) async fn run_anthropic_with_overrides(
+    client: &Client,
+    provider: &ProviderConfig,
+    model: &str,
+    messages: &[ConversationMessage],
+    thinking_level: Option<ThinkingLevel>,
+    tools: &[ToolDefinition],
+    auth_overrides: PromptAuthOverrides<'_>,
+) -> Result<ProviderReply> {
     validate_tool_definitions(tools, "Anthropic")?;
+    if !matches!(provider.auth_mode, agent_core::AuthMode::ApiKey) {
+        bail!("anthropic providers require API key authentication");
+    }
     let url = format!("{}/v1/messages", trim_slash(&provider.base_url));
-    let request = match provider.auth_mode {
-        AuthMode::ApiKey => {
-            let api_key = super::keyring_store::api_key_for(provider)?;
-            client
-                .post(url)
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-        }
-        AuthMode::OAuth => {
-            let request = client.post(url).header("anthropic-version", "2023-06-01");
-            apply_auth(client, provider, request).await?
-        }
-        AuthMode::None => bail!("anthropic providers require API key or OAuth authentication"),
+    let api_key = match auth_overrides.api_key {
+        Some(api_key) => api_key.to_string(),
+        None => super::keyring_store::api_key_for(provider)?,
     };
+    let request = client
+        .post(url)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01");
     let request = if tools.is_empty() {
         request
     } else {

@@ -95,7 +95,7 @@ pub(crate) use connector_cli::{
     load_signal_connectors, load_slack_connectors, load_telegram_connectors,
     load_webhook_connectors,
 };
-use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 pub(crate) use interactive_commands::{
     parse_interactive_command, InteractiveCommand, InteractiveModelSelection,
     InteractiveSkillCommand,
@@ -116,7 +116,7 @@ pub(crate) use provider_auth::{
     interactive_provider_setup, openai_browser_oauth_config,
 };
 use reqwest::{Client, Method};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -135,21 +135,6 @@ const OPENAI_BROWSER_CALLBACK_PORT: u16 = 1455;
 const OPENAI_BROWSER_CALLBACK_PATH: &str = "/auth/callback";
 const OPENAI_BROWSER_SUCCESS_PATH: &str = "/success";
 const OPENAI_BROWSER_CANCEL_PATH: &str = "/cancel";
-const CLAUDE_BROWSER_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const CLAUDE_BROWSER_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
-const CLAUDE_BROWSER_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
-const CLAUDE_BROWSER_API_KEY_URL: &str =
-    "https://api.anthropic.com/api/oauth/claude_cli/create_api_key";
-const CLAUDE_BROWSER_ROLES_URL: &str = "https://api.anthropic.com/api/oauth/claude_cli/roles";
-const CLAUDE_BROWSER_CALLBACK_PORT: u16 = 45454;
-const CLAUDE_BROWSER_CALLBACK_PATH: &str = "/callback";
-const CLAUDE_BROWSER_SCOPES: &[&str] = &[
-    "org:create_api_key",
-    "user:profile",
-    "user:inference",
-    "user:sessions:claude_code",
-    "user:mcp_servers",
-];
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn build_http_client() -> Client {

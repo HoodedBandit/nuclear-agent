@@ -91,6 +91,7 @@ const PANEL_LABELS = {
 const elements = {
   form: document.getElementById("auth-form"),
   tokenInput: document.getElementById("token-input"),
+  connectButton: document.getElementById("connect-button"),
   refreshButton: document.getElementById("refresh-button"),
   clearButton: document.getElementById("clear-button"),
   autoRefreshInput: document.getElementById("autorefresh-input"),

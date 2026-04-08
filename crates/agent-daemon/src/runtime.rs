@@ -7,9 +7,10 @@ use std::{
 use agent_core::{
     truncate_with_suffix, AuthMode, AutonomyMode, AutonomyState, BatchTaskRequest,
     BatchTaskResponse, ConversationMessage, InputAttachment, MessageRole, ModelAlias,
-    PermissionPreset, ProviderConfig, ProviderOutputItem, ProviderReply, RemoteContentArtifact,
-    RemoteContentPolicy, RunTaskResponse, RunTaskStreamEvent, SessionMessage, SessionSummary,
-    SubAgentResult, TaskMode, ThinkingLevel, ToolCall, ToolExecutionOutcome, ToolExecutionRecord,
+    PermissionPreset, ProviderConfig, ProviderOutputItem, ProviderProfile, ProviderReply,
+    RemoteContentArtifact, RemoteContentPolicy, RunTaskResponse, RunTaskStreamEvent,
+    SessionMessage, SessionSummary, SubAgentResult, TaskMode, ThinkingLevel, ToolCall,
+    ToolExecutionOutcome, ToolExecutionRecord,
 };
 use agent_policy::permission_summary;
 use agent_providers::{load_api_key, load_oauth_token, run_prompt};
@@ -425,6 +426,18 @@ pub(crate) fn provider_has_runnable_access(provider: &ProviderConfig) -> bool {
 }
 
 fn verify_runtime_provider_credentials(provider: &ProviderConfig) -> Result<(), ApiError> {
+    if provider.effective_profile() == ProviderProfile::Anthropic
+        && provider.auth_mode != AuthMode::ApiKey
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "provider '{}' requires API-key authentication for Anthropic access",
+                provider.id
+            ),
+        ));
+    }
+
     match provider.auth_mode {
         AuthMode::None => Ok(()),
         AuthMode::ApiKey => {
@@ -1404,13 +1417,15 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_session_cwd, effective_task_mode, reply_provider_output_items,
-        sanitized_provider_payload, sanitized_tool_calls, system_message,
+        effective_session_cwd, effective_task_mode, provider_has_runnable_access,
+        reply_provider_output_items, sanitized_provider_payload, sanitized_tool_calls,
+        system_message,
     };
     use agent_core::{
-        MessageRole, PermissionPreset, ProviderOutputItem, ProviderReply, RemoteContentArtifact,
-        RemoteContentAssessment, RemoteContentRisk, RemoteContentSource, RemoteContentSourceKind,
-        SessionSummary, TaskMode, ToolCall,
+        AuthMode, MessageRole, PermissionPreset, ProviderConfig, ProviderKind, ProviderOutputItem,
+        ProviderProfile, ProviderReply, RemoteContentArtifact, RemoteContentAssessment,
+        RemoteContentRisk, RemoteContentSource, RemoteContentSourceKind, SessionSummary, TaskMode,
+        ToolCall,
     };
     use chrono::Utc;
     use serde_json::Value;
@@ -1597,5 +1612,23 @@ mod tests {
             effective_session_cwd(None, Some(&session)),
             Some(PathBuf::from("J:/repo"))
         );
+    }
+
+    #[test]
+    fn anthropic_oauth_provider_is_not_runnable() {
+        let provider = ProviderConfig {
+            id: "anthropic".to_string(),
+            display_name: "Anthropic".to_string(),
+            kind: ProviderKind::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            provider_profile: Some(ProviderProfile::Anthropic),
+            auth_mode: AuthMode::OAuth,
+            default_model: Some("claude-sonnet-4-20250514".to_string()),
+            keychain_account: Some("anthropic-oauth".to_string()),
+            oauth: None,
+            local: false,
+        };
+
+        assert!(!provider_has_runnable_access(&provider));
     }
 }

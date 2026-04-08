@@ -24,8 +24,7 @@ use agent_core::{
     SlackConnectorConfig, SlackConnectorUpsertRequest, SlackPollResponse, TaskMode,
     TelegramConnectorConfig, TelegramConnectorUpsertRequest, TelegramPollResponse, ThinkingLevel,
     ToolCall, TrustUpdateRequest, WakeTrigger, WebhookConnectorConfig,
-    WebhookConnectorUpsertRequest, DEFAULT_CHATGPT_CODEX_URL, DEFAULT_MOONSHOT_URL,
-    DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL, DEFAULT_VENICE_URL,
+    WebhookConnectorUpsertRequest,
 };
 use agent_providers::{list_model_descriptors, ModelDescriptor};
 use agent_storage::Storage;

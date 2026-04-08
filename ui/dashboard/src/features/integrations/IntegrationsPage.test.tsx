@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   DashboardBootstrapResponse,
@@ -12,13 +12,29 @@ import { IntegrationsPage } from "./IntegrationsPage";
 
 const listProviders = vi.fn().mockResolvedValue([]);
 const saveProvider = vi.fn().mockResolvedValue(undefined);
-const discoverProviderModels = vi.fn().mockResolvedValue(["kimi-k2.5", "kimi-k2"]);
+const discoverProvider = vi.fn().mockResolvedValue({
+  models: [{ id: "kimi-k2.5" }, { id: "kimi-k2" }],
+  recommended_model: "kimi-k2.5",
+  warnings: [],
+  readiness: null
+});
+const validateProvider = vi.fn().mockResolvedValue({
+  ok: true,
+  model: "kimi-k2.5",
+  detail: "completion and tool schema validation succeeded"
+});
 
 vi.mock("../../api/client", () => ({
   listProviders: (...args: unknown[]) => listProviders(...args),
   saveProvider: (...args: unknown[]) => saveProvider(...args),
-  discoverProviderModels: (...args: unknown[]) => discoverProviderModels(...args)
+  discoverProvider: (...args: unknown[]) => discoverProvider(...args),
+  validateProvider: (...args: unknown[]) => validateProvider(...args)
 }));
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 function renderPage(bootstrap?: Partial<DashboardBootstrapResponse>) {
   const queryClient = new QueryClient({
@@ -94,6 +110,45 @@ function renderPage(bootstrap?: Partial<DashboardBootstrapResponse>) {
 }
 
 describe("IntegrationsPage", () => {
+  it("lets the operator keep a manual model that is not in discovery results", async () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText(/provider preset/i), {
+      target: { value: "openrouter" }
+    });
+    fireEvent.change(screen.getByLabelText(/openrouter api key/i), {
+      target: { value: "sk-or-test" }
+    });
+
+    await waitFor(() => {
+      expect(discoverProvider).toHaveBeenCalled();
+    });
+
+    fireEvent.change(screen.getByLabelText(/default model/i), {
+      target: { value: "custom/provider-model" }
+    });
+
+    fireEvent.click(screen.getByTestId("modern-provider-save"));
+
+    await waitFor(() => {
+      expect(validateProvider).toHaveBeenCalledWith({
+        provider: {
+          id: "openrouter",
+          display_name: "OpenRouter",
+          kind: "open_ai_compatible",
+          base_url: "https://openrouter.ai/api/v1",
+          provider_profile: "open_router",
+          auth_mode: "api_key",
+          default_model: "custom/provider-model",
+          keychain_account: null,
+          local: false
+        },
+        api_key: "sk-or-test",
+        oauth_token: null
+      });
+    });
+  });
+
   it("stores API-key providers with the provided credential and discovered model", async () => {
     renderPage();
 
@@ -105,12 +160,12 @@ describe("IntegrationsPage", () => {
     });
 
     await waitFor(() => {
-      expect(discoverProviderModels).toHaveBeenCalled();
+      expect(discoverProvider).toHaveBeenCalled();
     });
 
     expect(await screen.findByText(/loaded 2 models/i)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/default model/i), {
-      target: { value: "kimi-k2.5" }
+    await waitFor(() => {
+      expect(screen.getByLabelText(/default model/i)).toHaveValue("kimi-k2.5");
     });
 
     fireEvent.click(screen.getByTestId("modern-provider-save"));
@@ -122,6 +177,7 @@ describe("IntegrationsPage", () => {
           display_name: "Moonshot",
           kind: "open_ai_compatible",
           base_url: "https://api.moonshot.ai/v1",
+          provider_profile: "moonshot",
           auth_mode: "api_key",
           default_model: "kimi-k2.5",
           keychain_account: null,
@@ -130,6 +186,7 @@ describe("IntegrationsPage", () => {
         api_key: "sk-moonshot-test",
         oauth_token: null
       });
+      expect(validateProvider).toHaveBeenCalled();
     });
   });
 });

@@ -64,22 +64,21 @@
       id: "anthropic",
       label: "Claude / Anthropic",
       name: "Claude",
-      summary: "Connect Claude with browser sign-in or a manual Anthropic API key.",
+      summary: "Connect Anthropic with a manual API key. Browser sign-in is not supported for third-party use.",
       kind: "anthropic",
       baseUrl: "https://api.anthropic.com",
       authMode: "api_key",
       defaultModel: "claude-sonnet-4-20250514",
       local: false,
-      authStrategy: "browser_or_api_key",
-      browserAuthKind: "claude",
-      browserAuthLabel: "Claude",
+      authStrategy: "api_key",
       portalLabel: "Open Anthropic console",
       portalUrl: "https://console.anthropic.com/settings/keys",
       docsLabel: "Anthropic getting started",
       docsUrl: "https://docs.anthropic.com/en/docs/get-started",
       apiKeyPlaceholder: "sk-ant-...",
       steps: [
-        "Use browser sign-in if you want the daemon to capture Claude credentials for you, or paste an API key manually.",
+        "Create an Anthropic API key in the console.",
+        "Paste the key here and choose the default model and alias you want.",
         "Choose the default model and alias to expose Claude across chat, missions, and delegation.",
         "Save the provider and optionally make the alias the main target if Claude should be your default.",
       ],
@@ -550,9 +549,6 @@
     if (ui.kind.value === "chat_gpt_codex") {
       return { kind: "codex", label: "Codex" };
     }
-    if (ui.kind.value === "anthropic") {
-      return { kind: "claude", label: "Claude" };
-    }
     return null;
   }
 
@@ -598,7 +594,7 @@
     ui.browserAuth.disabled = !app().hasDashboardAuth?.() || isPending || !descriptor;
     const fallbackMessage = descriptor
       ? `${descriptor.label} browser sign-in will save credentials directly into this provider.`
-      : "Browser sign-in is available for ChatGPT Codex and Claude presets.";
+      : "Browser sign-in is available for ChatGPT Codex only.";
     ui.browserAuthStatus.textContent = providerState.authStatusMessage || fallbackMessage;
     ui.browserAuthStatus.dataset.tone = providerState.authStatusTone || "neutral";
     ui.browserAuthToolbar.hidden = !descriptor;
@@ -721,7 +717,7 @@
     const descriptor = currentProviderBrowserAuthDescriptor();
     const ui = elements();
     if (!descriptor) {
-      throw new Error("Browser sign-in is only available for Claude and Codex.");
+      throw new Error("Browser sign-in is only available for ChatGPT Codex.");
     }
     const submission = await resolveProviderFormSubmission();
     const { providerId, displayName, defaultModel, aliasName, aliasModel, setAsMain } = submission;
@@ -867,7 +863,7 @@
       ["Aliases", aliases.length, "named routing targets"],
       ["Local", localProviders, "Ollama and other local runtimes"],
       ["Remote", remoteProviders, "cloud provider connections"],
-      ["Browser auth", browserCapable, "Codex or Claude capable providers"],
+      ["Browser auth", browserCapable, "Codex-capable providers"],
       ["Main target", mainTarget ? mainTarget.alias : "none", mainTarget ? mainTarget.provider_display_name : "not configured"],
     ]
       .map(

@@ -477,6 +477,7 @@
                     display_name: "OpenAI".to_string(),
                     kind: ProviderKind::OpenAiCompatible,
                     base_url: DEFAULT_OPENAI_URL.to_string(),
+                    provider_profile: None,
                     auth_mode: AuthMode::ApiKey,
                     default_model: Some("gpt-4.1".to_string()),
                     keychain_account: None,
@@ -488,6 +489,7 @@
                     display_name: "OpenAI 2".to_string(),
                     kind: ProviderKind::OpenAiCompatible,
                     base_url: DEFAULT_OPENAI_URL.to_string(),
+                    provider_profile: None,
                     auth_mode: AuthMode::ApiKey,
                     default_model: Some("gpt-4.1-mini".to_string()),
                     keychain_account: None,
@@ -513,6 +515,7 @@
             display_name: "OpenRouter".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url: DEFAULT_OPENROUTER_URL.to_string(),
+            provider_profile: None,
             auth_mode: AuthMode::ApiKey,
             default_model: Some("openai/gpt-4.1".to_string()),
             keychain_account: None,
@@ -601,11 +604,11 @@
     }
 
     #[test]
-    fn automatic_browser_capture_is_native_for_openai_anthropic_and_openrouter() {
+    fn automatic_browser_capture_is_native_for_openai_and_openrouter_only() {
         assert!(hosted_kind_supports_automatic_browser_capture(
             HostedKindArg::OpenaiCompatible
         ));
-        assert!(hosted_kind_supports_automatic_browser_capture(
+        assert!(!hosted_kind_supports_automatic_browser_capture(
             HostedKindArg::Anthropic
         ));
         assert!(!hosted_kind_supports_automatic_browser_capture(
@@ -641,6 +644,7 @@
             display_name: "OpenAI Browser Session".to_string(),
             kind: ProviderKind::ChatGptCodex,
             base_url: DEFAULT_CHATGPT_CODEX_URL.to_string(),
+            provider_profile: None,
             auth_mode: AuthMode::OAuth,
             default_model: None,
             keychain_account: None,
@@ -677,99 +681,6 @@
             query.get("originator").map(String::as_str),
             Some(OPENAI_BROWSER_ORIGINATOR)
         );
-    }
-
-    #[test]
-    fn claude_browser_oauth_config_matches_packaged_claude_constants() {
-        let config = claude_browser_oauth_config();
-        assert_eq!(config.client_id, CLAUDE_BROWSER_CLIENT_ID);
-        assert_eq!(config.authorization_url, CLAUDE_BROWSER_AUTHORIZE_URL);
-        assert_eq!(config.token_url, CLAUDE_BROWSER_TOKEN_URL);
-        assert!(config
-            .scopes
-            .iter()
-            .any(|scope| scope == "org:create_api_key"));
-        assert!(config.scopes.iter().any(|scope| scope == "user:inference"));
-        assert!(config
-            .scopes
-            .iter()
-            .any(|scope| scope == "user:sessions:claude_code"));
-        assert!(config
-            .extra_authorize_params
-            .iter()
-            .any(|param| param.key == "code" && param.value == "true"));
-    }
-
-    #[test]
-    fn claude_browser_authorization_url_uses_loopback_contract() {
-        let provider = ProviderConfig {
-            id: "claude-browser".to_string(),
-            display_name: "Claude Browser Session".to_string(),
-            kind: ProviderKind::Anthropic,
-            base_url: DEFAULT_ANTHROPIC_URL.to_string(),
-            auth_mode: AuthMode::OAuth,
-            default_model: None,
-            keychain_account: None,
-            oauth: Some(claude_browser_oauth_config()),
-            local: false,
-        };
-        let redirect_uri = format!(
-            "http://localhost:{CLAUDE_BROWSER_CALLBACK_PORT}{CLAUDE_BROWSER_CALLBACK_PATH}"
-        );
-        let authorization_url = build_oauth_authorization_url(
-            &provider,
-            &redirect_uri,
-            "state-456",
-            &pkce_challenge("verifier-456"),
-        )
-        .expect("authorization URL should build");
-        let parsed = Url::parse(&authorization_url).expect("authorization URL should parse");
-        let query = parsed
-            .query_pairs()
-            .map(|(key, value)| (key.into_owned(), value.into_owned()))
-            .collect::<std::collections::HashMap<_, _>>();
-
-        assert_eq!(parsed.host_str(), Some("claude.ai"));
-        assert_eq!(parsed.path(), "/oauth/authorize");
-        assert_eq!(
-            query.get("redirect_uri").map(String::as_str),
-            Some(redirect_uri.as_str())
-        );
-        assert_eq!(
-            query.get("scope").map(String::as_str),
-            Some("org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers")
-        );
-        assert_eq!(query.get("code").map(String::as_str), Some("true"));
-    }
-
-    #[test]
-    fn claude_scope_error_triggers_oauth_fallback() {
-        assert!(should_fallback_to_claude_browser_oauth(
-            "Claude browser API key mint failed: OAuth token does not meet scope requirement org:create_api_key"
-        ));
-        assert!(!should_fallback_to_claude_browser_oauth(
-            "Claude browser API key mint failed: service unavailable"
-        ));
-    }
-
-    #[test]
-    fn claude_settings_parser_reads_existing_browser_credentials() {
-        let parsed = parse_claude_browser_credentials_from_settings(
-            r#"{
-                "primaryApiKey": " sk-ant-managed ",
-                "oauthAccount": {
-                    "emailAddress": "user@example.com",
-                    "organizationUuid": "org_123",
-                    "organizationName": "Acme"
-                }
-            }"#,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(parsed.api_key, "sk-ant-managed");
-        assert_eq!(parsed.email.as_deref(), Some("user@example.com"));
-        assert_eq!(parsed.org_id.as_deref(), Some("org_123"));
-        assert_eq!(parsed.org_name.as_deref(), Some("Acme"));
     }
 
     #[test]

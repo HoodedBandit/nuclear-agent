@@ -1,3 +1,5 @@
+use agent_core::ProviderProfile;
+
 pub(crate) async fn daemon_command(storage: &Storage, command: DaemonCommands) -> Result<()> {
     match command {
         DaemonCommands::Start => {
@@ -118,6 +120,9 @@ pub(crate) async fn login_command(storage: &Storage, args: LoginArgs) -> Result<
         Some(auth) => auth,
         None => select_auth_method(&theme, kind)?,
     };
+    if kind == HostedKindArg::Anthropic && auth_method != AuthMethodArg::ApiKey {
+        bail!("Anthropic third-party access requires an API key");
+    }
     let default_url = match auth_method {
         AuthMethodArg::Browser => default_browser_hosted_url(kind),
         AuthMethodArg::ApiKey | AuthMethodArg::Oauth => default_hosted_url(kind),
@@ -133,6 +138,7 @@ pub(crate) async fn login_command(storage: &Storage, args: LoginArgs) -> Result<
                     display_name: provider_name,
                     kind: hosted_kind_to_provider_kind(kind),
                     base_url,
+                    provider_profile: Some(hosted_kind_to_provider_profile(kind)),
                     auth_mode: AuthMode::ApiKey,
                     default_model: None,
                     keychain_account: None,
@@ -148,6 +154,7 @@ pub(crate) async fn login_command(storage: &Storage, args: LoginArgs) -> Result<
                     display_name: provider_name,
                     kind: browser_hosted_kind_to_provider_kind(kind),
                     base_url,
+                    provider_profile: Some(hosted_kind_to_provider_profile(kind)),
                     auth_mode: AuthMode::OAuth,
                     default_model: None,
                     keychain_account: None,
@@ -159,32 +166,31 @@ pub(crate) async fn login_command(storage: &Storage, args: LoginArgs) -> Result<
             },
         },
         AuthMethodArg::ApiKey => ProviderUpsertRequest {
-            provider: ProviderConfig {
-                id: provider_id.clone(),
-                display_name: provider_name,
-                kind: hosted_kind_to_provider_kind(kind),
-                base_url,
-                auth_mode: AuthMode::ApiKey,
-                default_model: None,
-                keychain_account: None,
-                oauth: None,
-                local: false,
+                provider: ProviderConfig {
+                    id: provider_id.clone(),
+                    display_name: provider_name,
+                    kind: hosted_kind_to_provider_kind(kind),
+                    base_url,
+                    provider_profile: Some(hosted_kind_to_provider_profile(kind)),
+                    auth_mode: AuthMode::ApiKey,
+                    default_model: None,
+                    keychain_account: None,
+                    oauth: None,
+                    local: false,
+                },
+                api_key: Some(match args.api_key {
+                    Some(api_key) => api_key,
+                    None => prompt_visible_api_key(&theme, "API key")?,
+                }),
+                oauth_token: None,
             },
-            api_key: Some(match args.api_key {
-                Some(api_key) => api_key,
-                None => Password::with_theme(&theme)
-                    .with_prompt("API key")
-                    .allow_empty_password(false)
-                    .interact()?,
-            }),
-            oauth_token: None,
-        },
         AuthMethodArg::Oauth => {
             let provider = ProviderConfig {
                 id: provider_id.clone(),
                 display_name: provider_name,
                 kind: hosted_kind_to_provider_kind(kind),
                 base_url,
+                provider_profile: Some(hosted_kind_to_provider_profile(kind)),
                 auth_mode: AuthMode::OAuth,
                 default_model: None,
                 keychain_account: None,
@@ -238,6 +244,7 @@ pub(crate) async fn provider_command(storage: &Storage, command: ProviderCommand
                 base_url: args
                     .base_url
                     .unwrap_or_else(|| default_hosted_url(args.kind).to_string()),
+                provider_profile: Some(hosted_kind_to_provider_profile(args.kind)),
                 auth_mode: AuthMode::ApiKey,
                 default_model: Some(args.model.clone()),
                 keychain_account: None,
@@ -265,6 +272,10 @@ pub(crate) async fn provider_command(storage: &Storage, command: ProviderCommand
                     LocalKindArg::OpenaiCompatible => ProviderKind::OpenAiCompatible,
                 },
                 base_url,
+                provider_profile: Some(match args.kind {
+                    LocalKindArg::Ollama => ProviderProfile::Ollama,
+                    LocalKindArg::OpenaiCompatible => ProviderProfile::LocalOpenAiCompatible,
+                }),
                 auth_mode: if args.api_key.is_some() {
                     AuthMode::ApiKey
                 } else {

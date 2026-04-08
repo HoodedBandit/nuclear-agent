@@ -2,8 +2,20 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useDashboardData } from "../../app/useDashboardData";
-import { discoverProviderModels, listProviders, saveProvider } from "../../api/client";
-import type { AuthMode, ProviderConfig, ProviderKind, ProviderUpsertRequest } from "../../api/types";
+import {
+  discoverProvider,
+  listProviders,
+  saveProvider,
+  validateProvider
+} from "../../api/client";
+import type {
+  AuthMode,
+  ProviderConfig,
+  ProviderKind,
+  ProviderProfile,
+  ProviderReadinessResult,
+  ProviderUpsertRequest
+} from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { Pill } from "../../components/Pill";
 import { Surface } from "../../components/Surface";
@@ -22,6 +34,7 @@ interface ProviderPreset {
   id: ProviderPresetId;
   label: string;
   providerKind: ProviderKind;
+  providerProfile: ProviderProfile;
   displayName: string;
   providerId: string;
   baseUrl: string;
@@ -37,6 +50,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     id: "openai",
     label: "OpenAI",
     providerKind: "open_ai_compatible",
+    providerProfile: "open_ai",
     displayName: "OpenAI",
     providerId: "openai",
     baseUrl: "https://api.openai.com/v1",
@@ -50,6 +64,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     id: "moonshot",
     label: "Moonshot (Kimi)",
     providerKind: "open_ai_compatible",
+    providerProfile: "moonshot",
     displayName: "Moonshot",
     providerId: "moonshot",
     baseUrl: "https://api.moonshot.ai/v1",
@@ -63,6 +78,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     id: "openrouter",
     label: "OpenRouter",
     providerKind: "open_ai_compatible",
+    providerProfile: "open_router",
     displayName: "OpenRouter",
     providerId: "openrouter",
     baseUrl: "https://openrouter.ai/api/v1",
@@ -76,6 +92,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     id: "venice",
     label: "Venice",
     providerKind: "open_ai_compatible",
+    providerProfile: "venice",
     displayName: "Venice AI",
     providerId: "venice",
     baseUrl: "https://api.venice.ai/api/v1",
@@ -89,6 +106,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     id: "anthropic",
     label: "Anthropic",
     providerKind: "anthropic",
+    providerProfile: "anthropic",
     displayName: "Anthropic",
     providerId: "anthropic",
     baseUrl: "https://api.anthropic.com",
@@ -102,6 +120,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     id: "ollama",
     label: "Ollama",
     providerKind: "ollama",
+    providerProfile: "ollama",
     displayName: "Ollama local",
     providerId: "ollama-local",
     baseUrl: "http://127.0.0.1:11434",
@@ -113,6 +132,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     id: "local_openai",
     label: "Local OpenAI-compatible",
     providerKind: "open_ai_compatible",
+    providerProfile: "local_open_ai_compatible",
     displayName: "Local OpenAI-compatible",
     providerId: "local-openai",
     baseUrl: "http://127.0.0.1:5001/v1",
@@ -140,6 +160,7 @@ interface ProviderFormState {
   display_name: string;
   kind: ProviderKind;
   base_url: string;
+  provider_profile: ProviderProfile;
   auth_mode: AuthMode;
   default_model: string;
   api_key: string;
@@ -158,6 +179,7 @@ function buildInitialFormState(presetId: ProviderPresetId = "ollama"): ProviderF
     display_name: preset.displayName,
     kind: preset.providerKind,
     base_url: preset.baseUrl,
+    provider_profile: preset.providerProfile,
     auth_mode: preset.authMode,
     default_model: "",
     api_key: "",
@@ -171,6 +193,7 @@ function buildProviderPayload(formState: ProviderFormState): ProviderUpsertReque
     display_name: formState.display_name.trim(),
     kind: formState.kind,
     base_url: formState.base_url.trim(),
+    provider_profile: formState.provider_profile,
     auth_mode: formState.auth_mode,
     default_model: formState.default_model.trim() || null,
     keychain_account: null,
@@ -187,6 +210,14 @@ function buildProviderPayload(formState: ProviderFormState): ProviderUpsertReque
   };
 }
 
+function discoveryKeyForSecret(secret: string): string {
+  let hash = 0;
+  for (let index = 0; index < secret.length; index += 1) {
+    hash = (hash * 31 + secret.charCodeAt(index)) >>> 0;
+  }
+  return `${secret.length}:${hash.toString(16)}`;
+}
+
 export function IntegrationsPage() {
   const { bootstrap } = useDashboardData();
   const queryClient = useQueryClient();
@@ -196,10 +227,15 @@ export function IntegrationsPage() {
     initialData: bootstrap.providers
   });
   const [formState, setFormState] = useState<ProviderFormState>(() => buildInitialFormState());
+  const [lastValidated, setLastValidated] = useState<ProviderReadinessResult | null>(null);
 
   const selectedPreset = useMemo(
     () => presetById(formState.presetId),
     [formState.presetId]
+  );
+  const secretDiscoveryKey = useMemo(
+    () => discoveryKeyForSecret(formState.api_key),
+    [formState.api_key]
   );
 
   const discoveryPayload = useMemo(() => buildProviderPayload(formState), [formState]);
@@ -212,20 +248,22 @@ export function IntegrationsPage() {
   const modelDiscoveryQuery = useQuery({
     queryKey: [
       "provider-model-discovery",
+      discoveryPayload.provider.provider_profile ?? "",
       discoveryPayload.provider.kind,
       discoveryPayload.provider.id,
       discoveryPayload.provider.base_url,
       discoveryPayload.provider.auth_mode,
-      discoveryPayload.api_key ?? ""
+      secretDiscoveryKey
     ],
-    queryFn: async () => discoverProviderModels(discoveryPayload),
+    queryFn: async () => discoverProvider(discoveryPayload),
     enabled: canDiscoverModels,
     retry: false,
     staleTime: 30_000
   });
 
   useEffect(() => {
-    if (!modelDiscoveryQuery.data || modelDiscoveryQuery.data.length === 0) {
+    const recommendedModel = modelDiscoveryQuery.data?.recommended_model?.trim();
+    if (!recommendedModel) {
       return;
     }
     if (formState.default_model.trim().length > 0) {
@@ -233,13 +271,23 @@ export function IntegrationsPage() {
     }
     setFormState((current) => ({
       ...current,
-      default_model: modelDiscoveryQuery.data?.[0] ?? current.default_model
+      default_model: recommendedModel
     }));
-  }, [formState.default_model, modelDiscoveryQuery.data]);
+  }, [formState.default_model, modelDiscoveryQuery.data?.recommended_model]);
+
+  useEffect(() => {
+    setLastValidated(null);
+  }, [formState]);
 
   const saveProviderMutation = useMutation({
     mutationFn: async () => {
-      await saveProvider(buildProviderPayload(formState));
+      const payload = buildProviderPayload(formState);
+      const readiness = await validateProvider(payload);
+      if (!readiness.ok) {
+        throw new Error(readiness.detail);
+      }
+      setLastValidated(readiness);
+      await saveProvider(payload);
     },
     onSuccess: async () => {
       await Promise.all([
@@ -247,6 +295,9 @@ export function IntegrationsPage() {
         queryClient.invalidateQueries({ queryKey: ["providers"] })
       ]);
       setFormState(buildInitialFormState(formState.presetId));
+    },
+    onError: () => {
+      setLastValidated(null);
     }
   });
 
@@ -259,8 +310,7 @@ export function IntegrationsPage() {
     [bootstrap]
   );
 
-  const discoveredModels = modelDiscoveryQuery.data ?? [];
-  const showDiscoveredModelSelect = discoveredModels.length > 0;
+  const discoveredModels = modelDiscoveryQuery.data?.models?.map((model) => model.id) ?? [];
   const saveDisabled =
     saveProviderMutation.isPending ||
     (canDiscoverModels && modelDiscoveryQuery.isPending && formState.default_model.trim().length === 0);
@@ -298,7 +348,7 @@ export function IntegrationsPage() {
           ) : (
             <EmptyState
               title="No providers configured"
-              body="The modern cockpit now supports direct API-key onboarding for hosted providers, while the classic dashboard still covers browser-session and long-tail setup flows."
+              body="The modern cockpit covers direct API-key onboarding and local runtimes. Classic tools still handle ChatGPT/Codex browser-session auth and long-tail recovery flows."
             />
           )}
         </Surface>
@@ -354,6 +404,11 @@ export function IntegrationsPage() {
               />
             </label>
 
+            <label>
+              Provider profile
+              <input value={formState.provider_profile} readOnly />
+            </label>
+
             {formState.auth_mode === "api_key" ? (
               <label>
                 {selectedPreset.apiKeyLabel ?? "API key"}
@@ -370,40 +425,30 @@ export function IntegrationsPage() {
               </label>
             ) : null}
 
-            {showDiscoveredModelSelect ? (
-              <label>
-                Default model
-                <select
-                  value={formState.default_model}
-                  onChange={(event) =>
-                    setFormState((current) => ({ ...current, default_model: event.target.value }))
-                  }
-                >
+            <label>
+              Default model
+              <input
+                list="provider-discovered-models"
+                value={formState.default_model}
+                onChange={(event) =>
+                  setFormState((current) => ({ ...current, default_model: event.target.value }))
+                }
+                placeholder={selectedPreset.defaultModelPlaceholder}
+              />
+              {discoveredModels.length > 0 ? (
+                <datalist id="provider-discovered-models">
                   {discoveredModels.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
+                    <option key={model} value={model} />
                   ))}
-                </select>
-              </label>
-            ) : (
-              <label>
-                Default model
-                <input
-                  value={formState.default_model}
-                  onChange={(event) =>
-                    setFormState((current) => ({ ...current, default_model: event.target.value }))
-                  }
-                  placeholder={selectedPreset.defaultModelPlaceholder}
-                />
-              </label>
-            )}
+                </datalist>
+              ) : null}
+            </label>
 
             <div className={styles.discoveryStatus}>
               {modelDiscoveryQuery.isPending ? (
                 <span className={styles.meta}>Loading models...</span>
               ) : null}
-              {showDiscoveredModelSelect ? (
+              {discoveredModels.length > 0 ? (
                 <span className={styles.successCopy}>
                   Loaded {discoveredModels.length} model{discoveredModels.length === 1 ? "" : "s"}.
                 </span>
@@ -413,6 +458,16 @@ export function IntegrationsPage() {
                   {modelDiscoveryQuery.error instanceof Error
                     ? `Could not load models automatically: ${modelDiscoveryQuery.error.message}`
                     : "Could not load models automatically."}
+                </span>
+              ) : null}
+              {modelDiscoveryQuery.data?.warnings?.map((warning) => (
+                <span key={warning} className={styles.meta}>
+                  {warning}
+                </span>
+              ))}
+              {lastValidated ? (
+                <span className={styles.successCopy}>
+                  Validated {lastValidated.model}: {lastValidated.detail}
                 </span>
               ) : null}
             </div>
@@ -455,9 +510,9 @@ export function IntegrationsPage() {
       <div className={styles.secondaryGrid}>
         <Surface eyebrow="Browser session" title="Use the classic workbench for session-based auth">
           <p className={styles.copy}>
-            ChatGPT/Codex browser sign-in and long-tail OAuth flows still use the classic dashboard.
-            The modern cockpit now covers direct API-key onboarding for hosted providers and local
-            runtime presets.
+            ChatGPT/Codex browser sign-in and long-tail browser-session recovery still use the
+            classic dashboard. Anthropic third-party access is API-key-only. The modern cockpit
+            covers direct API-key onboarding for hosted providers and local runtime presets.
           </p>
           <div className={styles.formActions}>
             <a className={styles.linkButtonGhost} href="/dashboard-classic">

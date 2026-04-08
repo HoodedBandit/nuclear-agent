@@ -71,14 +71,14 @@ pub(crate) use connectors::{
 };
 pub(crate) use control::{
     autonomy_status, autopilot_status, clear_provider_credentials, dashboard_bootstrap,
-    delegation_status, delete_alias, delete_mcp_server, delete_provider, discover_provider_models,
-    doctor, enable_autonomy, export_config, get_permission_preset, get_trust, import_config,
-    list_aliases, list_delegation_targets, list_enabled_skills, list_events, list_logs,
-    list_mcp_servers, list_provider_model_descriptors, list_provider_models, list_providers,
-    pause_autonomy, reset_onboarding, resume_autonomy, shutdown, status, suggest_provider_defaults,
-    update_autopilot, update_daemon_config, update_delegation_config, update_enabled_skills,
-    update_main_alias, update_permission_preset, update_trust, upsert_alias, upsert_mcp_server,
-    upsert_provider,
+    delegation_status, delete_alias, delete_mcp_server, delete_provider, discover_provider,
+    discover_provider_models, doctor, enable_autonomy, export_config, get_permission_preset,
+    get_trust, import_config, list_aliases, list_delegation_targets, list_enabled_skills,
+    list_events, list_logs, list_mcp_servers, list_provider_model_descriptors,
+    list_provider_models, list_providers, pause_autonomy, reset_onboarding, resume_autonomy,
+    shutdown, status, suggest_provider_defaults, update_autopilot, update_daemon_config,
+    update_delegation_config, update_enabled_skills, update_main_alias, update_permission_preset,
+    update_trust, upsert_alias, upsert_mcp_server, upsert_provider, validate_provider,
 };
 pub(crate) use delegation::{
     delegation_targets_from_config, normalize_delegation_limit,
@@ -126,8 +126,6 @@ use tokio::{
     sync::{mpsc, Notify, RwLock},
 };
 use tracing::{error, info};
-#[cfg(test)]
-use uuid::Uuid;
 pub use workspace::inspect_workspace_path;
 pub(crate) use workspace::{
     inspect_workspace_route, workspace_diff_route, workspace_init_agents_route,
@@ -499,7 +497,9 @@ mod tests {
         MissionControlRequest, MissionStatus, ProviderKind, ProviderUpsertRequest, SessionMessage,
         TrustPolicy, WakeTrigger,
     };
+    use agent_providers::store_api_key;
     use std::sync::Arc;
+    use uuid::Uuid;
 
     fn provider(id: &str, auth_mode: AuthMode, keychain_account: Option<&str>) -> ProviderConfig {
         ProviderConfig {
@@ -512,6 +512,7 @@ mod tests {
                 _ => ProviderKind::OpenAiCompatible,
             },
             base_url: "https://example.test".to_string(),
+            provider_profile: None,
             auth_mode,
             default_model: Some(format!("{id}-model")),
             keychain_account: keychain_account.map(ToOwned::to_owned),
@@ -529,6 +530,23 @@ mod tests {
         }
     }
 
+    fn stored_anthropic_provider(id: &str, display_name: &str, model: &str) -> ProviderConfig {
+        let provider_id = format!("agent-daemon-test-{id}-{}", Uuid::new_v4());
+        let account = store_api_key(&provider_id, "anthropic-test-key").unwrap();
+        ProviderConfig {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            kind: ProviderKind::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            provider_profile: None,
+            auth_mode: AuthMode::ApiKey,
+            default_model: Some(model.to_string()),
+            keychain_account: Some(account),
+            oauth: None,
+            local: false,
+        }
+    }
+
     fn config_with_aliases() -> AppConfig {
         let mut config = AppConfig {
             trust_policy: TrustPolicy::default(),
@@ -536,7 +554,7 @@ mod tests {
         };
         config.providers = vec![
             provider("openai", AuthMode::None, None),
-            provider("anthropic", AuthMode::None, None),
+            stored_anthropic_provider("anthropic", "anthropic", "claude-sonnet"),
             provider("ollama", AuthMode::None, None),
         ];
         config.aliases = vec![
@@ -1058,6 +1076,7 @@ mod tests {
                     display_name: "Custom".to_string(),
                     kind: ProviderKind::OpenAiCompatible,
                     base_url: "https://example.test".to_string(),
+                    provider_profile: None,
                     auth_mode: AuthMode::ApiKey,
                     default_model: Some("custom-model".to_string()),
                     keychain_account: None,
@@ -1320,6 +1339,7 @@ mod tests {
             display_name: "Moonshot Hosted".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url: "https://api.moonshot.ai/v1".to_string(),
+            provider_profile: None,
             auth_mode: AuthMode::None,
             default_model: Some("kimi-k2".to_string()),
             keychain_account: None,
@@ -1431,17 +1451,11 @@ mod tests {
     #[test]
     fn provider_pool_includes_secondary_logged_in_provider_for_parallel_spawns() {
         let mut config = config_with_aliases();
-        config.providers.push(ProviderConfig {
-            id: "anthropic-2".to_string(),
-            display_name: "Anthropic Backup".to_string(),
-            kind: ProviderKind::Anthropic,
-            base_url: "https://api.anthropic.com".to_string(),
-            auth_mode: AuthMode::None,
-            default_model: Some("claude-opus-4-1".to_string()),
-            keychain_account: None,
-            oauth: None,
-            local: false,
-        });
+        config.providers.push(stored_anthropic_provider(
+            "anthropic-2",
+            "Anthropic Backup",
+            "claude-opus-4-1",
+        ));
         config
             .aliases
             .push(alias("claude-backup", "anthropic-2", "claude-opus-4-1"));

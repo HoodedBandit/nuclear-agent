@@ -1,5 +1,6 @@
 use agent_core::{
-    ConversationMessage, ProviderConfig, ProviderKind, ProviderReply, ThinkingLevel, ToolDefinition,
+    ConversationMessage, OAuthToken, ProviderConfig, ProviderKind, ProviderReply, ThinkingLevel,
+    ToolDefinition,
 };
 use anyhow::{anyhow, Result};
 use reqwest::Client;
@@ -8,6 +9,22 @@ pub use agent_core::{ModelDescriptor, ReasoningLevelDescriptor};
 
 const OPENAI_BROWSER_AUTH_ISSUER: &str = "https://auth.openai.com";
 const CHATGPT_CODEX_BUNDLED_MODELS_JSON: &str = include_str!("../assets/chatgpt_codex_models.json");
+
+#[derive(Clone, Copy, Default)]
+pub struct PromptAuthOverrides<'a> {
+    pub api_key: Option<&'a str>,
+    pub oauth_token: Option<&'a OAuthToken>,
+}
+
+#[derive(Clone, Copy)]
+pub struct PromptRunRequest<'a> {
+    pub messages: &'a [ConversationMessage],
+    pub requested_model: Option<&'a str>,
+    pub session_id: Option<&'a str>,
+    pub thinking_level: Option<ThinkingLevel>,
+    pub tools: &'a [ToolDefinition],
+    pub auth_overrides: PromptAuthOverrides<'a>,
+}
 
 mod anthropic;
 mod attachments;
@@ -24,10 +41,9 @@ mod tooling;
 #[allow(unused_imports)]
 use agent_core::{
     AttachmentKind, AuthMode, HostedToolKind, InputAttachment, MessageRole, ModelToolCapabilities,
-    OAuthConfig, OAuthToken, ProviderHealth, ProviderOutputItem, ToolBackend, ToolCall,
-    KEYCHAIN_SERVICE,
+    OAuthConfig, ProviderHealth, ProviderOutputItem, ToolBackend, ToolCall, KEYCHAIN_SERVICE,
 };
-use anthropic::run_anthropic;
+use anthropic::run_anthropic_with_overrides;
 #[cfg(test)]
 #[allow(unused_imports)]
 use anthropic::*;
@@ -79,7 +95,7 @@ use ollama::run_ollama;
 #[cfg(test)]
 #[allow(unused_imports)]
 use ollama::*;
-use openai_compatible::run_openai_compatible;
+use openai_compatible::run_openai_compatible_with_overrides;
 #[cfg(test)]
 #[allow(unused_imports)]
 use openai_compatible::*;
@@ -102,33 +118,80 @@ pub async fn run_prompt(
     thinking_level: Option<ThinkingLevel>,
     tools: &[ToolDefinition],
 ) -> Result<ProviderReply> {
-    let model = requested_model
+    run_prompt_with_overrides(
+        client,
+        provider,
+        PromptRunRequest {
+            messages,
+            requested_model,
+            session_id,
+            thinking_level,
+            tools,
+            auth_overrides: PromptAuthOverrides::default(),
+        },
+    )
+    .await
+}
+
+pub async fn run_prompt_with_overrides(
+    client: &Client,
+    provider: &ProviderConfig,
+    request: PromptRunRequest<'_>,
+) -> Result<ProviderReply> {
+    let model = request
+        .requested_model
         .map(ToOwned::to_owned)
         .or_else(|| provider.default_model.clone())
         .ok_or_else(|| anyhow!("provider '{}' has no default model configured", provider.id))?;
 
     match provider.kind {
         ProviderKind::OpenAiCompatible => {
-            run_openai_compatible(client, provider, &model, messages, thinking_level, tools).await
+            run_openai_compatible_with_overrides(
+                client,
+                provider,
+                &model,
+                request.messages,
+                request.thinking_level,
+                request.tools,
+                request.auth_overrides,
+            )
+            .await
         }
         ProviderKind::ChatGptCodex => {
             run_chatgpt_codex(
                 client,
                 provider,
                 &model,
-                messages,
-                session_id,
-                thinking_level,
-                tools,
-                None,
+                request.messages,
+                request.session_id,
+                request.thinking_level,
+                request.tools,
+                request.auth_overrides.oauth_token,
             )
             .await
         }
         ProviderKind::Anthropic => {
-            run_anthropic(client, provider, &model, messages, thinking_level, tools).await
+            run_anthropic_with_overrides(
+                client,
+                provider,
+                &model,
+                request.messages,
+                request.thinking_level,
+                request.tools,
+                request.auth_overrides,
+            )
+            .await
         }
         ProviderKind::Ollama => {
-            run_ollama(client, provider, &model, messages, thinking_level, tools).await
+            run_ollama(
+                client,
+                provider,
+                &model,
+                request.messages,
+                request.thinking_level,
+                request.tools,
+            )
+            .await
         }
     }
 }
@@ -158,6 +221,7 @@ mod tests {
             display_name: "Test".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url: "https://example.com/v1".to_string(),
+            provider_profile: None,
             auth_mode: AuthMode::OAuth,
             default_model: Some("model".to_string()),
             keychain_account: None,
@@ -216,6 +280,7 @@ mod tests {
             display_name: "Local".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:5001/v1".to_string(),
+            provider_profile: None,
             auth_mode: AuthMode::None,
             default_model: Some("kobold".to_string()),
             keychain_account: None,
@@ -240,6 +305,7 @@ mod tests {
             display_name: "Local".to_string(),
             kind: ProviderKind::Ollama,
             base_url: "http://127.0.0.1:11434".to_string(),
+            provider_profile: None,
             auth_mode: AuthMode::None,
             default_model: Some("qwen".to_string()),
             keychain_account: None,
@@ -259,6 +325,7 @@ mod tests {
             display_name: "Local".to_string(),
             kind: ProviderKind::Ollama,
             base_url: "http://127.0.0.1:11434".to_string(),
+            provider_profile: None,
             auth_mode: AuthMode::None,
             default_model: Some("llama3.2".to_string()),
             keychain_account: None,
@@ -300,6 +367,7 @@ mod tests {
             display_name: "OpenAI".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url,
+            provider_profile: None,
             auth_mode: AuthMode::None,
             default_model: Some("gpt-test".to_string()),
             keychain_account: None,
@@ -363,6 +431,7 @@ mod tests {
             display_name: "OpenAI".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url,
+            provider_profile: None,
             auth_mode: AuthMode::None,
             default_model: Some("gpt-test".to_string()),
             keychain_account: None,
@@ -411,6 +480,7 @@ mod tests {
             display_name: "OpenRouter".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url: base_url.replace("/token", "/api/v1"),
+            provider_profile: None,
             auth_mode: AuthMode::None,
             default_model: Some("openai/gpt-4.1".to_string()),
             keychain_account: None,
@@ -494,6 +564,7 @@ mod tests {
             display_name: "OpenAI Browser Session".to_string(),
             kind: ProviderKind::ChatGptCodex,
             base_url,
+            provider_profile: None,
             auth_mode: AuthMode::OAuth,
             default_model: None,
             keychain_account: None,
@@ -555,6 +626,7 @@ mod tests {
             display_name: "OpenAI Browser Session".to_string(),
             kind: ProviderKind::ChatGptCodex,
             base_url,
+            provider_profile: None,
             auth_mode: AuthMode::OAuth,
             default_model: None,
             keychain_account: None,
@@ -620,6 +692,7 @@ mod tests {
             display_name: "OpenAI Browser Session".to_string(),
             kind: ProviderKind::ChatGptCodex,
             base_url,
+            provider_profile: None,
             auth_mode: AuthMode::OAuth,
             default_model: Some("gpt-5".to_string()),
             keychain_account: None,
@@ -1285,6 +1358,7 @@ mod tests {
             display_name: "OAuth".to_string(),
             kind: ProviderKind::OpenAiCompatible,
             base_url: "https://example.com/v1".to_string(),
+            provider_profile: None,
             auth_mode: AuthMode::OAuth,
             default_model: Some("model".to_string()),
             keychain_account: None,

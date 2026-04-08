@@ -1337,6 +1337,12 @@ elements.autoRefreshInput.addEventListener("change", () => {
   scheduleRefresh();
 });
 
+if (elements.connectButton) {
+  elements.connectButton.disabled = false;
+}
+elements.refreshButton.disabled = false;
+elements.clearButton.disabled = false;
+
 elements.missionForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {

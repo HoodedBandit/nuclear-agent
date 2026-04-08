@@ -1,4 +1,5 @@
 use super::*;
+use agent_core::ProviderProfile;
 use dialoguer::FuzzySelect;
 use sha2::{Digest, Sha256};
 
@@ -67,6 +68,7 @@ pub(crate) async fn interactive_provider_setup(
                 display_name: name,
                 kind: ProviderKind::Ollama,
                 base_url,
+                provider_profile: Some(ProviderProfile::Ollama),
                 auth_mode: AuthMode::None,
                 default_model: None,
                 keychain_account: None,
@@ -91,16 +93,14 @@ pub(crate) async fn interactive_provider_setup(
                 .interact()?;
             let base_url = ask_url(theme, DEFAULT_LOCAL_OPENAI_URL)?;
             if requires_key {
-                let api_key = Password::with_theme(theme)
-                    .with_prompt("API key")
-                    .allow_empty_password(false)
-                    .interact()?;
+                let api_key = prompt_visible_api_key(theme, "API key")?;
                 let mut request = ProviderUpsertRequest {
                     provider: ProviderConfig {
                         id: id.clone(),
                         display_name: name,
                         kind: ProviderKind::OpenAiCompatible,
                         base_url,
+                        provider_profile: Some(ProviderProfile::LocalOpenAiCompatible),
                         auth_mode: AuthMode::ApiKey,
                         default_model: None,
                         keychain_account: None,
@@ -119,6 +119,7 @@ pub(crate) async fn interactive_provider_setup(
                     display_name: name,
                     kind: ProviderKind::OpenAiCompatible,
                     base_url,
+                    provider_profile: Some(ProviderProfile::LocalOpenAiCompatible),
                     auth_mode: AuthMode::None,
                     default_model: None,
                     keychain_account: None,
@@ -174,6 +175,9 @@ pub(crate) async fn interactive_hosted_provider_request(
     kind: HostedKindArg,
 ) -> Result<(ProviderUpsertRequest, String)> {
     let auth_method = select_auth_method(theme, kind)?;
+    if kind == HostedKindArg::Anthropic && auth_method != AuthMethodArg::ApiKey {
+        bail!("Anthropic third-party access requires an API key");
+    }
     let base_url = match auth_method {
         AuthMethodArg::Browser => default_browser_hosted_url(kind).to_string(),
         AuthMethodArg::ApiKey | AuthMethodArg::Oauth => default_hosted_url(kind).to_string(),
@@ -186,6 +190,7 @@ pub(crate) async fn interactive_hosted_provider_request(
                     display_name: name,
                     kind: hosted_kind_to_provider_kind(kind),
                     base_url,
+                    provider_profile: Some(hosted_kind_to_provider_profile(kind)),
                     auth_mode: AuthMode::ApiKey,
                     default_model: None,
                     keychain_account: None,
@@ -201,6 +206,7 @@ pub(crate) async fn interactive_hosted_provider_request(
                     display_name: name,
                     kind: browser_hosted_kind_to_provider_kind(kind),
                     base_url,
+                    provider_profile: Some(hosted_kind_to_provider_profile(kind)),
                     auth_mode: AuthMode::OAuth,
                     default_model: None,
                     keychain_account: None,
@@ -217,18 +223,14 @@ pub(crate) async fn interactive_hosted_provider_request(
                 display_name: name,
                 kind: hosted_kind_to_provider_kind(kind),
                 base_url,
+                provider_profile: Some(hosted_kind_to_provider_profile(kind)),
                 auth_mode: AuthMode::ApiKey,
                 default_model: None,
                 keychain_account: None,
                 oauth: None,
                 local: false,
             },
-            api_key: Some(
-                Password::with_theme(theme)
-                    .with_prompt("API key")
-                    .allow_empty_password(false)
-                    .interact()?,
-            ),
+            api_key: Some(prompt_visible_api_key(theme, "API key")?),
             oauth_token: None,
         },
         AuthMethodArg::Oauth => {
@@ -237,6 +239,7 @@ pub(crate) async fn interactive_hosted_provider_request(
                 id,
                 name,
                 hosted_kind_to_provider_kind(kind),
+                hosted_kind_to_provider_profile(kind),
                 &base_url,
             )?;
             let token = complete_oauth_login(&provider).await?;
@@ -290,31 +293,25 @@ pub(crate) async fn resolve_hosted_model_after_auth(
     .await;
 
     if let Some(model) = provided {
-        if let Ok(models) = &discovered {
-            if !models.is_empty() && !models.iter().any(|candidate| candidate == &model) {
-                bail!(
-                    "model '{}' is not available for provider '{}'",
-                    model,
-                    request.provider.id
-                );
+        match &discovered {
+            Ok(models) => {
+                if !models.is_empty() && !models.iter().any(|candidate| candidate == &model) {
+                    println!(
+                        "Model '{}' was not present in discovery results for provider '{}'; using the manual value anyway.",
+                        model, request.provider.id
+                    );
+                }
             }
+            Err(error) if should_abort_after_auth_discovery_error(request, error) => {
+                return Err(anyhow::anyhow!(error.to_string()));
+            }
+            Err(_) => {}
         }
         return Ok(model);
     }
 
     match discovered {
-        Ok(models) if !models.is_empty() => {
-            if models.len() == 1 {
-                println!("Detected model '{}'.", models[0]);
-                return Ok(models[0].clone());
-            }
-            let selection = FuzzySelect::with_theme(theme)
-                .with_prompt("Choose a model")
-                .items(&models)
-                .default(0)
-                .interact()?;
-            Ok(models[selection].clone())
-        }
+        Ok(models) if !models.is_empty() => select_discovered_model(theme, &models),
         Ok(_) => {
             println!("No models were returned automatically for this provider.");
             prompt_for_model(theme)
@@ -327,6 +324,38 @@ pub(crate) async fn resolve_hosted_model_after_auth(
             prompt_for_model(theme)
         }
     }
+}
+
+fn select_discovered_model(theme: &ColorfulTheme, models: &[String]) -> Result<String> {
+    let manual_label = "Enter a model manually";
+    if models.len() == 1 {
+        let choices = vec![
+            format!("Use detected model '{}'", models[0]),
+            manual_label.to_string(),
+        ];
+        let selection = Select::with_theme(theme)
+            .with_prompt("Choose a model")
+            .items(&choices)
+            .default(0)
+            .interact()?;
+        if selection == 0 {
+            println!("Detected model '{}'.", models[0]);
+            return Ok(models[0].clone());
+        }
+        return prompt_for_model(theme);
+    }
+
+    let mut choices = models.to_vec();
+    choices.push(manual_label.to_string());
+    let selection = FuzzySelect::with_theme(theme)
+        .with_prompt("Choose a model")
+        .items(&choices)
+        .default(0)
+        .interact()?;
+    if selection == choices.len() - 1 {
+        return prompt_for_model(theme);
+    }
+    Ok(models[selection].clone())
 }
 
 pub(crate) fn should_abort_after_auth_discovery_error(
@@ -394,6 +423,7 @@ pub(crate) fn build_oauth_provider(
     id: String,
     name: String,
     kind: ProviderKind,
+    provider_profile: ProviderProfile,
     default_url: &str,
 ) -> Result<ProviderConfig> {
     let client_id = Input::with_theme(theme)
@@ -423,6 +453,7 @@ pub(crate) fn build_oauth_provider(
         display_name: name,
         kind,
         base_url: ask_url(theme, default_url)?,
+        provider_profile: Some(provider_profile),
         auth_mode: AuthMode::OAuth,
         default_model: None,
         keychain_account: None,
@@ -449,7 +480,11 @@ pub(crate) async fn complete_browser_login(
         HostedKindArg::Openrouter => Ok(BrowserLoginResult::ApiKey(
             complete_openrouter_browser_login().await?,
         )),
-        HostedKindArg::Anthropic => complete_claude_browser_login().await,
+        HostedKindArg::Anthropic => {
+            bail!(
+                "Anthropic third-party access requires an API key; browser sign-in is unsupported"
+            )
+        }
         HostedKindArg::Moonshot | HostedKindArg::Venice => Ok(BrowserLoginResult::ApiKey(
             capture_browser_api_key(kind, provider_name).await?,
         )),
@@ -493,6 +528,7 @@ pub(crate) async fn complete_openai_browser_login() -> Result<OAuthToken> {
         display_name: "OpenAI Browser Session".to_string(),
         kind: ProviderKind::ChatGptCodex,
         base_url: DEFAULT_CHATGPT_CODEX_URL.to_string(),
+        provider_profile: Some(ProviderProfile::OpenAi),
         auth_mode: AuthMode::OAuth,
         default_model: None,
         keychain_account: None,
@@ -721,427 +757,6 @@ pub(crate) fn render_openai_browser_error_page(message: &str) -> String {
         "<html><body><h1>OpenAI sign-in failed</h1><p>{}</p></body></html>",
         escape_html(message)
     )
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ClaudeSettingsFile {
-    #[serde(default)]
-    primary_api_key: Option<String>,
-    #[serde(default)]
-    oauth_account: Option<ClaudeOauthAccount>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ClaudeOauthAccount {
-    #[serde(default)]
-    email_address: Option<String>,
-    #[serde(default)]
-    organization_uuid: Option<String>,
-    #[serde(default)]
-    organization_name: Option<String>,
-}
-
-pub(crate) struct ClaudeBrowserCredentials {
-    pub(crate) api_key: String,
-    pub(crate) email: Option<String>,
-    pub(crate) org_id: Option<String>,
-    pub(crate) org_name: Option<String>,
-    subscription_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct ClaudeBrowserTokenResponse {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    expires_in: Option<serde_json::Value>,
-    #[serde(default)]
-    token_type: Option<String>,
-    #[serde(default)]
-    scope: Option<String>,
-    #[serde(default)]
-    id_token: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct ClaudeBrowserApiKeyResponse {
-    #[serde(default)]
-    raw_key: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct ClaudeBrowserRolesResponse {
-    #[serde(default)]
-    organization_name: Option<String>,
-}
-
-pub(crate) async fn complete_claude_browser_login() -> Result<BrowserLoginResult> {
-    if let Some(credentials) = try_load_claude_browser_credentials().await? {
-        print_claude_browser_credentials(&credentials, true);
-        return Ok(BrowserLoginResult::ApiKey(credentials.api_key));
-    }
-
-    let provider = ProviderConfig {
-        id: "claude-browser".to_string(),
-        display_name: "Claude Browser Session".to_string(),
-        kind: ProviderKind::Anthropic,
-        base_url: DEFAULT_ANTHROPIC_URL.to_string(),
-        auth_mode: AuthMode::OAuth,
-        default_model: None,
-        keychain_account: None,
-        oauth: Some(claude_browser_oauth_config()),
-        local: false,
-    };
-    let client = build_http_client();
-    let verifier = generate_code_verifier();
-    let challenge = pkce_challenge(&verifier);
-    let state = Uuid::new_v4().to_string();
-    let listener =
-        bind_preferred_callback_listener(CLAUDE_BROWSER_CALLBACK_PORT, "Claude browser callback")
-            .await?;
-    let redirect_uri = format!(
-        "http://localhost:{}{CLAUDE_BROWSER_CALLBACK_PATH}",
-        listener
-            .local_addr()
-            .context("failed to inspect Claude browser callback listener")?
-            .port()
-    );
-    let authorization_url =
-        build_oauth_authorization_url(&provider, &redirect_uri, &state, &challenge)?;
-
-    let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
-    match webbrowser::open(&authorization_url) {
-        Ok(_) => println!("Opened browser for Claude sign-in."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
-    }
-    println!("If needed, open this URL manually:\n{authorization_url}\n");
-
-    let callback = timeout(OAUTH_TIMEOUT, callback_task)
-        .await
-        .context("timed out waiting for Claude browser callback")?
-        .context("Claude browser callback task failed")??;
-    if callback.state != state {
-        bail!("Claude browser callback state did not match expected login state");
-    }
-
-    let token = exchange_claude_browser_code(
-        &client,
-        &callback.code,
-        &callback.state,
-        &verifier,
-        &redirect_uri,
-    )
-    .await?;
-    let roles = fetch_claude_browser_roles(&client, &token.access_token)
-        .await
-        .ok();
-    match create_claude_browser_api_key(&client, &token.access_token).await {
-        Ok(api_key) => {
-            let credentials = ClaudeBrowserCredentials {
-                api_key,
-                email: token.display_email,
-                org_id: token.org_id,
-                org_name: roles
-                    .as_ref()
-                    .and_then(|roles| roles.organization_name.clone()),
-                subscription_type: token.subscription_type,
-            };
-            print_claude_browser_credentials(&credentials, false);
-            Ok(BrowserLoginResult::ApiKey(credentials.api_key))
-        }
-        Err(error) if should_fallback_to_claude_browser_oauth(&error.to_string()) => {
-            print_claude_browser_oauth_fallback(roles.as_ref());
-            Ok(BrowserLoginResult::OAuthToken(token))
-        }
-        Err(error) => Err(error),
-    }
-}
-
-pub(crate) async fn try_load_claude_browser_credentials() -> Result<Option<ClaudeBrowserCredentials>>
-{
-    let settings_path = claude_settings_path()
-        .ok_or_else(|| anyhow!("failed to resolve home directory for Claude settings"))?;
-    if !settings_path.exists() {
-        return Ok(None);
-    }
-
-    let raw = fs::read_to_string(&settings_path)
-        .with_context(|| format!("failed to read {}", settings_path.display()))?;
-    parse_claude_browser_credentials_from_settings(&raw)
-}
-
-pub(crate) fn parse_claude_browser_credentials_from_settings(
-    raw: &str,
-) -> Result<Option<ClaudeBrowserCredentials>> {
-    let settings: ClaudeSettingsFile =
-        serde_json::from_str(raw).context("failed to parse Claude settings file")?;
-    let Some(api_key) = settings
-        .primary_api_key
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let oauth_account = settings.oauth_account;
-    Ok(Some(ClaudeBrowserCredentials {
-        api_key,
-        email: oauth_account
-            .as_ref()
-            .and_then(|account| account.email_address.clone()),
-        org_id: oauth_account
-            .as_ref()
-            .and_then(|account| account.organization_uuid.clone()),
-        org_name: oauth_account
-            .as_ref()
-            .and_then(|account| account.organization_name.clone()),
-        subscription_type: None,
-    }))
-}
-
-pub(crate) fn claude_browser_oauth_config() -> OAuthConfig {
-    OAuthConfig {
-        client_id: CLAUDE_BROWSER_CLIENT_ID.to_string(),
-        authorization_url: CLAUDE_BROWSER_AUTHORIZE_URL.to_string(),
-        token_url: CLAUDE_BROWSER_TOKEN_URL.to_string(),
-        scopes: CLAUDE_BROWSER_SCOPES
-            .iter()
-            .map(|scope| (*scope).to_string())
-            .collect(),
-        extra_authorize_params: vec![KeyValuePair {
-            key: "code".to_string(),
-            value: "true".to_string(),
-        }],
-        extra_token_params: Vec::new(),
-    }
-}
-
-pub(crate) async fn bind_preferred_callback_listener(
-    preferred_port: u16,
-    label: &str,
-) -> Result<TcpListener> {
-    match TcpListener::bind(("127.0.0.1", preferred_port)).await {
-        Ok(listener) => Ok(listener),
-        Err(error) => {
-            println!(
-                "{label} could not bind port {preferred_port} ({error}); falling back to an ephemeral local port."
-            );
-            TcpListener::bind(("127.0.0.1", 0))
-                .await
-                .with_context(|| format!("failed to bind local {label} listener"))
-        }
-    }
-}
-
-pub(crate) async fn exchange_claude_browser_code(
-    client: &Client,
-    code: &str,
-    state: &str,
-    code_verifier: &str,
-    redirect_uri: &str,
-) -> Result<OAuthToken> {
-    let response = client
-        .post(CLAUDE_BROWSER_TOKEN_URL)
-        .json(&serde_json::json!({
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "client_id": CLAUDE_BROWSER_CLIENT_ID,
-            "code_verifier": code_verifier,
-            "state": state,
-        }))
-        .send()
-        .await
-        .context("failed to exchange Claude browser authorization code")?;
-    let status = response.status();
-    let raw = response
-        .text()
-        .await
-        .context("failed to read Claude token response")?;
-    if !status.is_success() {
-        bail!(
-            "Claude browser token exchange failed: {}",
-            parse_service_error_text(&raw)
-        );
-    }
-
-    let token: ClaudeBrowserTokenResponse =
-        serde_json::from_str(&raw).context("failed to parse Claude token response")?;
-    Ok(OAuthToken {
-        access_token: token.access_token,
-        refresh_token: token.refresh_token,
-        expires_at: parse_optional_expires_at(token.expires_in.as_ref())?,
-        token_type: token.token_type,
-        scopes: token
-            .scope
-            .map(|scope| split_scopes(&scope))
-            .unwrap_or_else(|| {
-                CLAUDE_BROWSER_SCOPES
-                    .iter()
-                    .map(|scope| (*scope).to_string())
-                    .collect()
-            }),
-        id_token: token.id_token,
-        account_id: None,
-        user_id: None,
-        org_id: None,
-        project_id: None,
-        display_email: None,
-        subscription_type: None,
-    })
-}
-
-pub(crate) async fn create_claude_browser_api_key(
-    client: &Client,
-    access_token: &str,
-) -> Result<String> {
-    let response = client
-        .post(CLAUDE_BROWSER_API_KEY_URL)
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .context("failed to mint Claude managed API key")?;
-    let status = response.status();
-    let raw = response
-        .text()
-        .await
-        .context("failed to read Claude managed key response")?;
-    if !status.is_success() {
-        bail!(
-            "Claude browser API key mint failed: {}",
-            parse_service_error_text(&raw)
-        );
-    }
-
-    let body: ClaudeBrowserApiKeyResponse =
-        serde_json::from_str(&raw).context("failed to parse Claude managed key response")?;
-    body.raw_key
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("Claude browser login returned no managed API key"))
-}
-
-pub(crate) fn should_fallback_to_claude_browser_oauth(error: &str) -> bool {
-    let normalized = error.trim().to_ascii_lowercase();
-    normalized.contains("org:create_api_key")
-        && (normalized.contains("scope requirement") || normalized.contains("does not meet scope"))
-}
-
-pub(crate) async fn fetch_claude_browser_roles(
-    client: &Client,
-    access_token: &str,
-) -> Result<ClaudeBrowserRolesResponse> {
-    let response = client
-        .get(CLAUDE_BROWSER_ROLES_URL)
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .context("failed to fetch Claude organization metadata")?;
-    let status = response.status();
-    let raw = response
-        .text()
-        .await
-        .context("failed to read Claude organization metadata response")?;
-    if !status.is_success() {
-        bail!(
-            "Claude browser org metadata request failed: {}",
-            parse_service_error_text(&raw)
-        );
-    }
-    serde_json::from_str(&raw).context("failed to parse Claude organization metadata")
-}
-
-pub(crate) fn parse_optional_expires_at(
-    value: Option<&serde_json::Value>,
-) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let seconds = match value {
-        serde_json::Value::Number(number) => number
-            .as_i64()
-            .ok_or_else(|| anyhow!("expires_in was not an integer"))?,
-        serde_json::Value::String(text) => text
-            .parse::<i64>()
-            .with_context(|| format!("invalid expires_in value '{text}'"))?,
-        _ => bail!("expires_in was not a string or integer"),
-    };
-    Ok(chrono::Utc::now().checked_add_signed(chrono::Duration::seconds(seconds)))
-}
-
-pub(crate) fn parse_service_error_text(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "unknown authentication error".to_string();
-    }
-
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        for candidate in [
-            value.get("error_description"),
-            value.get("detail"),
-            value.get("message"),
-            value
-                .get("error")
-                .and_then(|error| error.as_str().map(|_| error)),
-        ] {
-            if let Some(text) = candidate.and_then(serde_json::Value::as_str) {
-                let text = text.trim();
-                if !text.is_empty() {
-                    return text.to_string();
-                }
-            }
-        }
-        if let Some(error) = value.get("error") {
-            if let Some(text) = error
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-            {
-                return text.to_string();
-            }
-        }
-    }
-
-    trimmed.to_string()
-}
-
-pub(crate) fn claude_settings_path() -> Option<PathBuf> {
-    home_dir().map(|home| home.join(".claude.json"))
-}
-
-pub(crate) fn print_claude_browser_credentials(
-    credentials: &ClaudeBrowserCredentials,
-    reused: bool,
-) {
-    if reused {
-        println!("Using existing Claude credentials from ~/.claude.json.");
-    } else {
-        println!("Created a Claude managed API key from the browser session.");
-    }
-    if let Some(email) = credentials.email.as_deref() {
-        println!("Claude account: {email}");
-    }
-    if let Some(subscription_type) = credentials.subscription_type.as_deref() {
-        println!("Claude plan: {subscription_type}");
-    }
-    if let Some(org_name) = credentials.org_name.as_deref() {
-        println!("Claude org: {org_name}");
-    } else if let Some(org_id) = credentials.org_id.as_deref() {
-        println!("Claude org id: {org_id}");
-    }
-}
-
-pub(crate) fn print_claude_browser_oauth_fallback(roles: Option<&ClaudeBrowserRolesResponse>) {
-    println!(
-        "Claude browser sign-in completed without managed API key scope; storing the OAuth session directly."
-    );
-    if let Some(org_name) = roles.and_then(|item| item.organization_name.as_deref()) {
-        println!("Claude org: {org_name}");
-    }
 }
 
 #[cfg(test)]
@@ -1672,12 +1287,17 @@ pub(crate) fn select_auth_method(
     theme: &ColorfulTheme,
     kind: HostedKindArg,
 ) -> Result<AuthMethodArg> {
+    if kind == HostedKindArg::Anthropic {
+        println!("Anthropic third-party access uses API keys only.");
+        return Ok(AuthMethodArg::ApiKey);
+    }
+
     let browser_label = if hosted_kind_supports_automatic_browser_capture(kind) {
         match kind {
             HostedKindArg::OpenaiCompatible => {
                 "Browser sign-in (use your OpenAI account, Recommended)"
             }
-            HostedKindArg::Anthropic => "Browser sign-in (use your Claude account, Recommended)",
+            HostedKindArg::Anthropic => unreachable!("Anthropic is API-key-only"),
             HostedKindArg::Openrouter => "Browser sign-in (automatic capture, Recommended)",
             HostedKindArg::Moonshot | HostedKindArg::Venice => {
                 unreachable!("non-native browser login provider was routed incorrectly")
@@ -1718,6 +1338,16 @@ pub(crate) fn browser_hosted_kind_to_provider_kind(kind: HostedKindArg) -> Provi
     }
 }
 
+pub(crate) fn hosted_kind_to_provider_profile(kind: HostedKindArg) -> ProviderProfile {
+    match kind {
+        HostedKindArg::OpenaiCompatible => ProviderProfile::OpenAi,
+        HostedKindArg::Anthropic => ProviderProfile::Anthropic,
+        HostedKindArg::Moonshot => ProviderProfile::Moonshot,
+        HostedKindArg::Openrouter => ProviderProfile::OpenRouter,
+        HostedKindArg::Venice => ProviderProfile::Venice,
+    }
+}
+
 pub(crate) fn default_hosted_url(kind: HostedKindArg) -> &'static str {
     match kind {
         HostedKindArg::OpenaiCompatible => DEFAULT_OPENAI_URL,
@@ -1738,8 +1368,18 @@ pub(crate) fn default_browser_hosted_url(kind: HostedKindArg) -> &'static str {
 pub(crate) fn hosted_kind_supports_automatic_browser_capture(kind: HostedKindArg) -> bool {
     matches!(
         kind,
-        HostedKindArg::Anthropic | HostedKindArg::Openrouter | HostedKindArg::OpenaiCompatible
+        HostedKindArg::Openrouter | HostedKindArg::OpenaiCompatible
     )
+}
+
+pub(crate) fn prompt_visible_api_key(theme: &ColorfulTheme, prompt: &str) -> Result<String> {
+    let value = Input::<String>::with_theme(theme)
+        .with_prompt(prompt)
+        .interact_text()?;
+    if value.trim().is_empty() {
+        bail!("{prompt} cannot be empty");
+    }
+    Ok(value)
 }
 
 pub(crate) fn collect_scopes(theme: &ColorfulTheme, scopes: Vec<String>) -> Result<Vec<String>> {

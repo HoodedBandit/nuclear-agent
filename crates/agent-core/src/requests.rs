@@ -331,7 +331,6 @@ pub struct ProviderSuggestionResponse {
 #[serde(rename_all = "snake_case")]
 pub enum BrowserProviderAuthKind {
     Codex,
-    Claude,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -376,6 +375,25 @@ pub struct BrowserProviderAuthStatusResponse {
     pub status: BrowserProviderAuthSessionStatus,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderReadinessResult {
+    pub ok: bool,
+    pub model: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderDiscoveryResponse {
+    #[serde(default)]
+    pub models: Vec<ModelDescriptor>,
+    #[serde(default)]
+    pub recommended_model: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub readiness: Option<ProviderReadinessResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

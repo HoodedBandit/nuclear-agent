@@ -1,5 +1,6 @@
 use agent_core::{
-    ConversationMessage, MessageRole, ProviderConfig, ProviderReply, ThinkingLevel, ToolDefinition,
+    ConversationMessage, MessageRole, ProviderConfig, ProviderProfile, ProviderReply,
+    ThinkingLevel, ToolDefinition,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
@@ -10,12 +11,14 @@ use super::common::{
     ensure_no_attachments, extract_error, extract_text, merge_json_object, role_name,
     string_or_null, trim_slash,
 };
-use super::oauth::apply_auth;
+use super::oauth::apply_auth_with_overrides;
 use super::tooling::{
     openai_output_items, parse_openai_tool_calls, tool_definitions_to_openai,
     validate_tool_definitions,
 };
+use super::PromptAuthOverrides;
 
+#[allow(dead_code)]
 pub(super) async fn run_openai_compatible(
     client: &Client,
     provider: &ProviderConfig,
@@ -24,13 +27,36 @@ pub(super) async fn run_openai_compatible(
     thinking_level: Option<ThinkingLevel>,
     tools: &[ToolDefinition],
 ) -> Result<ProviderReply> {
+    run_openai_compatible_with_overrides(
+        client,
+        provider,
+        model,
+        messages,
+        thinking_level,
+        tools,
+        PromptAuthOverrides::default(),
+    )
+    .await
+}
+
+pub(super) async fn run_openai_compatible_with_overrides(
+    client: &Client,
+    provider: &ProviderConfig,
+    model: &str,
+    messages: &[ConversationMessage],
+    thinking_level: Option<ThinkingLevel>,
+    tools: &[ToolDefinition],
+    auth_overrides: PromptAuthOverrides<'_>,
+) -> Result<ProviderReply> {
     validate_tool_definitions(tools, "OpenAI-compatible")?;
     let url = format!("{}/chat/completions", trim_slash(&provider.base_url));
     let mut payload = json!({
         "model": model,
         "messages": messages_to_openai(messages)?,
-        "temperature": 0.2
     });
+    if let Some(temperature) = openai_compatible_temperature(provider, thinking_level) {
+        payload["temperature"] = json!(temperature);
+    }
     if let Some(reasoning_payload) = openai_reasoning_payload(provider, thinking_level) {
         merge_json_object(&mut payload, reasoning_payload)?;
     }
@@ -39,7 +65,14 @@ pub(super) async fn run_openai_compatible(
         payload["tool_choice"] = Value::String("auto".to_string());
     }
     let request = client.post(url).json(&payload);
-    let request = apply_auth(client, provider, request).await?;
+    let request = apply_auth_with_overrides(
+        client,
+        provider,
+        request,
+        auth_overrides.api_key,
+        auth_overrides.oauth_token,
+    )
+    .await?;
     let response = request.send().await.context("failed to send request")?;
     let status = response.status();
     let body: Value = response
@@ -47,7 +80,11 @@ pub(super) async fn run_openai_compatible(
         .await
         .context("failed to parse completion response")?;
     if !status.is_success() {
-        bail!("completion failed: {}", extract_error(&body));
+        bail!(
+            "completion failed for '{}' ({status}): {}",
+            provider.id,
+            extract_error(&body)
+        );
     }
 
     let message = body
@@ -68,7 +105,7 @@ pub(super) async fn run_openai_compatible(
         model: model.to_string(),
         content,
         tool_calls,
-        provider_payload_json: None,
+        provider_payload_json: Some(serde_json::to_string(message)?),
         output_items,
         artifacts: Vec::new(),
         remote_content: Vec::new(),
@@ -85,6 +122,13 @@ pub(super) fn messages_to_openai(messages: &[ConversationMessage]) -> Result<Vec
             })),
             MessageRole::Assistant => {
                 ensure_no_attachments(message, "OpenAI-compatible assistant")?;
+                if let Some(raw_message) = &message.provider_payload_json {
+                    let stored: Value = serde_json::from_str(raw_message)
+                        .context("failed to decode stored OpenAI-compatible assistant payload")?;
+                    if stored.get("role").and_then(Value::as_str) == Some("assistant") {
+                        return Ok(stored);
+                    }
+                }
                 let mut value = json!({
                     "role": "assistant",
                     "content": string_or_null(&message.content),
@@ -150,15 +194,23 @@ fn openai_reasoning_payload(
     thinking_level: Option<ThinkingLevel>,
 ) -> Option<Value> {
     let thinking_level = thinking_level?;
-    if is_openrouter_provider(provider) {
-        return openrouter_reasoning_payload(thinking_level);
+    match provider.effective_profile() {
+        ProviderProfile::OpenRouter => return openrouter_reasoning_payload(thinking_level),
+        ProviderProfile::Moonshot => return None,
+        _ => {}
     }
 
     openai_reasoning_effort(thinking_level).map(|effort| json!({ "reasoning_effort": effort }))
 }
 
-fn is_openrouter_provider(provider: &ProviderConfig) -> bool {
-    provider.id.eq_ignore_ascii_case("openrouter") || provider.base_url.contains("openrouter.ai")
+fn openai_compatible_temperature(
+    provider: &ProviderConfig,
+    _thinking_level: Option<ThinkingLevel>,
+) -> Option<f64> {
+    match provider.effective_profile() {
+        ProviderProfile::Moonshot => None,
+        _ => Some(0.2),
+    }
 }
 
 fn openrouter_reasoning_payload(thinking_level: ThinkingLevel) -> Option<Value> {

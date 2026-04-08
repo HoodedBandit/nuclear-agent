@@ -7,16 +7,67 @@ pub(super) fn trim_slash(url: &str) -> &str {
 }
 
 pub(super) fn extract_error(body: &Value) -> String {
+    for candidate in [
+        body.pointer("/error/message"),
+        body.pointer("/error/metadata/raw/error/message"),
+        body.pointer("/error/metadata/raw/message"),
+        body.pointer("/detail"),
+        body.pointer("/message"),
+        body.pointer("/error_description"),
+    ] {
+        if let Some(text) = candidate.and_then(Value::as_str).map(str::trim) {
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+
     if let Some(text) = body
-        .get("error")
-        .and_then(|error| error.get("message"))
+        .pointer("/error/metadata/raw")
         .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
     {
         return text.to_string();
     }
 
-    if let Some(text) = body.get("error_description").and_then(Value::as_str) {
-        return text.to_string();
+    if let Some(error) = body.get("error").and_then(Value::as_str).map(str::trim) {
+        if !error.is_empty() {
+            return error.to_string();
+        }
+    }
+
+    let provider_name = body
+        .pointer("/error/metadata/provider_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let provider_error = body
+        .pointer("/error/metadata/raw")
+        .map(extract_error)
+        .or_else(|| {
+            body.pointer("/error/metadata/raw/error").map(|nested| {
+                extract_error(&Value::Object(
+                    [("error".to_string(), nested.clone())]
+                        .into_iter()
+                        .collect(),
+                ))
+            })
+        });
+    if let Some(provider_error) = provider_error.filter(|text| !text.trim().is_empty()) {
+        if let Some(provider_name) = provider_name {
+            return format!("{provider_name}: {provider_error}");
+        }
+        return provider_error;
+    }
+
+    if let Some(code) = body
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return code.to_string();
     }
 
     body.to_string()
