@@ -40,6 +40,7 @@ pub(crate) struct ModelPickerEntry {
     pub(crate) description: Option<String>,
     pub(crate) context_window: Option<i64>,
     pub(crate) effective_context_window_percent: Option<i64>,
+    pub(crate) action: PickerAction,
 }
 
 #[derive(Clone)]
@@ -55,7 +56,6 @@ pub(crate) struct GenericPickerEntry {
 pub(crate) enum PickerAction {
     Resume(SessionSummary),
     Fork(SessionSummary),
-    SetModel(String),
     SwitchChatAlias(String),
     SetMainAlias(String),
     SetThinking(Option<ThinkingLevel>),
@@ -66,6 +66,13 @@ pub(crate) enum PickerAction {
     OpenCurrentAliasPicker,
     OpenMainAliasPicker,
     OpenModelPicker,
+    OpenProviderModelSwitchPicker {
+        set_as_main: bool,
+    },
+    OpenProviderModelPicker {
+        provider_id: String,
+        set_as_main: bool,
+    },
     OpenThinkingPicker,
     OpenPermissionPicker,
     OpenDelegationPicker,
@@ -85,7 +92,6 @@ pub(crate) enum PickerAction {
     RejectSkillDraft(String),
     ShowDelegationTargets,
     EditApiKey(String),
-    OpenProviderSwitchPicker,
     OpenProviderPicker,
     OpenProviderActions(String),
     ShowProviderDetails(String),
@@ -129,6 +135,11 @@ pub(crate) enum PickerAction {
     SetDelegationDepth(DelegationLimit),
     SetDelegationParallel(DelegationLimit),
     ToggleProviderDelegation(String, bool),
+    SetProviderModel {
+        provider_id: String,
+        model_id: String,
+        set_as_main: bool,
+    },
     OpenPersistencePicker,
     SetPersistenceMode(PersistenceMode),
     ToggleAutoStart,

@@ -85,8 +85,7 @@ impl<'a> TuiApp<'a> {
                         return Ok(());
                     };
                     self.picker = None;
-                    self.activate_picker_action(PickerAction::SetModel(model.id))
-                        .await?;
+                    self.activate_picker_action(model.action).await?;
                 }
                 PickerMode::Alias
                 | PickerMode::Thinking
@@ -150,14 +149,85 @@ impl<'a> TuiApp<'a> {
                 self.fork_session(session)?;
                 self.refresh_active_model_metadata().await?;
             }
-            PickerAction::SetModel(model_id) => {
-                self.requested_model = resolve_requested_model_override(
-                    self.storage,
-                    self.alias.as_deref(),
-                    &model_id,
-                )?;
-                self.refresh_active_model_metadata().await?;
-                self.open_static_overlay("Models", format!("model override set to {model_id}"));
+            PickerAction::SetProviderModel {
+                provider_id,
+                model_id,
+                set_as_main,
+            } => {
+                let config = self.storage.load_config()?;
+                if set_as_main {
+                    let alias_name = config
+                        .aliases
+                        .iter()
+                        .find(|alias| alias.provider_id == provider_id && alias.model == model_id)
+                        .map(|alias| alias.alias.clone())
+                        .or_else(|| {
+                            let current_main = config.main_agent_alias.as_deref()?;
+                            if self.alias.as_deref() == Some(current_main) {
+                                None
+                            } else {
+                                Some(current_main.to_string())
+                            }
+                        })
+                        .unwrap_or_else(|| config.default_alias_name_for(&provider_id, &model_id));
+                    let alias: agent_core::ModelAlias = self
+                        .client
+                        .post(
+                            "/v1/aliases",
+                            &AliasUpsertRequest {
+                                alias: agent_core::ModelAlias {
+                                    alias: alias_name,
+                                    provider_id: provider_id.clone(),
+                                    model: model_id.clone(),
+                                    description: None,
+                                },
+                                set_as_main: true,
+                            },
+                        )
+                        .await?;
+                    self.refresh_main_target_summary()?;
+                    self.open_static_overlay(
+                        "Models",
+                        format!(
+                            "default main target set to {} via alias {}",
+                            model_id, alias.alias
+                        ),
+                    );
+                } else {
+                    let alias =
+                        if let Some(alias) = self.preferred_provider_alias(&config, &provider_id) {
+                            alias.alias.clone()
+                        } else {
+                            let alias_name = config.default_alias_name_for(&provider_id, &model_id);
+                            let alias: agent_core::ModelAlias = self
+                                .client
+                                .post(
+                                    "/v1/aliases",
+                                    &AliasUpsertRequest {
+                                        alias: agent_core::ModelAlias {
+                                            alias: alias_name,
+                                            provider_id: provider_id.clone(),
+                                            model: model_id.clone(),
+                                            description: None,
+                                        },
+                                        set_as_main: false,
+                                    },
+                                )
+                                .await?;
+                            alias.alias
+                        };
+                    self.alias = Some(alias.clone());
+                    self.requested_model = resolve_requested_model_override(
+                        self.storage,
+                        Some(alias.as_str()),
+                        &model_id,
+                    )?;
+                    self.refresh_active_model_metadata().await?;
+                    self.open_static_overlay(
+                        "Models",
+                        format!("current chat set to {} via alias {}", model_id, alias),
+                    );
+                }
             }
             PickerAction::SwitchChatAlias(alias) => {
                 let config = self.storage.load_config()?;
@@ -232,6 +302,16 @@ impl<'a> TuiApp<'a> {
             }
             PickerAction::OpenModelPicker => {
                 self.open_model_picker().await?;
+            }
+            PickerAction::OpenProviderModelSwitchPicker { set_as_main } => {
+                self.open_provider_model_switch_picker(set_as_main)?;
+            }
+            PickerAction::OpenProviderModelPicker {
+                provider_id,
+                set_as_main,
+            } => {
+                self.open_provider_model_picker(&provider_id, set_as_main)
+                    .await?;
             }
             PickerAction::OpenThinkingPicker => {
                 self.open_thinking_picker().await?;
@@ -367,12 +447,9 @@ impl<'a> TuiApp<'a> {
                 self.open_input_overlay(
                     "API Key",
                     format!("Paste the new API key for {provider_id}"),
-                    true,
+                    false,
                     InputPromptAction::UpdateApiKey { provider_id },
                 );
-            }
-            PickerAction::OpenProviderSwitchPicker => {
-                self.open_provider_switch_picker()?;
             }
             PickerAction::OpenProviderPicker => {
                 self.open_provider_picker()?;

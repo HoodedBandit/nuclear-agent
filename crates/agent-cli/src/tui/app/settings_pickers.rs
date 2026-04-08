@@ -3,12 +3,40 @@ use super::*;
 impl<'a> TuiApp<'a> {
     pub(super) async fn open_model_picker(&mut self) -> Result<()> {
         let config = self.storage.load_config()?;
+        let provider_id = resolve_active_alias(&config, self.alias.as_deref())?
+            .provider_id
+            .clone();
+        self.open_provider_model_picker(&provider_id, false).await
+    }
+
+    pub(super) async fn open_provider_model_picker(
+        &mut self,
+        provider_id: &str,
+        set_as_main: bool,
+    ) -> Result<()> {
+        let config = self.storage.load_config()?;
         let active_alias = resolve_active_alias(&config, self.alias.as_deref())?;
         let provider = config
-            .resolve_provider(&active_alias.provider_id)
-            .ok_or_else(|| anyhow!("unknown provider '{}'", active_alias.provider_id))?;
-        let selected_model =
-            resolved_requested_model(active_alias, self.requested_model.as_deref()).to_string();
+            .resolve_provider(provider_id)
+            .ok_or_else(|| anyhow!("unknown provider '{provider_id}'"))?;
+        let provider_name = if provider.display_name.trim().is_empty() {
+            provider.id.clone()
+        } else {
+            provider.display_name.clone()
+        };
+        let selected_model = if set_as_main {
+            config
+                .main_target_summary()
+                .filter(|summary| summary.provider_id == provider_id)
+                .map(|summary| summary.model)
+                .unwrap_or_else(|| provider.default_model.clone().unwrap_or_default())
+        } else if active_alias.provider_id == provider_id {
+            resolved_requested_model(active_alias, self.requested_model.as_deref()).to_string()
+        } else if let Some(alias) = self.preferred_provider_alias(&config, provider_id) {
+            alias.model.clone()
+        } else {
+            provider.default_model.clone().unwrap_or_default()
+        };
 
         let listed = timeout(
             Duration::from_secs(3),
@@ -20,15 +48,23 @@ impl<'a> TuiApp<'a> {
             Ok(Ok(models)) => models
                 .into_iter()
                 .filter(|model| model.show_in_picker)
-                .map(|model| ModelPickerEntry {
-                    display_name: model
-                        .display_name
-                        .clone()
-                        .unwrap_or_else(|| model.id.clone()),
-                    id: model.id,
-                    description: model.description,
-                    context_window: model.context_window,
-                    effective_context_window_percent: model.effective_context_window_percent,
+                .map(|model| {
+                    let model_id = model.id.clone();
+                    ModelPickerEntry {
+                        display_name: model
+                            .display_name
+                            .clone()
+                            .unwrap_or_else(|| model_id.clone()),
+                        id: model_id.clone(),
+                        description: model.description,
+                        context_window: model.context_window,
+                        effective_context_window_percent: model.effective_context_window_percent,
+                        action: PickerAction::SetProviderModel {
+                            provider_id: provider.id.clone(),
+                            model_id,
+                            set_as_main,
+                        },
+                    }
                 })
                 .collect::<Vec<_>>(),
             Ok(Err(error)) => {
@@ -48,12 +84,25 @@ impl<'a> TuiApp<'a> {
         };
 
         if models.is_empty() {
+            let fallback_model = if selected_model.trim().is_empty() {
+                provider
+                    .default_model
+                    .clone()
+                    .unwrap_or_else(|| "(no model available)".to_string())
+            } else {
+                selected_model.clone()
+            };
             models.push(ModelPickerEntry {
-                id: selected_model.clone(),
-                display_name: selected_model.clone(),
+                id: fallback_model.clone(),
+                display_name: fallback_model.clone(),
                 description: Some("Current model".to_string()),
                 context_window: self.context_window_tokens,
                 effective_context_window_percent: self.context_window_percent,
+                action: PickerAction::SetProviderModel {
+                    provider_id: provider.id.clone(),
+                    model_id: fallback_model,
+                    set_as_main,
+                },
             });
         }
 
@@ -61,10 +110,17 @@ impl<'a> TuiApp<'a> {
             .iter()
             .position(|entry| entry.id == selected_model)
             .unwrap_or(0);
+        let title = if set_as_main {
+            format!("Set default main model for {provider_name}")
+        } else if active_alias.provider_id == provider_id {
+            format!("Select a model for {provider_name}")
+        } else {
+            format!("Select a model for {provider_name} in this chat")
+        };
 
         self.picker = Some(PickerState {
             mode: PickerMode::Model,
-            title: "Select a model".to_string(),
+            title,
             hint: "Enter select | Type to filter | Esc cancel | PageUp/PageDown jump | Mouse wheel scroll".to_string(),
             empty_message: "No matching model.".to_string(),
             query: String::new(),
@@ -73,6 +129,90 @@ impl<'a> TuiApp<'a> {
             models,
             items: Vec::new(),
         });
+        Ok(())
+    }
+
+    pub(super) fn open_provider_model_switch_picker(&mut self, set_as_main: bool) -> Result<()> {
+        let config = self.storage.load_config()?;
+        let active_provider = resolve_active_alias(&config, self.alias.as_deref())
+            .ok()
+            .map(|alias| alias.provider_id.clone());
+        let mut items = config
+            .all_providers()
+            .into_iter()
+            .filter(provider_has_saved_access)
+            .map(|provider| {
+                let alias = self.preferred_provider_alias(&config, &provider.id);
+                let provider_name = if provider.display_name.trim().is_empty() {
+                    provider.id.clone()
+                } else {
+                    provider.display_name.clone()
+                };
+                let detail = if let Some(alias) = alias {
+                    format!(
+                        "{} | alias {} | model {}",
+                        provider.id, alias.alias, alias.model
+                    )
+                } else {
+                    format!(
+                        "{} | no alias yet | default {}",
+                        provider.id,
+                        provider
+                            .default_model
+                            .as_deref()
+                            .unwrap_or("(choose a model)")
+                    )
+                };
+                let search_text = if let Some(alias) = alias {
+                    format!(
+                        "{} {} {} {}",
+                        provider.id, provider_name, alias.alias, alias.model
+                    )
+                } else {
+                    format!(
+                        "{} {} {}",
+                        provider.id,
+                        provider_name,
+                        provider.default_model.as_deref().unwrap_or_default()
+                    )
+                };
+                GenericPickerEntry {
+                    label: provider_name.clone(),
+                    detail: Some(detail),
+                    search_text,
+                    current: (!set_as_main
+                        && active_provider.as_deref() == Some(provider.id.as_str()))
+                        || (set_as_main
+                            && config
+                                .main_target_summary()
+                                .as_ref()
+                                .is_some_and(|summary| summary.provider_id == provider.id)),
+                    action: PickerAction::OpenProviderModelPicker {
+                        provider_id: provider.id.clone(),
+                        set_as_main,
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.label.cmp(&right.label));
+        if items.is_empty() {
+            self.open_static_overlay(
+                "Models",
+                "No logged-in providers are ready for model switching.".to_string(),
+            );
+            return Ok(());
+        }
+        self.open_generic_picker(
+            PickerMode::Provider,
+            if set_as_main {
+                "Choose a provider for the default main model"
+            } else {
+                "Choose a provider for this chat"
+            },
+            "Enter select | Type to filter | Esc cancel",
+            "No matching provider.",
+            items,
+        );
         Ok(())
     }
 
@@ -99,13 +239,18 @@ impl<'a> TuiApp<'a> {
             self.requested_model.as_deref(),
         )
         .to_string();
+        let active_alias = resolve_active_alias(&config, self.alias.as_deref())?;
+        let main_model = main_target
+            .as_ref()
+            .map(|summary| summary.model.clone())
+            .unwrap_or_else(|| "(not configured)".to_string());
         let items = vec![
             GenericPickerEntry {
-                label: "Switch current provider".to_string(),
+                label: "Change current chat provider and model".to_string(),
                 detail: Some(current_detail.clone()),
-                search_text: "switch current provider logged in services".to_string(),
+                search_text: "change current chat provider model logged in services".to_string(),
                 current: false,
-                action: PickerAction::OpenProviderSwitchPicker,
+                action: PickerAction::OpenProviderModelSwitchPicker { set_as_main: false },
             },
             GenericPickerEntry {
                 label: "Switch current chat alias".to_string(),
@@ -115,23 +260,49 @@ impl<'a> TuiApp<'a> {
                 action: PickerAction::OpenCurrentAliasPicker,
             },
             GenericPickerEntry {
+                label: "Change current provider model".to_string(),
+                detail: Some(selected_model.clone()),
+                search_text: format!(
+                    "change current provider model {} {}",
+                    active_alias.provider_id, selected_model
+                ),
+                current: false,
+                action: PickerAction::OpenProviderModelPicker {
+                    provider_id: active_alias.provider_id.clone(),
+                    set_as_main: false,
+                },
+            },
+            GenericPickerEntry {
+                label: "Change default main provider and model".to_string(),
+                detail: Some(main_detail.clone()),
+                search_text: "change default main provider model".to_string(),
+                current: false,
+                action: PickerAction::OpenProviderModelSwitchPicker { set_as_main: true },
+            },
+            GenericPickerEntry {
+                label: "Change default main model".to_string(),
+                detail: Some(main_model),
+                search_text: "change default main model".to_string(),
+                current: false,
+                action: PickerAction::OpenProviderModelPicker {
+                    provider_id: main_target
+                        .as_ref()
+                        .map(|summary| summary.provider_id.clone())
+                        .unwrap_or_else(|| active_alias.provider_id.clone()),
+                    set_as_main: true,
+                },
+            },
+            GenericPickerEntry {
                 label: "Set default main alias".to_string(),
                 detail: Some(main_detail),
                 search_text: "set default main alias provider".to_string(),
                 current: false,
                 action: PickerAction::OpenMainAliasPicker,
             },
-            GenericPickerEntry {
-                label: "Model override".to_string(),
-                detail: Some(selected_model),
-                search_text: "model override current chat".to_string(),
-                current: false,
-                action: PickerAction::OpenModelPicker,
-            },
         ];
         self.open_generic_picker(
             PickerMode::Alias,
-            "Provider and alias switcher",
+            "Provider, model, and alias switcher",
             "Enter select | Type to filter | Esc cancel",
             "No matching switch action.",
             items,

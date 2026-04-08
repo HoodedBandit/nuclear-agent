@@ -646,6 +646,9 @@ impl<'a> TuiApp<'a> {
             InteractiveCommand::Onboard => {
                 self.pending_external_action = Some(ExternalAction::OnboardReset);
             }
+            InteractiveCommand::AuthAddProvider => {
+                self.pending_external_action = Some(ExternalAction::AddProvider);
+            }
             InteractiveCommand::ModelShow => {
                 self.open_alias_switcher().await?;
             }

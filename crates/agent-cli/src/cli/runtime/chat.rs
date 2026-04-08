@@ -180,7 +180,7 @@ pub(crate) async fn interactive_session(
         permission_preset = Some(storage.load_config()?.permission_preset);
     }
     println!(
-        "Interactive chat. Use /help for commands, /model or Ctrl+P for alias/main switching, /provider for provider switching, /mode to switch between build and daily presets, /onboard for a fresh setup reset, and /thinking to adjust reasoning."
+        "Interactive chat. Use /help for commands, /model or Ctrl+P for guided provider/model switching, /auth to add a provider, /provider for provider switching, /mode to switch between build and daily presets, /onboard for a fresh setup reset, and /thinking to adjust reasoning."
     );
 
     if let Some(prompt) = normalize_prompt_input(initial_prompt)? {
@@ -253,7 +253,7 @@ pub(crate) async fn interactive_session(
                             }
                             InteractiveCommand::ConfigShow => {
                                 println!(
-                                    "Settings:\n  /config opens the categorized settings menu in the TUI.\n  /dashboard opens the localhost web control room.\n  /model opens the alias/main switcher, /provider switches logged-in providers, and /mode, /thinking, and /permissions remain quick shortcuts."
+                                    "Settings:\n  /config opens the categorized settings menu in the TUI.\n  /dashboard opens the localhost web control room.\n  /model opens the guided provider/model switcher, /auth adds a new provider, /provider switches logged-in providers, and /mode, /thinking, and /permissions remain quick shortcuts."
                                 );
                             }
                             InteractiveCommand::DashboardOpen => {
@@ -994,6 +994,40 @@ pub(crate) async fn interactive_session(
                                 println!(
                                     "Onboarding reset complete. Started fresh setup with main alias {}.",
                                     config.main_agent_alias.as_deref().unwrap_or("(not configured)")
+                                );
+                            }
+                            InteractiveCommand::AuthAddProvider => {
+                                let theme = ColorfulTheme::default();
+                                let config = storage.load_config()?;
+                                let (request, new_alias) =
+                                    interactive_provider_setup(&theme, &config).await?;
+                                let set_as_main = Confirm::with_theme(&theme)
+                                    .with_prompt(format!(
+                                        "Set '{}' as the default alias?",
+                                        new_alias.alias
+                                    ))
+                                    .default(config.main_agent_alias.is_none())
+                                    .interact()?;
+                                let _: ProviderConfig =
+                                    client.post("/v1/providers", &request).await?;
+                                let _: ModelAlias = client
+                                    .post(
+                                        "/v1/aliases",
+                                        &AliasUpsertRequest {
+                                            alias: new_alias.clone(),
+                                            set_as_main,
+                                        },
+                                    )
+                                    .await?;
+                                if set_as_main {
+                                    alias = Some(new_alias.alias.clone());
+                                    requested_model = None;
+                                }
+                                println!(
+                                    "configured {} as {}{}",
+                                    request.provider.display_name,
+                                    new_alias.alias,
+                                    if set_as_main { " (default)" } else { "" }
                                 );
                             }
                             InteractiveCommand::ModelShow => {
