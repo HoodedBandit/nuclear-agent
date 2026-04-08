@@ -84,6 +84,7 @@ def main() -> int:
 
     repo_root = Path(args.repo_root).resolve()
     output_path = Path(args.output_path).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     metadata = cargo_metadata(repo_root)
     rust_packages = []
