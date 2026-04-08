@@ -82,9 +82,6 @@ function Invoke-RuntimeSmokeValidation {
         -BinaryPath $binaryPath `
         -OutputRoot $outputRoot `
         -TaskFilter "install-smoke,support-bundle-smoke"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Runtime smoke run failed"
-    }
 
     $runDir = Get-ChildItem -Path $outputRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
     if ($null -eq $runDir) {
@@ -99,6 +96,39 @@ function Invoke-RuntimeSmokeValidation {
     }
 
     $summary = Get-Content -Path $summaryPath -Raw | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $summary.failed -ne 0) {
+        $failedDetails = @()
+        foreach ($result in $summary.results) {
+            if ($result.passed) {
+                continue
+            }
+            $stderrPath = $result.artifacts.stderr
+            $stdoutPath = $result.artifacts.stdout
+            $stderrTail = if (Test-Path $stderrPath) {
+                (Get-Content -Path $stderrPath -Tail 40) -join "`n"
+            } else {
+                ""
+            }
+            $stdoutTail = if (Test-Path $stdoutPath) {
+                (Get-Content -Path $stdoutPath -Tail 40) -join "`n"
+            } else {
+                ""
+            }
+            $detail = @(
+                "Runtime smoke step failed: $($result.id)",
+                "command: $($result.command)",
+                "stdout tail:",
+                $stdoutTail,
+                "stderr tail:",
+                $stderrTail
+            ) -join "`n"
+            $failedDetails += $detail.TrimEnd()
+        }
+        if ($failedDetails.Count -gt 0) {
+            throw ($failedDetails -join "`n`n")
+        }
+        throw "Runtime smoke run failed"
+    }
     if ($summary.failed -ne 0 -or $summary.passed -lt 1) {
         throw "Runtime smoke summary indicates failure"
     }
