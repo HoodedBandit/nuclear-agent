@@ -43,11 +43,6 @@ The remaining duplicates are currently accepted because they are upstream semver
   - Anchored by `tempfile` via `dialoguer`
 - `r-efi 5.3.0`
   - Comes from the `getrandom 0.3` lineage while `getrandom 0.4` uses `r-efi 6`
-- `rand 0.8.5`
-  - Anchored by `scraper` / `phf`
-- `rand_core 0.6.4`
-  - Part of the `rand 0.8` lineage
-
 ### Platform-target splits
 
 - `objc2 0.5.2`

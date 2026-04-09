@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -22,6 +23,13 @@ MOCK_PROVIDER_NAME = "Support Bundle Local"
 MOCK_MODEL = "support-bundle-model"
 PROMPT_TEXT = "Support bundle smoke prompt"
 DEFAULT_COMMAND_TIMEOUT = 120.0
+
+
+def allocate_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        return int(sock.getsockname()[1])
 
 
 class MockProviderHandler(BaseHTTPRequestHandler):
@@ -86,6 +94,10 @@ class MockProviderServer:
         self._server = ThreadingHTTPServer((host, port), MockProviderHandler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
+    @property
+    def port(self) -> int:
+        return int(self._server.server_address[1])
+
     def start(self) -> None:
         self._thread.start()
 
@@ -100,8 +112,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--binary-path", required=True)
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--scenario-root", required=True)
-    parser.add_argument("--daemon-port", type=int, default=42931)
-    parser.add_argument("--provider-port", type=int, default=42932)
+    parser.add_argument("--daemon-port", type=int, default=0)
+    parser.add_argument("--provider-port", type=int, default=0)
     return parser.parse_args()
 
 
@@ -251,19 +263,21 @@ def main() -> int:
     scenario_root.mkdir(parents=True, exist_ok=True)
 
     env = configure_profile_env(scenario_root)
-    base_url = f"http://127.0.0.1:{args.daemon_port}"
     auth_headers = {"Authorization": f"Bearer {DAEMON_TOKEN}"}
     bundle_dir = scenario_root / "support-bundle"
+    daemon_port = args.daemon_port or allocate_loopback_port()
 
     server = MockProviderServer("127.0.0.1", args.provider_port)
     server.start()
+    provider_port = server.port
+    base_url = f"http://127.0.0.1:{daemon_port}"
     try:
-        wait_for_http_json(f"http://127.0.0.1:{args.provider_port}/v1/models")
+        wait_for_http_json(f"http://127.0.0.1:{provider_port}/v1/models")
 
         doctor = run_command([str(binary_path), "doctor"], env=env, cwd=repo_root)
         doctor_values = parse_key_value_output(doctor.stdout)
         config_path = Path(doctor_values["config_path"])
-        update_config(config_path, repo_root, args.daemon_port, args.provider_port)
+        update_config(config_path, repo_root, daemon_port, provider_port)
 
         run_command(
             [str(binary_path), "daemon", "start"],

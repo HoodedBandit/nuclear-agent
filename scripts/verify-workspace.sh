@@ -18,7 +18,9 @@ step() {
 optional_cargo_tool() {
   local tool="$1"
   shift
-  if ! cargo --list | grep -Eq "^[[:space:]]+${tool}[[:space:]]"; then
+  local cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+  local tool_path="$cargo_home/bin/cargo-$tool"
+  if [ ! -x "$tool_path" ] && ! command -v "cargo-$tool" >/dev/null 2>&1; then
     if [ "${CI:-}" = "true" ]; then
       printf 'cargo-%s is not installed. Install with: cargo install cargo-%s --locked\n' "$tool" "$tool" >&2
       return 1
@@ -47,6 +49,7 @@ run_runtime_smoke() {
   local binary_path="$CARGO_TARGET_DIR/release/nuclear"
   local output_root="$CARGO_TARGET_DIR/runtime-cert-smoke"
   local python_cmd
+  local latest_run
 
   if [ ! -x "$binary_path" ]; then
     printf 'runtime smoke requires a built CLI at %s\n' "$binary_path" >&2
@@ -54,13 +57,22 @@ run_runtime_smoke() {
   fi
 
   rm -rf "$output_root"
+  local harness_exit=0
   bash "$repo_root/scripts/run-harness.sh" \
     --lane runtime-cert \
     --binary-path "$binary_path" \
     --output-root "$output_root" \
-    --task-filter "install-smoke,support-bundle-smoke"
+    --task-filter "install-smoke,support-bundle-smoke" || harness_exit=$?
 
-  latest_run="$(find "$output_root" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+  latest_run="$(find "$output_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1)"
+  if [ "$harness_exit" -ne 0 ]; then
+    if [ -n "$latest_run" ] && [ -f "$latest_run/runtime-cert/summary.md" ]; then
+      printf 'runtime smoke summary:\n' >&2
+      cat "$latest_run/runtime-cert/summary.md" >&2
+    fi
+    return "$harness_exit"
+  fi
+
   if [ -z "$latest_run" ]; then
     printf 'runtime smoke did not produce an output directory\n' >&2
     return 1

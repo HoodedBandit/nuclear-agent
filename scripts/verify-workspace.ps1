@@ -54,8 +54,14 @@ function Invoke-OptionalCargoTool {
         [string[]]$Args = @()
     )
 
-    $cargoList = cargo --list
-    if ($cargoList -notmatch "^\s+$Tool\s") {
+    $cargoHome = if ([string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
+        Join-Path $HOME ".cargo"
+    } else {
+        $env:CARGO_HOME
+    }
+    $toolPath = Join-Path $cargoHome "bin\cargo-$Tool.exe"
+    $toolCommand = Get-Command "cargo-$Tool" -ErrorAction SilentlyContinue
+    if (-not (Test-Path $toolPath) -and $null -eq $toolCommand) {
         $message = "cargo-$Tool is not installed. Install with: cargo install cargo-$Tool --locked"
         if ($env:CI -eq "true") {
             throw "$message Required in CI."
@@ -106,11 +112,18 @@ function Invoke-RuntimeSmokeValidation {
         -BinaryPath $binaryPath `
         -OutputRoot $outputRoot `
         -TaskFilter "install-smoke,support-bundle-smoke"
+    $runDir = Get-ChildItem -Path $outputRoot -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
     if ($LASTEXITCODE -ne 0) {
+        if ($null -ne $runDir) {
+            $summaryMarkdownPath = Join-Path $runDir.FullName "runtime-cert\summary.md"
+            if (Test-Path $summaryMarkdownPath) {
+                Write-Warning "Runtime smoke summary:"
+                Get-Content -Path $summaryMarkdownPath | ForEach-Object { Write-Warning $_ }
+            }
+        }
         throw "Runtime smoke run failed"
     }
 
-    $runDir = Get-ChildItem -Path $outputRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
     if ($null -eq $runDir) {
         throw "Runtime smoke did not produce an output directory"
     }
