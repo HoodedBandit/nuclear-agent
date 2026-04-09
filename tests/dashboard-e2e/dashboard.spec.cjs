@@ -274,7 +274,9 @@ test("rebuilds memory from session ledger and surfaces it in search and resume v
   await page
     .locator("#memory-create-content")
     .fill("This dashboard memory should expose provenance and evidence.");
-  await page.locator("#memory-create-form").evaluate((form) => form.requestSubmit());
+  await page.locator("#memory-create-form button[type='submit']").click();
+  await expect(page.locator("#memory-create-subject")).toHaveValue("");
+  await expect(page.locator("#memory-create-content")).toHaveValue("");
 
   await page.fill("#memory-search-query", memorySubject);
   await page.click("#memory-search-form button[type='submit']");
