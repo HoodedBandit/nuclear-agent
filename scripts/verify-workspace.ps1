@@ -113,12 +113,43 @@ function Invoke-RuntimeSmokeValidation {
         -OutputRoot $outputRoot `
         -TaskFilter "install-smoke,support-bundle-smoke"
     $runDir = Get-ChildItem -Path $outputRoot -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+    $laneDir = if ($null -ne $runDir) {
+        Join-Path $runDir.FullName "runtime-cert"
+    } else {
+        $null
+    }
+    $summaryPath = if ($null -ne $laneDir) {
+        Join-Path $laneDir "summary.json"
+    } else {
+        $null
+    }
+    $summaryMarkdownPath = if ($null -ne $laneDir) {
+        Join-Path $laneDir "summary.md"
+    } else {
+        $null
+    }
     if ($LASTEXITCODE -ne 0) {
         if ($null -ne $runDir) {
-            $summaryMarkdownPath = Join-Path $runDir.FullName "runtime-cert\summary.md"
             if (Test-Path $summaryMarkdownPath) {
                 Write-Warning "Runtime smoke summary:"
                 Get-Content -Path $summaryMarkdownPath | ForEach-Object { Write-Warning $_ }
+            }
+            if (Test-Path $summaryPath) {
+                $summary = Get-Content -Path $summaryPath -Raw | ConvertFrom-Json
+                foreach ($result in @($summary.results | Where-Object { -not $_.passed })) {
+                    Write-Warning "Runtime smoke failure detail: $($result.id)"
+                    Write-Warning "Summary: $($result.summary)"
+                    $stdoutPath = $result.artifacts.stdout
+                    $stderrPath = $result.artifacts.stderr
+                    if ($stdoutPath -and (Test-Path $stdoutPath)) {
+                        Write-Warning "stdout:"
+                        Get-Content -Path $stdoutPath | ForEach-Object { Write-Warning $_ }
+                    }
+                    if ($stderrPath -and (Test-Path $stderrPath)) {
+                        Write-Warning "stderr:"
+                        Get-Content -Path $stderrPath | ForEach-Object { Write-Warning $_ }
+                    }
+                }
             }
         }
         throw "Runtime smoke run failed"
@@ -128,9 +159,6 @@ function Invoke-RuntimeSmokeValidation {
         throw "Runtime smoke did not produce an output directory"
     }
 
-    $laneDir = Join-Path $runDir.FullName "runtime-cert"
-    $summaryPath = Join-Path $laneDir "summary.json"
-    $summaryMarkdownPath = Join-Path $laneDir "summary.md"
     if (-not (Test-Path $summaryPath) -or -not (Test-Path $summaryMarkdownPath)) {
         throw "Runtime smoke did not produce summary artifacts"
     }

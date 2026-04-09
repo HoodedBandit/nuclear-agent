@@ -87,22 +87,6 @@ function Should-UseLegacyProgramRoot {
 }
 
 function Choose-DefaultInstallDir {
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $candidates = @()
-
-    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-        $candidates += (Join-Path $env:USERPROFILE ".cargo\bin")
-        $candidates += (Join-Path $env:USERPROFILE ".local\bin")
-    }
-
-    foreach ($candidate in $candidates) {
-        $currentPathHasCandidate = Path-Contains -PathValue $env:Path -Entry $candidate
-        $userPathHasCandidate = Path-Contains -PathValue $userPath -Entry $candidate
-        if ($currentPathHasCandidate -or $userPathHasCandidate) {
-            return $candidate
-        }
-    }
-
     return Get-CanonicalInstallDir
 }
 
