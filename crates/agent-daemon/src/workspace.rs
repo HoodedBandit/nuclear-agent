@@ -706,8 +706,9 @@ mod tests {
         writeln!(main_rs, "fn main() {{}}").unwrap();
 
         let report = inspect_workspace_path(Some(root.to_str().unwrap())).unwrap();
+        let expected_root = fs::canonicalize(&root).unwrap();
 
-        assert_eq!(report.workspace_root, root.display().to_string());
+        assert_eq!(report.workspace_root, display_path(&expected_root));
         assert!(report.git_root.is_none());
         assert!(report.manifests.iter().any(|entry| entry == "Cargo.toml"));
         assert!(report
