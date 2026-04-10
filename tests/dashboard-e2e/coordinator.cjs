@@ -9,6 +9,10 @@ const targetDir = path.join(repoRoot, "target", "playwright-e2e");
 const statePath = path.join(targetDir, "state.json");
 const profileDir = path.join(targetDir, "profile");
 const inboxDir = path.join(targetDir, "fixtures", "inbox");
+const attachmentDir = path.join(targetDir, "fixtures", "attachments");
+const attachmentPath = path.join(attachmentDir, "reference.png");
+const dashboardRoot = path.join(repoRoot, "ui", "dashboard");
+const dashboardBundlePath = path.join(repoRoot, "crates", "agent-daemon", "static-modern", "index.html");
 const pluginFixtureDir = path.join(repoRoot, "tests", "dashboard-e2e", "fixtures", "echo-plugin");
 const pluginSourceDir = path.join(targetDir, "fixtures", "echo-plugin");
 const daemonPort = 42791;
@@ -20,7 +24,7 @@ const windowsExecutables = [
 const unixExecutables = [
   path.join(repoRoot, "target", "debug", "nuclear"),
 ];
-const rebuildExtensions = new Set([".rs", ".html", ".css", ".js", ".cjs", ".toml", ".lock"]);
+const rebuildExtensions = new Set([".rs", ".html", ".css", ".js", ".cjs", ".toml", ".lock", ".ts", ".tsx"]);
 
 let mockServer = null;
 let daemonChild = null;
@@ -53,6 +57,7 @@ function makeEnv() {
   ensureDir(appData);
   ensureDir(localAppData);
   ensureDir(inboxDir);
+  ensureDir(attachmentDir);
   return {
     ...process.env,
     HOME: profileDir,
@@ -97,6 +102,57 @@ function binaryNeedsRebuild(exe) {
     newestMtimeMs(path.join(repoRoot, "tests", "dashboard-e2e"))
   );
   return newestSourceMtimeMs > binaryMtimeMs;
+}
+
+function dashboardNeedsBuild() {
+  if (!fs.existsSync(dashboardBundlePath)) {
+    return true;
+  }
+  const bundleMtimeMs = fs.statSync(dashboardBundlePath).mtimeMs;
+  const newestSourceMtimeMs = Math.max(
+    newestMtimeMs(path.join(dashboardRoot, "package.json")),
+    newestMtimeMs(path.join(dashboardRoot, "package-lock.json")),
+    newestMtimeMs(path.join(dashboardRoot, "tsconfig.json")),
+    newestMtimeMs(path.join(dashboardRoot, "vite.config.ts")),
+    newestMtimeMs(path.join(dashboardRoot, "src"))
+  );
+  return newestSourceMtimeMs > bundleMtimeMs;
+}
+
+function ensureDashboardBuilt() {
+  const nodeModulesPath = path.join(dashboardRoot, "node_modules");
+  if (!fs.existsSync(nodeModulesPath)) {
+    const install = spawnSync("npm", ["ci"], {
+      cwd: dashboardRoot,
+      stdio: "inherit",
+      shell: true,
+    });
+    if (install.status !== 0) {
+      throw new Error("failed to install ui/dashboard dependencies for dashboard e2e");
+    }
+  }
+
+  if (dashboardNeedsBuild()) {
+    const build = spawnSync("npm", ["run", "build"], {
+      cwd: dashboardRoot,
+      stdio: "inherit",
+      shell: true,
+    });
+    if (build.status !== 0) {
+      throw new Error("failed to build ui/dashboard for dashboard e2e");
+    }
+  }
+}
+
+function writeAttachmentFixture() {
+  ensureDir(attachmentDir);
+  fs.writeFileSync(
+    attachmentPath,
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAukB9pVHtV8AAAAASUVORK5CYII=",
+      "base64"
+    )
+  );
 }
 
 function ensureBinaryBuilt() {
@@ -187,6 +243,7 @@ function writeE2EConfig(configPath) {
         token: daemonToken,
         inboxPath: inboxDir,
         pluginPath: pluginSourceDir,
+        attachmentPath,
       },
       null,
       2
@@ -306,6 +363,8 @@ async function main() {
   fs.rmSync(targetDir, { recursive: true, force: true });
   ensureDir(targetDir);
   copyDirRecursive(pluginFixtureDir, pluginSourceDir);
+  writeAttachmentFixture();
+  ensureDashboardBuilt();
   const env = makeEnv();
   const exe = ensureBinaryBuilt();
   const configPath = discoverConfigPath(exe, env);

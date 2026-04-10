@@ -28,7 +28,11 @@ use crate::{
     add_mission, approve_connector_approval, approve_memory, autonomy_status, autopilot_status,
     call_home_assistant_service_route, cancel_mission, clear_provider_credentials, compact_session,
     control_socket::control_socket_route,
-    dashboard::{add_dashboard_asset_routes, dashboard_index, dashboard_root},
+    create_support_bundle,
+    dashboard::{
+        add_dashboard_asset_routes, dashboard_classic_index, dashboard_index, dashboard_next_index,
+        dashboard_root,
+    },
     dashboard_bootstrap, delegation_status, delete_alias, delete_app_connector,
     delete_brave_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_mcp_server, delete_plugin,
@@ -330,6 +334,7 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/events", get(list_events))
         .route("/v1/ws", get(control_socket_route))
         .route("/v1/doctor", get(doctor))
+        .route("/v1/support-bundle", post(create_support_bundle))
         .route("/v1/dashboard/launch", post(create_dashboard_launch))
         .route("/v1/run", post(run_task))
         .route("/v1/run/stream", post(run_task_stream))
@@ -356,6 +361,10 @@ pub(crate) fn build_public_routes(state: AppState) -> Router {
             .route("/", get(dashboard_root))
             .route("/ui", get(dashboard_index))
             .route("/dashboard", get(dashboard_index))
+            .route("/ui-classic", get(dashboard_classic_index))
+            .route("/dashboard-classic", get(dashboard_classic_index))
+            .route("/ui-next", get(dashboard_next_index))
+            .route("/dashboard-next", get(dashboard_next_index))
             .route(
                 "/auth/dashboard/session",
                 post(create_dashboard_session).delete(clear_dashboard_session),

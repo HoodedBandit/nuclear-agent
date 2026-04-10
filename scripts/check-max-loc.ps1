@@ -56,24 +56,34 @@ function Get-NormalizedRelativePath {
 Push-Location $repoRoot
 try {
     $limits = Get-BaselineLimits -Path $BaselineFile
-    $extensions = @(".rs", ".js", ".cjs", ".mjs")
+    $extensions = @(".rs", ".js", ".cjs", ".mjs", ".ts", ".tsx")
+    $scanRoots = @(
+        (Join-Path $repoRoot "crates"),
+        (Join-Path $repoRoot "ui\dashboard\src")
+    )
     $offenders = @()
 
-    Get-ChildItem -Path "crates" -Recurse -File |
-        Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } |
-        ForEach-Object {
-            $relativePath = Get-NormalizedRelativePath -Root $repoRoot -Path $_.FullName
-            $lineCount = [System.IO.File]::ReadAllLines($_.FullName).Length
-            $limit = if ($limits.ContainsKey($relativePath)) { $limits[$relativePath] } else { $MaxLines }
+    foreach ($scanRoot in $scanRoots) {
+        if (-not (Test-Path $scanRoot)) {
+            continue
+        }
 
-            if ($lineCount -gt $limit) {
-                $offenders += [PSCustomObject]@{
-                    Lines = $lineCount
-                    Limit = $limit
-                    Path  = $relativePath
+        Get-ChildItem -Path $scanRoot -Recurse -File |
+            Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } |
+            ForEach-Object {
+                $relativePath = Get-NormalizedRelativePath -Root $repoRoot -Path $_.FullName
+                $lineCount = [System.IO.File]::ReadAllLines($_.FullName).Length
+                $limit = if ($limits.ContainsKey($relativePath)) { $limits[$relativePath] } else { $MaxLines }
+
+                if ($lineCount -gt $limit) {
+                    $offenders += [PSCustomObject]@{
+                        Lines = $lineCount
+                        Limit = $limit
+                        Path  = $relativePath
+                    }
                 }
             }
-        }
+    }
 
     if ($offenders.Count -eq 0) {
         return

@@ -16,6 +16,8 @@
 *.db-shm
 *.db-wal
 /node_modules
+/ui/dashboard/node_modules
+/ui/dashboard/dist
 /test-results
 /playwright-report
 /Microsoft/

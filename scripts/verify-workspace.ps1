@@ -92,6 +92,49 @@ function Invoke-WorkspaceDependencyDriftCheck {
     throw "Python is required for the workspace dependency drift check"
 }
 
+function Invoke-DashboardChecks {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $dashboardRoot = Join-Path $RepoRoot "ui\dashboard"
+    if (-not (Test-Path $dashboardRoot)) {
+        return
+    }
+
+    $packageLockPath = Join-Path $dashboardRoot "package-lock.json"
+    if (-not (Test-Path $packageLockPath)) {
+        throw "Dashboard checks require $packageLockPath"
+    }
+
+    Push-Location $dashboardRoot
+    try {
+        & npm ci
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed for ui/dashboard"
+        }
+        & npm run typecheck
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm run typecheck failed for ui/dashboard"
+        }
+        & npm run lint
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm run lint failed for ui/dashboard"
+        }
+        & npm test
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm test failed for ui/dashboard"
+        }
+        & npm run build
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm run build failed for ui/dashboard"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Invoke-RuntimeSmokeValidation {
     param(
         [Parameter(Mandatory = $true)]
@@ -176,6 +219,7 @@ $previousCargoTargetDir = $env:CARGO_TARGET_DIR
 $env:CARGO_TARGET_DIR = Join-Path $repoRoot "target/verify-workspace"
 try {
     Invoke-Step "source LOC guard" { & (Join-Path $PSScriptRoot "check-max-loc.ps1") }
+    Invoke-Step "dashboard checks" { Invoke-DashboardChecks -RepoRoot $repoRoot }
     Invoke-Step "cargo fmt --all --check" { cargo fmt --all --check }
     Invoke-Step "cargo check --workspace" { cargo check --workspace }
     Invoke-Step "cargo test --workspace" { cargo test --workspace }

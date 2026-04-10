@@ -22,6 +22,7 @@ mod plugins;
 mod routes;
 mod runtime;
 mod sessions;
+mod support_bundle;
 mod tools;
 mod workspace;
 
@@ -121,6 +122,7 @@ pub(crate) use sessions::{
 };
 #[cfg(test)]
 use std::path::PathBuf;
+pub(crate) use support_bundle::create_support_bundle;
 use tokio::{
     net::TcpListener,
     sync::{mpsc, Notify, RwLock},

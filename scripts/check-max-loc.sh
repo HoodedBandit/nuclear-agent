@@ -13,7 +13,7 @@ if [[ -f "$baseline_file" ]]; then
     path="${path%$'\r'}"
     limit="${limit%$'\r'}"
     limits["$path"]="$limit"
-  done <"$baseline_file"
+done <"$baseline_file"
 fi
 
 offenders=0
@@ -26,12 +26,20 @@ while IFS= read -r file; do
     offenders=1
   fi
 done < <(
-  find "$repo_root/crates" -type f \( \
-    -name '*.rs' -o \
-    -name '*.js' -o \
-    -name '*.cjs' -o \
-    -name '*.mjs' \
-  \) | sort
+  {
+    find "$repo_root/crates" -type f \( \
+      -name '*.rs' -o \
+      -name '*.js' -o \
+      -name '*.cjs' -o \
+      -name '*.mjs' \
+    \)
+    if [[ -d "$repo_root/ui/dashboard/src" ]]; then
+      find "$repo_root/ui/dashboard/src" -type f \( \
+        -name '*.ts' -o \
+        -name '*.tsx' \
+      \)
+    fi
+  } | sort
 )
 
 exit "$offenders"

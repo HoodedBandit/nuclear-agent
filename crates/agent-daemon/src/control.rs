@@ -1026,7 +1026,7 @@ pub(crate) async fn doctor(State(state): State<AppState>) -> Result<Json<HealthR
     }))
 }
 
-fn provider_capability_summaries(config: &AppConfig) -> Vec<ProviderCapabilitySummary> {
+pub(crate) fn provider_capability_summaries(config: &AppConfig) -> Vec<ProviderCapabilitySummary> {
     config
         .all_providers()
         .into_iter()

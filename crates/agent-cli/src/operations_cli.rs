@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 pub(crate) async fn session_command(storage: &Storage, command: SessionCommands) -> Result<()> {

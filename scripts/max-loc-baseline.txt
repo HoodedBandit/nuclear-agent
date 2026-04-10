@@ -1,9 +1,13 @@
 # path<TAB>max_lines
 crates/agent-core/src/lib.rs	2400
-crates/agent-cli/src/main.rs	7800
+crates/agent-cli/src/main.rs	5600
+crates/agent-cli/src/config_cli.rs	700
+crates/agent-cli/src/connector_cli.rs	1250
+crates/agent-cli/src/connector_management_cli.rs	700
+crates/agent-cli/src/tests.rs	2900
 crates/agent-cli/src/tui/app.rs	2050
 crates/agent-providers/src/lib.rs	3900
-crates/agent-storage/src/lib.rs	2700
+crates/agent-storage/src/lib.rs	1550
 crates/agent-daemon/static/dashboard.js	3350
 crates/agent-daemon/src/memory.rs	1300
 crates/agent-daemon/src/missions.rs	1450

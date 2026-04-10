@@ -42,15 +42,16 @@ impl Storage {
                     last_seen_at, created_at, workspace_key, provider_id
              FROM usage_patterns
              WHERE (?2 IS NULL OR workspace_key = ?2 OR workspace_key IS NULL)
-             ORDER BY last_seen_at DESC
+             ORDER BY frequency DESC, last_seen_at DESC
              LIMIT ?1",
         )?;
-        let rows = statement.query_map(params![limit as i64, workspace_key], row_to_pattern)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        let rows = statement
+            .query_map(params![limit as i64, workspace_key], row_to_pattern)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
-    pub fn find_pattern(
+    pub fn find_pattern_by_description(
         &self,
         description: &str,
         workspace_key: Option<&str>,

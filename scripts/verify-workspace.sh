@@ -45,6 +45,24 @@ run_workspace_dependency_drift_check() {
   "$python_cmd" "$repo_root/scripts/check-workspace-dependency-drift.py"
 }
 
+run_dashboard_checks() {
+  local dashboard_root="$repo_root/ui/dashboard"
+  if [ ! -d "$dashboard_root" ]; then
+    return 0
+  fi
+
+  if [ ! -f "$dashboard_root/package-lock.json" ]; then
+    printf 'dashboard checks require %s/package-lock.json\n' "$dashboard_root" >&2
+    return 1
+  fi
+
+  npm --prefix "$dashboard_root" ci
+  npm --prefix "$dashboard_root" run typecheck
+  npm --prefix "$dashboard_root" run lint
+  npm --prefix "$dashboard_root" test
+  npm --prefix "$dashboard_root" run build
+}
+
 run_runtime_smoke() {
   local binary_path="$CARGO_TARGET_DIR/release/nuclear"
   local output_root="$CARGO_TARGET_DIR/runtime-cert-smoke"
@@ -107,6 +125,7 @@ PY
 }
 
 step "source LOC guard" bash "$repo_root/scripts/check-max-loc.sh"
+step "dashboard checks" run_dashboard_checks
 step "cargo fmt --all --check" cargo fmt --all --check
 step "cargo check --workspace" cargo check --workspace
 step "cargo test --workspace" cargo test --workspace
