@@ -45,6 +45,9 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo QA tools
+        run: cargo install --locked cargo-audit cargo-deny cargo-outdated
+
       - name: Install Linux release prerequisites
         if: runner.os != 'Windows'
         run: |
