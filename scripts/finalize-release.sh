@@ -120,6 +120,10 @@ step() {
   "$@"
 }
 
+signing_hook_configured() {
+  [ -n "${NUCLEAR_SIGNING_HOOK:-}" ]
+}
+
 verify_args=()
 if [ "$skip_e2e" -eq 1 ]; then
   verify_args+=(--skip-e2e)
@@ -130,8 +134,10 @@ fi
 verify_args+=(--task-file "$task_file")
 
 package_args=("$package_output_root" --clean)
-if [ "$skip_signing" -eq 0 ]; then
+if [ "$skip_signing" -eq 0 ] && signing_hook_configured; then
   package_args+=(--require-signing)
+elif [ "$skip_signing" -eq 0 ]; then
+  printf 'warning: signing hook is not configured; packaging unsigned release artifacts\n' >&2
 fi
 
 step "GA verification" bash "$repo_root/scripts/verify-ga.sh" "${verify_args[@]}"

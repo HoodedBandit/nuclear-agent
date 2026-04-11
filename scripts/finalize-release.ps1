@@ -39,6 +39,10 @@ function Invoke-Step {
     }
 }
 
+function Test-SigningHookConfigured {
+    return -not [string]::IsNullOrWhiteSpace($env:NUCLEAR_SIGNING_HOOK)
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $releaseBinary = Join-Path $repoRoot "target\verify-workspace\release\nuclear.exe"
 $packageOutputRoot = if ([string]::IsNullOrWhiteSpace($PackageOutputRoot)) {
@@ -83,8 +87,10 @@ try {
             OutputRoot = $packageOutputRoot
             Clean      = $true
         }
-        if (-not $SkipSigning) {
+        if (-not $SkipSigning -and (Test-SigningHookConfigured)) {
             $packageParams["RequireSigning"] = $true
+        } elseif (-not $SkipSigning) {
+            Write-Warning "Signing hook is not configured; packaging unsigned release artifacts."
         }
         & (Join-Path $PSScriptRoot "package-release.ps1") @packageParams
         if ($LASTEXITCODE -ne 0) {

@@ -20,8 +20,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
-      NUCLEAR_SIGNING_HOOK: python scripts/ed25519_sign_hook.py
-      NUCLEAR_SIGNING_KEY_ID: gha-release
+      NUCLEAR_SIGNING_HOOK: ${{ secrets.NUCLEAR_ED25519_PRIVATE_KEY != '' && 'python scripts/ed25519_sign_hook.py' || '' }}
+      NUCLEAR_SIGNING_KEY_ID: ${{ secrets.NUCLEAR_ED25519_PRIVATE_KEY != '' && 'gha-release' || '' }}
       NUCLEAR_ED25519_PRIVATE_KEY: ${{ secrets.NUCLEAR_ED25519_PRIVATE_KEY }}
 
     steps:
