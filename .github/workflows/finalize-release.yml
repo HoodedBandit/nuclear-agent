@@ -46,7 +46,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo QA tools
-        run: cargo install --locked cargo-audit cargo-deny cargo-outdated
+        run: |
+          cargo install --locked cargo-audit --version 0.22.1
+          cargo install --locked cargo-deny --version 0.19.0
+          cargo install --locked cargo-outdated --version 0.17.0
 
       - name: Install Linux release prerequisites
         if: runner.os != 'Windows'
