@@ -1,4 +1,8 @@
-﻿# Nuclear Agent
+If you wish to support my API bills https://ko-fi.com/hoodedbandit
+
+This is a work in progress. No promises anything works as intended. Expect crashes, expect rapid changes, and expect the most random things to break. I am just one guy and this is a hobby project. Thank you.
+
+ # Nuclear Agent
 
 CLI-first local agent runtime built in Rust for Windows and Linux.
 
