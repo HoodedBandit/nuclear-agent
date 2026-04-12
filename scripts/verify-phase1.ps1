@@ -5,21 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Resolve-PythonCommand {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "python"
-            Arguments  = @("-u")
-        }
-    }
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "py"
-            Arguments  = @("-3", "-u")
-        }
-    }
-    throw "Python is required to run the Phase 1 smoke verification."
-}
+. (Join-Path $PSScriptRoot "common.ps1")
 
 function Resolve-BinaryPath {
     param(
@@ -46,8 +32,8 @@ function Resolve-BinaryPath {
     throw "Could not find a built nuclear.exe. Run verify-workspace.ps1 first or pass -BinaryPath."
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$python = Resolve-PythonCommand
+$repoRoot = Get-RepoRoot $PSScriptRoot
+$python = Resolve-PythonCommand -Purpose "run the Phase 1 smoke verification" -ExtraArguments @("-u")
 $resolvedBinaryPath = Resolve-BinaryPath -RepoRoot $repoRoot -RequestedPath $BinaryPath
 $scenarioRoot = Join-Path $repoRoot "target\phase1-smoke\windows"
 

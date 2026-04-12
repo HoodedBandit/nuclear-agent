@@ -2,12 +2,12 @@ import type { FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PluginDoctorReport } from "../../api/types";
 import { deleteJson, getJson, postJson, putJson } from "../../api/client";
-import { useDashboardData } from "../../app/dashboard-data";
+import { usePluginBootstrap } from "../../app/dashboard-selectors";
 import { EmptyState } from "../../components/EmptyState";
 import { Panel } from "../../components/Panel";
 
 export function PluginWorkbench() {
-  const { bootstrap } = useDashboardData();
+  const { plugins } = usePluginBootstrap();
   const queryClient = useQueryClient();
   const pluginsDoctorQuery = useQuery({
     queryKey: ["plugins-doctor"],
@@ -68,8 +68,8 @@ export function PluginWorkbench() {
       </Panel>
       <Panel eyebrow="Installed" title="Plugin roster">
         <div className="stack-list" id="plugins-list">
-          {bootstrap.plugins.length ? (
-            bootstrap.plugins.map((plugin) => (
+          {plugins.length ? (
+            plugins.map((plugin) => (
               <article key={plugin.id} className="stack-card">
                 <div className="stack-card__title">
                   <strong>{plugin.manifest.name}</strong>

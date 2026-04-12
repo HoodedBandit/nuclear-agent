@@ -88,6 +88,17 @@ fn persist_session_turn_round_trips_tool_metadata() {
 }
 
 #[test]
+fn init_schema_sets_current_user_version() {
+    let storage = temp_storage();
+    let connection = storage.connection().unwrap();
+    let version: i32 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+
+    assert!(version >= 5);
+}
+
+#[test]
 fn persist_session_turn_preserves_existing_task_mode_when_unspecified() {
     let storage = temp_storage();
     let alias = ModelAlias {

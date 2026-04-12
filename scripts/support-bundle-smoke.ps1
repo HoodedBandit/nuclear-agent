@@ -6,23 +6,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Resolve-PythonCommand {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "python"
-            Arguments  = @()
-        }
-    }
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "py"
-            Arguments  = @("-3")
-        }
-    }
-    throw "Python is required to run the support bundle smoke test."
-}
+. (Join-Path $PSScriptRoot "common.ps1")
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Get-RepoRoot $PSScriptRoot
 $resolvedBinaryPath = if ([string]::IsNullOrWhiteSpace($BinaryPath)) {
     Join-Path $repoRoot "target\verify-workspace\release\nuclear.exe"
 } else {
@@ -34,7 +20,7 @@ $scenarioRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot
 }
 
-$pythonCommand = Resolve-PythonCommand
+$pythonCommand = Resolve-PythonCommand -Purpose "run the support bundle smoke test"
 & $pythonCommand.Executable @($pythonCommand.Arguments) `
     (Join-Path $PSScriptRoot "support_bundle_smoke.py") `
     --binary-path $resolvedBinaryPath `

@@ -1,7 +1,8 @@
 import type { FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { DelegationTarget } from "../../api/types";
 import { getJson, putJson } from "../../api/client";
-import { useDashboardData } from "../../app/dashboard-data";
+import { useDelegationBootstrap } from "../../app/dashboard-selectors";
 import { EmptyState } from "../../components/EmptyState";
 import { Panel } from "../../components/Panel";
 
@@ -13,11 +14,11 @@ function parseList(value: FormDataEntryValue | null) {
 }
 
 export function DelegationWorkbench() {
-  const { bootstrap } = useDashboardData();
+  const { delegationConfig } = useDelegationBootstrap();
   const queryClient = useQueryClient();
   const delegationTargetsQuery = useQuery({
     queryKey: ["delegation-targets"],
-    queryFn: () => getJson<typeof bootstrap.delegation_targets>("/v1/delegation/targets")
+    queryFn: () => getJson<DelegationTarget[]>("/v1/delegation/targets")
   });
 
   async function refresh() {
@@ -52,8 +53,8 @@ export function DelegationWorkbench() {
             <input
               name="max_depth"
               defaultValue={
-                bootstrap.delegation_config.max_depth.mode === "limited"
-                  ? bootstrap.delegation_config.max_depth.value
+                delegationConfig.max_depth.mode === "limited"
+                  ? delegationConfig.max_depth.value
                   : "unlimited"
               }
             />
@@ -63,8 +64,8 @@ export function DelegationWorkbench() {
             <input
               name="max_parallel_subagents"
               defaultValue={
-                bootstrap.delegation_config.max_parallel_subagents.mode === "limited"
-                  ? bootstrap.delegation_config.max_parallel_subagents.value
+                delegationConfig.max_parallel_subagents.mode === "limited"
+                  ? delegationConfig.max_parallel_subagents.value
                   : "unlimited"
               }
             />
@@ -73,7 +74,7 @@ export function DelegationWorkbench() {
             <span>Disabled provider IDs</span>
             <input
               name="disabled_provider_ids"
-              defaultValue={bootstrap.delegation_config.disabled_provider_ids.join(", ")}
+              defaultValue={delegationConfig.disabled_provider_ids.join(", ")}
             />
           </label>
           <button type="submit">Update delegation config</button>

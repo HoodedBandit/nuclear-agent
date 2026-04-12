@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 export default defineConfig({
   plugins: [react()],
-  base: "/dashboard-assets-next/",
+  base: "/dashboard-assets/",
   build: {
     manifest: true,
     outDir: resolve(__dirname, "../../crates/agent-daemon/static-modern"),

@@ -33,13 +33,12 @@ async function openIntegrationsTab(page, tab) {
   await page.locator(`[data-integrations-tab-trigger='${tab}']`).click();
 }
 
-test.describe.configure({ mode: "serial" });
+async function openDisclosure(page, title) {
+  const summary = page.locator("summary", { hasText: title });
+  await summary.click();
+}
 
-test("preserves the legacy static dashboard on the classic route", async ({ page }) => {
-  await page.goto("/ui-classic");
-  await expect(page).toHaveTitle(/Nuclear Agent Control Room/i);
-  await expect(page.locator("body")).toContainText("Resident operator console");
-});
+test.describe.configure({ mode: "serial" });
 
 test("connects through the dashboard auth form and renders workspace inspection", async ({ page }) => {
   await connectDashboard(page);
@@ -55,6 +54,7 @@ test("runs a chat task with daily mode and restores the transcript context", asy
   await openSection(page, "chat");
 
   await page.selectOption("#run-task-alias", "main");
+  await openDisclosure(page, "Runtime overrides");
   await page.selectOption("#run-task-mode", "daily");
   await page.fill("#run-task-prompt", "Browser chat daily mode test");
   await page.click("#run-task-submit");
@@ -71,12 +71,14 @@ test("stages an attachment in the cockpit chat form", async ({ page }) => {
   const state = await connectDashboard(page);
   await openSection(page, "chat");
 
+  await openDisclosure(page, "Attachments");
   await page.selectOption("#chat-attachment-kind", "image");
   await page.fill("#chat-attachment-path", state.attachmentPath);
   await page.click("#chat-attachment-add");
 
   await expect(page.locator("#chat-attachments")).toContainText("reference.png");
-  await expect(page.locator("#chat-session-meta")).toContainText("1 attachment(s)");
+  await expect(page.locator("#chat-session-meta")).toContainText("Attachments");
+  await expect(page.locator("#chat-session-meta")).toContainText("1");
 });
 
 test("creates a provider and alias from the integrations workbench", async ({ page }) => {
@@ -93,6 +95,7 @@ test("creates a provider and alias from the integrations workbench", async ({ pa
 
   await expect(page.locator("#providers-list")).toContainText("Ollama E2E");
   await expect(page.locator("#providers-list")).toContainText("ollama-e2e");
+  await page.getByRole("button", { name: "aliases" }).click();
   await expect(page.locator("#aliases-list")).toContainText("ollamae2e");
 });
 
@@ -124,6 +127,7 @@ test("installs a local plugin and creates a support bundle", async ({ page }) =>
 
   await openSection(page, "system");
   await page.getByRole("button", { name: "diagnostics" }).click();
+  await page.getByRole("button", { name: "support bundle" }).click();
   await page.click("#support-bundle-submit");
 
   await expect(page.locator("#support-bundle-result")).toContainText("Bundle ready");

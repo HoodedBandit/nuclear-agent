@@ -24,26 +24,13 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Invoke-Step {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Label,
-        [Parameter(Mandatory = $true)]
-        [scriptblock]$Action
-    )
-
-    Write-Host "`n==> $Label" -ForegroundColor Cyan
-    & $Action
-    if (-not $?) {
-        throw "Step failed: $Label"
-    }
-}
+. (Join-Path $PSScriptRoot "common.ps1")
 
 function Test-SigningHookConfigured {
     return -not [string]::IsNullOrWhiteSpace($env:NUCLEAR_SIGNING_HOOK)
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Get-RepoRoot $PSScriptRoot
 $releaseBinary = Join-Path $repoRoot "target\verify-workspace\release\nuclear.exe"
 $packageOutputRoot = if ([string]::IsNullOrWhiteSpace($PackageOutputRoot)) {
     Join-Path $repoRoot "target\release\package"

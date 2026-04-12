@@ -29,10 +29,7 @@ use crate::{
     call_home_assistant_service_route, cancel_mission, clear_provider_credentials, compact_session,
     control_socket::control_socket_route,
     create_support_bundle,
-    dashboard::{
-        add_dashboard_asset_routes, dashboard_classic_index, dashboard_index, dashboard_next_index,
-        dashboard_root,
-    },
+    dashboard::{add_dashboard_asset_routes, dashboard_index, dashboard_root},
     dashboard_bootstrap, delegation_status, delete_alias, delete_app_connector,
     delete_brave_connector, delete_discord_connector, delete_gmail_connector,
     delete_home_assistant_connector, delete_inbox_connector, delete_mcp_server, delete_plugin,
@@ -83,8 +80,8 @@ struct DashboardSessionRequest {
     token: String,
 }
 
-pub(crate) fn build_protected_routes(state: AppState) -> Router {
-    Router::new()
+fn add_system_api_routes(router: Router<AppState>) -> Router<AppState> {
+    router
         .route("/v1/status", get(status))
         .route("/v1/dashboard/bootstrap", get(dashboard_bootstrap))
         .route("/v1/workspace/inspect", post(inspect_workspace_route))
@@ -94,6 +91,16 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/onboarding/reset", post(reset_onboarding))
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/config", get(export_config).put(import_config))
+        .route("/v1/logs", get(list_logs))
+        .route("/v1/events", get(list_events))
+        .route("/v1/ws", get(control_socket_route))
+        .route("/v1/doctor", get(doctor))
+        .route("/v1/support-bundle", post(create_support_bundle))
+        .route("/v1/dashboard/launch", post(create_dashboard_launch))
+}
+
+fn add_provider_api_routes(router: Router<AppState>) -> Router<AppState> {
+    router
         .route("/v1/providers", get(list_providers).post(upsert_provider))
         .route("/v1/providers/suggest", post(suggest_provider_defaults))
         .route("/v1/providers/{provider_id}", delete(delete_provider))
@@ -122,6 +129,10 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
             "/v1/permissions",
             get(get_permission_preset).put(update_permission_preset),
         )
+}
+
+fn add_autonomy_api_routes(router: Router<AppState>) -> Router<AppState> {
+    router
         .route("/v1/autonomy/status", get(autonomy_status))
         .route("/v1/autonomy/enable", post(enable_autonomy))
         .route("/v1/autonomy/pause", post(pause_autonomy))
@@ -141,6 +152,19 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
             get(delegation_status).put(update_delegation_config),
         )
         .route("/v1/delegation/targets", get(list_delegation_targets))
+        .route("/v1/missions", get(list_missions).post(add_mission))
+        .route("/v1/missions/{mission_id}", get(get_mission))
+        .route("/v1/missions/{mission_id}/pause", post(pause_mission))
+        .route("/v1/missions/{mission_id}/resume", post(resume_mission))
+        .route("/v1/missions/{mission_id}/cancel", post(cancel_mission))
+        .route(
+            "/v1/missions/{mission_id}/checkpoints",
+            get(list_mission_checkpoints),
+        )
+}
+
+fn add_integration_api_routes(router: Router<AppState>) -> Router<AppState> {
+    router
         .route("/v1/mcp", get(list_mcp_servers).post(upsert_mcp_server))
         .route("/v1/mcp/{server_id}", delete(delete_mcp_server))
         .route("/v1/plugins", get(list_plugins))
@@ -313,15 +337,10 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
             "/v1/skills/drafts/{draft_id}/reject",
             post(reject_skill_draft),
         )
-        .route("/v1/missions", get(list_missions).post(add_mission))
-        .route("/v1/missions/{mission_id}", get(get_mission))
-        .route("/v1/missions/{mission_id}/pause", post(pause_mission))
-        .route("/v1/missions/{mission_id}/resume", post(resume_mission))
-        .route("/v1/missions/{mission_id}/cancel", post(cancel_mission))
-        .route(
-            "/v1/missions/{mission_id}/checkpoints",
-            get(list_mission_checkpoints),
-        )
+}
+
+fn add_memory_and_session_api_routes(router: Router<AppState>) -> Router<AppState> {
+    router
         .route("/v1/memory", get(list_memories).post(upsert_memory))
         .route("/v1/memory/profile", get(list_profile_memories))
         .route("/v1/memory/review", get(list_memory_review_queue))
@@ -330,12 +349,6 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/memory/{memory_id}/approve", post(approve_memory))
         .route("/v1/memory/{memory_id}/reject", post(reject_memory))
         .route("/v1/memory/{memory_id}", delete(forget_memory))
-        .route("/v1/logs", get(list_logs))
-        .route("/v1/events", get(list_events))
-        .route("/v1/ws", get(control_socket_route))
-        .route("/v1/doctor", get(doctor))
-        .route("/v1/support-bundle", post(create_support_bundle))
-        .route("/v1/dashboard/launch", post(create_dashboard_launch))
         .route("/v1/run", post(run_task))
         .route("/v1/run/stream", post(run_task_stream))
         .route("/v1/batch", post(run_batch))
@@ -348,41 +361,52 @@ pub(crate) fn build_protected_routes(state: AppState) -> Router {
         .route("/v1/sessions/{session_id}/title", put(rename_session))
         .route("/v1/sessions/{session_id}/fork", post(fork_session))
         .route("/v1/sessions/{session_id}/compact", post(compact_session))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_bearer,
-        ))
-        .with_state(state)
+}
+
+pub(crate) fn build_protected_routes(state: AppState) -> Router {
+    add_memory_and_session_api_routes(add_integration_api_routes(add_autonomy_api_routes(
+        add_provider_api_routes(add_system_api_routes(Router::new())),
+    )))
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        require_bearer,
+    ))
+    .with_state(state)
+}
+
+fn add_dashboard_ui_routes(router: Router<AppState>) -> Router<AppState> {
+    add_dashboard_asset_routes(
+        router
+            .route("/", get(dashboard_root))
+            .route("/ui", get(dashboard_index))
+            .route("/dashboard", get(dashboard_index)),
+    )
+}
+
+fn add_public_auth_routes(router: Router<AppState>) -> Router<AppState> {
+    router
+        .route(
+            "/auth/dashboard/session",
+            post(create_dashboard_session).delete(clear_dashboard_session),
+        )
+        .route(
+            "/auth/dashboard/launch/{launch_id}",
+            get(consume_dashboard_launch),
+        )
+        .route(
+            "/auth/provider/callback",
+            get(provider_browser_auth_callback),
+        )
+        .route(
+            "/auth/provider/complete",
+            get(provider_browser_auth_complete),
+        )
 }
 
 pub(crate) fn build_public_routes(state: AppState) -> Router {
-    add_dashboard_asset_routes(
-        Router::new()
-            .route("/", get(dashboard_root))
-            .route("/ui", get(dashboard_index))
-            .route("/dashboard", get(dashboard_index))
-            .route("/ui-classic", get(dashboard_classic_index))
-            .route("/dashboard-classic", get(dashboard_classic_index))
-            .route("/ui-next", get(dashboard_next_index))
-            .route("/dashboard-next", get(dashboard_next_index))
-            .route(
-                "/auth/dashboard/session",
-                post(create_dashboard_session).delete(clear_dashboard_session),
-            )
-            .route(
-                "/auth/dashboard/launch/{launch_id}",
-                get(consume_dashboard_launch),
-            )
-            .route(
-                "/auth/provider/callback",
-                get(provider_browser_auth_callback),
-            )
-            .route(
-                "/auth/provider/complete",
-                get(provider_browser_auth_complete),
-            )
-            .route("/v1/hooks/{connector_id}", post(receive_webhook_event)),
-    )
+    add_public_auth_routes(add_dashboard_ui_routes(
+        Router::new().route("/v1/hooks/{connector_id}", post(receive_webhook_event)),
+    ))
     .with_state(state)
 }
 

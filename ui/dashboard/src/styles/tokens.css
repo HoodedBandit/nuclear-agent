@@ -1,0 +1,23 @@
+:root {
+  color-scheme: dark;
+  --font-sans: "Space Grotesk", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", monospace;
+  --bg: #02050d;
+  --bg-panel: rgba(8, 13, 24, 0.94);
+  --bg-panel-soft: rgba(11, 18, 31, 0.9);
+  --bg-panel-elevated: rgba(13, 22, 38, 0.98);
+  --line: rgba(109, 135, 184, 0.18);
+  --line-strong: rgba(112, 202, 248, 0.34);
+  --line-hot: rgba(242, 179, 90, 0.28);
+  --text-primary: #f4f8ff;
+  --text-soft: #b8c7e4;
+  --text-muted: #7b8ead;
+  --accent: #6ce0ff;
+  --reactor: #7af2c8;
+  --amber: #f2b35a;
+  --danger: #ff6d76;
+  --shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
+  --radius-frame: 18px;
+  --radius-panel: 11px;
+  --radius-tight: 8px;
+}

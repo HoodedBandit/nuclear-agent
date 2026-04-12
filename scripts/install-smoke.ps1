@@ -1,20 +1,7 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Invoke-Step {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Label,
-        [Parameter(Mandatory = $true)]
-        [scriptblock]$Action
-    )
-
-    Write-Host "`n==> $Label" -ForegroundColor Cyan
-    & $Action
-    if (-not $?) {
-        throw "Step failed: $Label"
-    }
-}
+. (Join-Path $PSScriptRoot "common.ps1")
 
 function Assert-Exists {
     param(

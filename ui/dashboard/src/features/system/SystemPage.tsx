@@ -8,8 +8,8 @@ import {
   postJson,
   putJson
 } from "../../api/client";
-import type { PermissionPreset, SupportBundleResponse } from "../../api/types";
-import { useDashboardData } from "../../app/dashboard-data";
+import type { LogEntry, PermissionPreset, SupportBundleResponse } from "../../api/types";
+import { useSystemBootstrap } from "../../app/dashboard-selectors";
 import { Panel } from "../../components/Panel";
 import { AdvancedTab } from "./tabs/AdvancedTab";
 import { DaemonTab } from "./tabs/DaemonTab";
@@ -19,13 +19,13 @@ import { PolicyTab } from "./tabs/PolicyTab";
 type SystemTab = "policy" | "daemon" | "diagnostics" | "advanced";
 
 export function SystemPage() {
-  const { bootstrap } = useDashboardData();
+  const { status, permissions, trust } = useSystemBootstrap();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SystemTab>("policy");
   const [supportBundle, setSupportBundle] = useState<SupportBundleResponse | null>(null);
   const logsQuery = useQuery({
     queryKey: ["logs"],
-    queryFn: () => getJson<typeof bootstrap.events>("/v1/logs?limit=100"),
+    queryFn: () => getJson<LogEntry[]>("/v1/logs?limit=100"),
     refetchInterval: 15000
   });
   const doctorQuery = useQuery({
@@ -144,8 +144,8 @@ export function SystemPage() {
 
       {activeTab === "policy" ? (
         <PolicyTab
-          permissions={bootstrap.permissions}
-          trust={bootstrap.trust}
+          permissions={permissions}
+          trust={trust}
           onUpdatePermission={updatePermission}
           onUpdateTrust={updateTrust}
         />
@@ -153,7 +153,7 @@ export function SystemPage() {
 
       {activeTab === "daemon" ? (
         <DaemonTab
-          status={bootstrap.status}
+          status={status}
           onUpdateDaemon={updateDaemon}
           onUpdateAutonomy={(mode) => {
             void updateAutonomy(mode);

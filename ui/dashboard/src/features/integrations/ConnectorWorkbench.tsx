@@ -2,7 +2,7 @@ import type { FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { deleteJson, postJson } from "../../api/client";
-import { useDashboardData } from "../../app/dashboard-data";
+import { useConnectorBootstrap } from "../../app/dashboard-selectors";
 import { Panel } from "../../components/Panel";
 import {
   CONNECTOR_DEFINITIONS,
@@ -58,7 +58,17 @@ function renderConnectorDetails(entry: Record<string, unknown>) {
 }
 
 export function ConnectorWorkbench() {
-  const { bootstrap } = useDashboardData();
+  const {
+    webhookConnectors,
+    inboxConnectors,
+    telegramConnectors,
+    discordConnectors,
+    slackConnectors,
+    signalConnectors,
+    homeAssistantConnectors,
+    gmailConnectors,
+    braveConnectors
+  } = useConnectorBootstrap();
   const queryClient = useQueryClient();
   const [connectorKind, setConnectorKind] = useState<ConnectorDefinition["id"]>("telegram");
   const connectorDefinition = useMemo(
@@ -112,15 +122,15 @@ export function ConnectorWorkbench() {
   }
 
   const connectorCards = [
-    ["/v1/webhooks", bootstrap.webhook_connectors],
-    ["/v1/inboxes", bootstrap.inbox_connectors],
-    ["/v1/telegram", bootstrap.telegram_connectors],
-    ["/v1/discord", bootstrap.discord_connectors],
-    ["/v1/slack", bootstrap.slack_connectors],
-    ["/v1/signal", bootstrap.signal_connectors],
-    ["/v1/home-assistant", bootstrap.home_assistant_connectors],
-    ["/v1/gmail", bootstrap.gmail_connectors],
-    ["/v1/brave", bootstrap.brave_connectors]
+    ["/v1/webhooks", webhookConnectors],
+    ["/v1/inboxes", inboxConnectors],
+    ["/v1/telegram", telegramConnectors],
+    ["/v1/discord", discordConnectors],
+    ["/v1/slack", slackConnectors],
+    ["/v1/signal", signalConnectors],
+    ["/v1/home-assistant", homeAssistantConnectors],
+    ["/v1/gmail", gmailConnectors],
+    ["/v1/brave", braveConnectors]
   ] as const;
 
   return (

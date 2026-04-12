@@ -20,23 +20,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Resolve-PythonCommand {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "python"
-            Arguments  = @()
-        }
-    }
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "py"
-            Arguments  = @("-3")
-        }
-    }
-    throw "Python is required to write release records."
-}
+. (Join-Path $PSScriptRoot "common.ps1")
 
-$pythonCommand = Resolve-PythonCommand
+$pythonCommand = Resolve-PythonCommand -Purpose "write release records"
 $scriptPath = Join-Path $PSScriptRoot "write_release_record.py"
 $arguments = @(
     $scriptPath,

@@ -7,26 +7,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Write-Step {
-    param([string]$Message)
-    Write-Host "`n==> $Message" -ForegroundColor Cyan
-}
-
-function Resolve-PythonCommand {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "python"
-            Arguments  = @()
-        }
-    }
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        return [pscustomobject]@{
-            Executable = "py"
-            Arguments  = @("-3")
-        }
-    }
-    throw "Python is required to generate release metadata."
-}
+. (Join-Path $PSScriptRoot "common.ps1")
 
 function Get-WorkspaceVersion {
     param([string]$CargoTomlPath)
@@ -171,7 +152,7 @@ function Write-Json {
     $Payload | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Get-RepoRoot $PSScriptRoot
 $version = Get-WorkspaceVersion -CargoTomlPath (Join-Path $repoRoot "Cargo.toml")
 $archTag = Get-ArchTag
 $platformTag = "windows-$archTag"
@@ -192,16 +173,16 @@ $signingStatusPath = Join-Path $outputRoot "$bundleName.signing.json"
 $manifestPath = Join-Path $outputRoot "$bundleName.manifest.json"
 $commitSha = Get-GitCommitSha -RepoRoot $repoRoot
 $releaseBinaries = Ensure-ReleaseBinaries -RepoRoot $repoRoot
-$pythonCommand = Resolve-PythonCommand
+$pythonCommand = Resolve-PythonCommand -Purpose "generate release metadata"
 
 if ($Clean) {
-    Remove-Item -Recurse -Force $bundleDir -ErrorAction SilentlyContinue
-    Remove-Item -Force $archivePath -ErrorAction SilentlyContinue
-    Remove-Item -Force $archiveHashPath -ErrorAction SilentlyContinue
-    Remove-Item -Force $sbomPath -ErrorAction SilentlyContinue
-    Remove-Item -Force $provenancePath -ErrorAction SilentlyContinue
-    Remove-Item -Force $signingStatusPath -ErrorAction SilentlyContinue
-    Remove-Item -Force $manifestPath -ErrorAction SilentlyContinue
+    Remove-PathWithRetry -Path $bundleDir -Recurse
+    Remove-PathWithRetry -Path $archivePath
+    Remove-PathWithRetry -Path $archiveHashPath
+    Remove-PathWithRetry -Path $sbomPath
+    Remove-PathWithRetry -Path $provenancePath
+    Remove-PathWithRetry -Path $signingStatusPath
+    Remove-PathWithRetry -Path $manifestPath
 }
 
 New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
@@ -243,7 +224,7 @@ Write-Json -Path (Join-Path $bundleDir "release-manifest.json") -Payload $intern
 
 Write-Step "Compressing packaged bundle"
 if (Test-Path $archivePath) {
-    Remove-Item -Force $archivePath
+    Remove-PathWithRetry -Path $archivePath
 }
 Compress-Archive -Path $bundleDir -DestinationPath $archivePath -Force
 

@@ -9,22 +9,9 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Invoke-Step {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Label,
-        [Parameter(Mandatory = $true)]
-        [scriptblock]$Action
-    )
+. (Join-Path $PSScriptRoot "common.ps1")
 
-    Write-Host "`n==> $Label" -ForegroundColor Cyan
-    & $Action
-    if (-not $?) {
-        throw "Step failed: $Label"
-    }
-}
-
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Get-RepoRoot $PSScriptRoot
 $releaseBinary = Join-Path $repoRoot "target\verify-workspace\release\nuclear.exe"
 $runtimeCertOutputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     Join-Path $repoRoot "target\verify-ga\runtime-cert"

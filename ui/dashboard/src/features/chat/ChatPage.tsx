@@ -13,17 +13,17 @@ import type {
   TaskMode,
   ThinkingLevel
 } from "../../api/types";
-import { useDashboardData } from "../../app/dashboard-data";
+import { useChatBootstrap } from "../../app/dashboard-selectors";
 import { RecentSessionsPanel } from "./panels/RecentSessionsPanel";
 import { ResumePacketPanel } from "./panels/ResumePacketPanel";
 import { RunTaskPanel } from "./panels/RunTaskPanel";
 import { TranscriptPanel } from "./panels/TranscriptPanel";
 
 export function ChatPage() {
-  const { bootstrap } = useDashboardData();
+  const { aliases, sessions, mainAgentAlias } = useChatBootstrap();
   const queryClient = useQueryClient();
   const [prompt, setPrompt] = useState("");
-  const [alias, setAlias] = useState(bootstrap.status.main_agent_alias || "main");
+  const [alias, setAlias] = useState(mainAgentAlias || "main");
   const [thinking, setThinking] = useState<ThinkingLevel>("medium");
   const [cwd, setCwd] = useState("");
   const [taskMode, setTaskMode] = useState<TaskMode | "">("");
@@ -38,6 +38,14 @@ export function ChatPage() {
   const [resumePacket, setResumePacket] = useState<SessionResumePacket | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function resetDraftRunState() {
+    setAttachments([]);
+    setAttachmentPath("");
+    setAttachmentKind("file");
+    setEphemeral(false);
+    setError(null);
+  }
 
   async function loadSessionContext(sessionId: string) {
     const [transcript, resume] = await Promise.all([
@@ -81,7 +89,7 @@ export function ChatPage() {
   }
 
   async function openSession(sessionSummary: SessionSummary) {
-    setError(null);
+    resetDraftRunState();
     await loadSessionContext(sessionSummary.id);
     setResponse(null);
     setAlias(sessionSummary.alias);
@@ -134,11 +142,11 @@ export function ChatPage() {
   }
 
   function clearSession() {
+    resetDraftRunState();
     setSession(null);
     setResumePacket(null);
     setResponse(null);
     setTaskMode("");
-    setAttachments([]);
   }
 
   function addAttachment() {
@@ -157,7 +165,7 @@ export function ChatPage() {
   return (
     <>
       <RunTaskPanel
-        aliases={bootstrap.aliases}
+        aliases={aliases}
         sessionId={session?.session.id || null}
         prompt={prompt}
         alias={alias}
@@ -203,7 +211,7 @@ export function ChatPage() {
       <div className="split-panels">
         <TranscriptPanel session={session} response={response} />
         <RecentSessionsPanel
-          sessions={bootstrap.sessions}
+          sessions={sessions}
           onOpenSession={(entry) => {
             void openSession(entry);
           }}

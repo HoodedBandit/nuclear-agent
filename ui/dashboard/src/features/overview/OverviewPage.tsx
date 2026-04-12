@@ -2,7 +2,7 @@ import type { FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { fetchDoctor, postJson } from "../../api/client";
-import { useDashboardData } from "../../app/dashboard-data";
+import { useOverviewBootstrap } from "../../app/dashboard-selectors";
 import { EmptyState } from "../../components/EmptyState";
 import { MetricCard } from "../../components/MetricCard";
 import { Panel } from "../../components/Panel";
@@ -16,7 +16,7 @@ function fmtDate(value?: string | null) {
 }
 
 export function OverviewPage() {
-  const { bootstrap } = useDashboardData();
+  const { status, events, sessions } = useOverviewBootstrap();
   const [workspaceReport, setWorkspaceReport] = useState<{
     workspace_root?: string;
     manifests?: string[];
@@ -49,21 +49,21 @@ export function OverviewPage() {
       <Panel
         eyebrow="Overview"
         title="Runtime posture"
-        meta={`Started ${fmtDate(bootstrap.status.started_at)}`}
+        meta={`Started ${fmtDate(status.started_at)}`}
       >
         <div className="metric-grid" data-testid="modern-overview-page">
-          <MetricCard label="Providers" value={bootstrap.status.providers} />
-          <MetricCard label="Aliases" value={bootstrap.status.aliases} />
+          <MetricCard label="Providers" value={status.providers} />
+          <MetricCard label="Aliases" value={status.aliases} />
           <MetricCard
             label="Missions"
-            value={bootstrap.status.active_missions}
-            detail={`${bootstrap.status.missions} total`}
-            tone={bootstrap.status.active_missions > 0 ? "warn" : "neutral"}
+            value={status.active_missions}
+            detail={`${status.missions} total`}
+            tone={status.active_missions > 0 ? "warn" : "neutral"}
           />
           <MetricCard
             label="Memory reviews"
-            value={bootstrap.status.pending_memory_reviews}
-            tone={bootstrap.status.pending_memory_reviews > 0 ? "warn" : "good"}
+            value={status.pending_memory_reviews}
+            tone={status.pending_memory_reviews > 0 ? "warn" : "good"}
           />
         </div>
       </Panel>
@@ -155,8 +155,8 @@ export function OverviewPage() {
       <div className="split-panels">
         <Panel eyebrow="Recent" title="Event ribbon">
           <div className="stack-list" id="overview-events">
-            {bootstrap.events.length ? (
-              bootstrap.events.slice(0, 8).map((entry) => (
+            {events.length ? (
+              events.slice(0, 8).map((entry) => (
                 <article key={entry.id} className="stack-card">
                   <div className="stack-card__title">
                     <strong>{entry.target}</strong>
@@ -173,8 +173,8 @@ export function OverviewPage() {
 
         <Panel eyebrow="Sessions" title="Recent sessions">
           <div className="stack-list" id="overview-sessions">
-            {bootstrap.sessions.length ? (
-              bootstrap.sessions.slice(0, 8).map((session) => (
+            {sessions.length ? (
+              sessions.slice(0, 8).map((session) => (
                 <article key={session.id} className="stack-card">
                   <div className="stack-card__title">
                     <strong>{session.title || session.alias}</strong>

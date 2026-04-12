@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { DashboardBootstrapResponse } from "../../api/types";
@@ -146,7 +146,11 @@ describe("AppShell", () => {
     render(<RouterProvider router={router} />);
 
     expect(screen.getByText("Nuclear Agent")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "chat" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /chat/i })).toBeInTheDocument();
+    expect(screen.getByText("Codex -> gpt-5.4")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open context" }));
+
     expect(screen.getByText("main -> gpt-5.4")).toBeInTheDocument();
     expect(screen.getByText("daemon ready")).toBeInTheDocument();
     expect(screen.getByText("chat-body")).toBeInTheDocument();
