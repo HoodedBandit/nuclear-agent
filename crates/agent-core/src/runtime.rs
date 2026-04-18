@@ -355,6 +355,101 @@ pub struct SkillUpdateRequest {
     pub enabled_skills: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateInstallKind {
+    Packaged,
+    Source,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateAvailabilityState {
+    UpToDate,
+    Available,
+    Blocked,
+    Unsupported,
+    InProgress,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateOperationStep {
+    Checking,
+    Downloading,
+    Verifying,
+    Applying,
+    Restarting,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateRunState {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateInstallTarget {
+    pub kind: UpdateInstallKind,
+    pub executable_path: String,
+    #[serde(default)]
+    pub install_dir: Option<String>,
+    #[serde(default)]
+    pub repo_root: Option<String>,
+    #[serde(default)]
+    pub build_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateRunSummary {
+    pub state: UpdateRunState,
+    pub started_at: DateTime<Utc>,
+    #[serde(default)]
+    pub finished_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub from_version: Option<String>,
+    #[serde(default)]
+    pub to_version: Option<String>,
+    #[serde(default)]
+    pub from_commit: Option<String>,
+    #[serde(default)]
+    pub to_commit: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateStatusResponse {
+    pub install: UpdateInstallTarget,
+    pub current_version: String,
+    #[serde(default)]
+    pub current_commit: Option<String>,
+    pub availability: UpdateAvailabilityState,
+    pub checked_at: DateTime<Utc>,
+    #[serde(default)]
+    pub step: Option<UpdateOperationStep>,
+    #[serde(default)]
+    pub candidate_version: Option<String>,
+    #[serde(default)]
+    pub candidate_tag: Option<String>,
+    #[serde(default)]
+    pub candidate_commit: Option<String>,
+    #[serde(default)]
+    pub published_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub last_run: Option<UpdateRunSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct UpdateRunRequest {
+    #[serde(default)]
+    pub wait_for_pid: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaemonStatus {
     pub pid: u32,

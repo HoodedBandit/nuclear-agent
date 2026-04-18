@@ -3,12 +3,14 @@ use super::{
     hosted_kind_for_provider, line_column_to_offset, next_char_boundary, previous_char_boundary,
     GenericPickerEntry, ModelPickerEntry, PickerAction, PickerMode, PickerState, TuiApp,
 };
+use crate::test_support::{spawn_mock_http_server, MockHttpExpectation};
 use crate::HostedKindArg;
 use agent_core::{
     plugin_provider_id, AppConfig, AuthMode, InstalledPluginConfig, MainTargetSummary, ModelAlias,
     PermissionPreset, PluginCompatibility, PluginManifest, PluginPermissions,
     PluginProviderAdapterManifest, PluginSourceKind, ProviderConfig, ProviderKind, SessionSummary,
-    TaskMode, ThinkingLevel, DEFAULT_OPENROUTER_URL, PLUGIN_SCHEMA_VERSION,
+    TaskMode, ThinkingLevel, UpdateAvailabilityState, UpdateInstallKind, UpdateInstallTarget,
+    UpdateStatusResponse, DEFAULT_OPENROUTER_URL, PLUGIN_SCHEMA_VERSION,
 };
 use agent_providers::{ModelDescriptor, ReasoningLevelDescriptor};
 use agent_storage::Storage;
@@ -191,6 +193,29 @@ fn build_projected_plugin_app<'a>(storage: &'a Storage) -> TuiApp<'a> {
         }),
         restart_event_poller: false,
         pending_prompt_snapshot: None,
+    }
+}
+
+fn update_status_fixture(availability: UpdateAvailabilityState) -> UpdateStatusResponse {
+    UpdateStatusResponse {
+        install: UpdateInstallTarget {
+            kind: UpdateInstallKind::Packaged,
+            executable_path: "C:/Program Files/Nuclear/nuclear.exe".to_string(),
+            install_dir: Some("C:/Program Files/Nuclear".to_string()),
+            repo_root: None,
+            build_profile: None,
+        },
+        current_version: "0.8.1".to_string(),
+        current_commit: None,
+        availability,
+        checked_at: chrono::Utc::now(),
+        step: None,
+        candidate_version: Some("0.8.2".to_string()),
+        candidate_tag: Some("v0.8.2".to_string()),
+        candidate_commit: None,
+        published_at: None,
+        detail: Some("0.8.2 is available for windows-x64.".to_string()),
+        last_run: None,
     }
 }
 
@@ -414,6 +439,44 @@ async fn onboard_slash_command_sets_external_action() {
         app.pending_external_action,
         Some(super::ExternalAction::OnboardReset)
     ));
+}
+
+#[tokio::test]
+async fn update_slash_command_requests_daemon_and_exits() {
+    let storage = temp_storage();
+    let mut app = build_test_app(&storage);
+    let server = spawn_mock_http_server(
+        vec![MockHttpExpectation::json(
+            "POST",
+            "/v1/update/run",
+            &update_status_fixture(UpdateAvailabilityState::InProgress),
+        )],
+        Some("Bearer test-token".to_string()),
+    )
+    .await;
+    app.client.base_url = server.origin.clone();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+    app.handle_slash_command(crate::InteractiveCommand::UpdateRun, &tx)
+        .await
+        .unwrap();
+
+    assert!(app.exit_requested);
+    let overlay = app.overlay.expect("update overlay should open");
+    let super::OverlayState::Static { title, body, .. } = overlay else {
+        panic!("expected static overlay");
+    };
+    assert_eq!(title, "Update");
+    assert!(body.contains("install_kind=packaged"));
+    assert!(body.contains("Closing this CLI session"));
+
+    let requests = server.finish().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
+    assert_eq!(
+        body.get("wait_for_pid").and_then(serde_json::Value::as_u64),
+        Some(std::process::id() as u64)
+    );
 }
 
 #[tokio::test]

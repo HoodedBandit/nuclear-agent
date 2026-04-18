@@ -54,17 +54,18 @@ use crate::{
     poll_telegram_connector_route, provider_browser_auth_callback, provider_browser_auth_complete,
     publish_skill_draft, rebuild_memory, receive_webhook_event, reject_connector_approval,
     reject_memory, reject_skill_draft, rename_session, reset_onboarding,
-    resolve_alias_and_provider, resume_autonomy, resume_evolve_mode, resume_mission, search_memory,
-    send_discord_message_route, send_gmail_message_route, send_signal_message_route,
+    resolve_alias_and_provider, resume_autonomy, resume_evolve_mode, resume_mission, run_update,
+    search_memory, send_discord_message_route, send_gmail_message_route, send_signal_message_route,
     send_slack_message_route, send_telegram_message_route, shutdown, start_evolve_mode,
     start_provider_browser_auth, status, stop_evolve_mode, suggest_provider_defaults,
     update_autopilot, update_daemon_config, update_delegation_config, update_enabled_skills,
-    update_main_alias, update_permission_preset, update_plugin, update_plugin_state, update_trust,
-    upsert_alias, upsert_app_connector, upsert_brave_connector, upsert_discord_connector,
-    upsert_gmail_connector, upsert_home_assistant_connector, upsert_inbox_connector,
-    upsert_mcp_server, upsert_memory, upsert_provider, upsert_signal_connector,
-    upsert_slack_connector, upsert_telegram_connector, upsert_webhook_connector,
-    workspace_diff_route, workspace_init_agents_route, workspace_shell_route, ApiError, AppState,
+    update_main_alias, update_permission_preset, update_plugin, update_plugin_state, update_status,
+    update_trust, upsert_alias, upsert_app_connector, upsert_brave_connector,
+    upsert_discord_connector, upsert_gmail_connector, upsert_home_assistant_connector,
+    upsert_inbox_connector, upsert_mcp_server, upsert_memory, upsert_provider,
+    upsert_signal_connector, upsert_slack_connector, upsert_telegram_connector,
+    upsert_webhook_connector, workspace_diff_route, workspace_init_agents_route,
+    workspace_shell_route, ApiError, AppState,
 };
 use crate::{
     execute_batch_request, execute_task_request, execute_task_request_with_events,
@@ -95,6 +96,8 @@ fn add_system_api_routes(router: Router<AppState>) -> Router<AppState> {
         .route("/v1/events", get(list_events))
         .route("/v1/ws", get(control_socket_route))
         .route("/v1/doctor", get(doctor))
+        .route("/v1/update/status", get(update_status))
+        .route("/v1/update/run", post(run_update))
         .route("/v1/support-bundle", post(create_support_bundle))
         .route("/v1/dashboard/launch", post(create_dashboard_launch))
 }

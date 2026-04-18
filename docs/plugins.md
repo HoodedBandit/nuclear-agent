@@ -19,7 +19,7 @@ Example `agent-plugin.json`:
   "schema_version": 1,
   "id": "echo-toolkit",
   "name": "Echo Toolkit",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Sample plugin",
   "compatibility": {
     "min_host_version": 1,
@@ -148,7 +148,7 @@ Request shape written to stdin:
   "host_version": 1,
   "plugin_id": "echo-toolkit",
   "plugin_name": "Echo Toolkit",
-  "plugin_version": "0.8.0",
+  "plugin_version": "0.8.1",
   "tool_name": "echo_tool",
   "workspace_cwd": "C:\\work\\repo",
   "arguments": {

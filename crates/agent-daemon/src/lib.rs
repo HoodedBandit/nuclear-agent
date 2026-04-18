@@ -24,6 +24,7 @@ mod runtime;
 mod sessions;
 mod support_bundle;
 mod tools;
+mod update;
 mod workspace;
 
 #[cfg(test)]
@@ -76,10 +77,10 @@ pub(crate) use control::{
     export_config, get_permission_preset, get_trust, import_config, list_aliases,
     list_delegation_targets, list_enabled_skills, list_events, list_logs, list_mcp_servers,
     list_provider_model_descriptors, list_provider_models, list_providers, pause_autonomy,
-    reset_onboarding, resume_autonomy, shutdown, status, suggest_provider_defaults,
+    reset_onboarding, resume_autonomy, run_update, shutdown, status, suggest_provider_defaults,
     update_autopilot, update_daemon_config, update_delegation_config, update_enabled_skills,
-    update_main_alias, update_permission_preset, update_trust, upsert_alias, upsert_mcp_server,
-    upsert_provider,
+    update_main_alias, update_permission_preset, update_status, update_trust, upsert_alias,
+    upsert_mcp_server, upsert_provider,
 };
 pub(crate) use delegation::{
     delegation_targets_from_config, normalize_delegation_limit,
@@ -128,6 +129,7 @@ use tokio::{
     sync::{mpsc, Notify, RwLock},
 };
 use tracing::{error, info};
+pub use update::run_update_helper_from_plan;
 #[cfg(test)]
 use uuid::Uuid;
 pub use workspace::inspect_workspace_path;

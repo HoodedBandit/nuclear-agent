@@ -3,26 +3,38 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   createSupportBundle,
+  fetchUpdateStatus,
   fetchDoctor,
   getJson,
   postJson,
-  putJson
+  putJson,
+  runUpdate
 } from "../../api/client";
-import type { LogEntry, PermissionPreset, SupportBundleResponse } from "../../api/types";
+import type {
+  LogEntry,
+  PermissionPreset,
+  SupportBundleResponse,
+  UpdateStatusResponse
+} from "../../api/types";
 import { useSystemBootstrap } from "../../app/dashboard-selectors";
 import { Panel } from "../../components/Panel";
 import { AdvancedTab } from "./tabs/AdvancedTab";
 import { DaemonTab } from "./tabs/DaemonTab";
 import { DiagnosticsTab } from "./tabs/DiagnosticsTab";
 import { PolicyTab } from "./tabs/PolicyTab";
+import { UpdatesTab } from "./tabs/UpdatesTab";
+import { markPendingUpdate } from "./update-session";
 
-type SystemTab = "policy" | "daemon" | "diagnostics" | "advanced";
+type SystemTab = "policy" | "daemon" | "updates" | "diagnostics" | "advanced";
 
 export function SystemPage() {
   const { status, permissions, trust } = useSystemBootstrap();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SystemTab>("policy");
   const [supportBundle, setSupportBundle] = useState<SupportBundleResponse | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusResponse | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const logsQuery = useQuery({
     queryKey: ["logs"],
     queryFn: () => getJson<LogEntry[]>("/v1/logs?limit=100"),
@@ -121,6 +133,34 @@ export function SystemPage() {
     await refreshSystem();
   }
 
+  async function checkForUpdates() {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      setUpdateStatus(await fetchUpdateStatus());
+    } catch (error) {
+      setUpdateError(error instanceof Error ? error.message : "Update check failed.");
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function applyUpdate() {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      const status = await runUpdate({});
+      setUpdateStatus(status);
+      if (status.availability === "in_progress") {
+        markPendingUpdate();
+      }
+    } catch (error) {
+      setUpdateError(error instanceof Error ? error.message : "Update failed to start.");
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
   return (
     <Panel eyebrow="System" title="Policy, daemon, and diagnostics">
       <div className="toolbar">
@@ -129,7 +169,7 @@ export function SystemPage() {
           <span>Lock policy, daemon state, diagnostics, and advanced configuration.</span>
         </div>
         <div className="subtabs">
-          {(["policy", "daemon", "diagnostics", "advanced"] as SystemTab[]).map((tab) => (
+          {(["policy", "daemon", "updates", "diagnostics", "advanced"] as SystemTab[]).map((tab) => (
             <button
               key={tab}
               type="button"
@@ -162,6 +202,20 @@ export function SystemPage() {
             void updateEvolve(mode);
           }}
           onUpdateAutopilot={updateAutopilot}
+        />
+      ) : null}
+
+      {activeTab === "updates" ? (
+        <UpdatesTab
+          status={updateStatus}
+          busy={updateBusy}
+          error={updateError}
+          onCheck={() => {
+            void checkForUpdates();
+          }}
+          onRun={() => {
+            void applyUpdate();
+          }}
         />
       ) : null}
 

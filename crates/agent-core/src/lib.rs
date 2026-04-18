@@ -44,6 +44,7 @@ pub const DEFAULT_MOONSHOT_MODEL: &str = "kimi-k2";
 pub const DEFAULT_VENICE_MODEL: &str = "venice-large";
 pub const KEYCHAIN_SERVICE: &str = "nuclear";
 pub const INTERNAL_DAEMON_ARG: &str = "__daemon";
+pub const INTERNAL_UPDATE_HELPER_ARG: &str = "__update-helper";
 
 pub fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
     if text.len() <= max_bytes {

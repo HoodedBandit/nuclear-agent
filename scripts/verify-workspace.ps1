@@ -92,6 +92,17 @@ function Invoke-WorkspaceDependencyDriftCheck {
     throw "Python is required for the workspace dependency drift check"
 }
 
+function Resolve-NpmCommand {
+    if (Get-Command "npm.cmd" -ErrorAction SilentlyContinue) {
+        return "npm.cmd"
+    }
+    if (Get-Command "npm" -ErrorAction SilentlyContinue) {
+        return "npm"
+    }
+
+    throw "npm is required to run dashboard tooling"
+}
+
 function Invoke-DashboardChecks {
     param(
         [Parameter(Mandatory = $true)]
@@ -110,23 +121,25 @@ function Invoke-DashboardChecks {
 
     Push-Location $dashboardRoot
     try {
-        & npm ci
+        $npm = Resolve-NpmCommand
+
+        & $npm ci
         if ($LASTEXITCODE -ne 0) {
             throw "npm ci failed for ui/dashboard"
         }
-        & npm run typecheck
+        & $npm run typecheck
         if ($LASTEXITCODE -ne 0) {
             throw "npm run typecheck failed for ui/dashboard"
         }
-        & npm run lint
+        & $npm run lint
         if ($LASTEXITCODE -ne 0) {
             throw "npm run lint failed for ui/dashboard"
         }
-        & npm test
+        & $npm test
         if ($LASTEXITCODE -ne 0) {
             throw "npm test failed for ui/dashboard"
         }
-        & npm run build
+        & $npm run build
         if ($LASTEXITCODE -ne 0) {
             throw "npm run build failed for ui/dashboard"
         }

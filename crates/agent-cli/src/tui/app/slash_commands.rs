@@ -16,6 +16,28 @@ impl<'a> TuiApp<'a> {
             InteractiveCommand::Status => {
                 self.open_static_overlay("Status", self.status_text().await?);
             }
+            InteractiveCommand::UpdateStatus => {
+                let status = crate::update_cli::request_update_status(&self.client).await?;
+                self.open_static_overlay(
+                    "Update",
+                    crate::update_cli::render_update_status(&status),
+                );
+            }
+            InteractiveCommand::UpdateRun => {
+                let status =
+                    crate::update_cli::run_update_request(&self.client, Some(std::process::id()))
+                        .await?;
+                let body = if crate::update_cli::should_exit_for_update(&status) {
+                    self.exit_requested = true;
+                    format!(
+                        "{}\n\nClosing this CLI session so the packaged updater can continue.",
+                        crate::update_cli::render_update_status(&status)
+                    )
+                } else {
+                    crate::update_cli::render_update_status(&status)
+                };
+                self.open_static_overlay("Update", body);
+            }
             InteractiveCommand::ConfigShow => {
                 self.open_config_picker().await?;
             }

@@ -15,6 +15,7 @@ use crate::{build_http_client, resolve_active_alias, resolved_requested_model};
 pub(crate) fn print_interactive_help() {
     println!("Available commands:");
     println!("/help                     show this help");
+    println!("/update [status]          check for or apply the latest packaged release update");
     println!("/config                   open the categorized settings menu");
     println!("/dashboard                open the localhost web control room");
     println!("/telegrams                list configured Telegram connectors");

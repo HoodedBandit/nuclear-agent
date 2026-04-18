@@ -124,3 +124,52 @@ export interface SupportBundleResponse {
   generated_at: string;
   files: string[];
 }
+
+export type UpdateInstallKind = "packaged" | "source" | "unsupported";
+export type UpdateAvailabilityState =
+  | "up_to_date"
+  | "available"
+  | "blocked"
+  | "unsupported"
+  | "in_progress";
+export type UpdateOperationStep =
+  | "checking"
+  | "downloading"
+  | "verifying"
+  | "applying"
+  | "restarting";
+export type UpdateRunState = "succeeded" | "failed";
+
+export interface UpdateInstallTarget {
+  kind: UpdateInstallKind;
+  executable_path: string;
+  install_dir?: string | null;
+  repo_root?: string | null;
+  build_profile?: string | null;
+}
+
+export interface UpdateRunSummary {
+  state: UpdateRunState;
+  started_at: string;
+  finished_at?: string | null;
+  from_version?: string | null;
+  to_version?: string | null;
+  from_commit?: string | null;
+  to_commit?: string | null;
+  detail?: string | null;
+}
+
+export interface UpdateStatusResponse {
+  install: UpdateInstallTarget;
+  current_version: string;
+  current_commit?: string | null;
+  availability: UpdateAvailabilityState;
+  checked_at: string;
+  step?: UpdateOperationStep | null;
+  candidate_version?: string | null;
+  candidate_tag?: string | null;
+  candidate_commit?: string | null;
+  published_at?: string | null;
+  detail?: string | null;
+  last_run?: UpdateRunSummary | null;
+}

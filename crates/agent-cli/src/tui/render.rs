@@ -873,10 +873,10 @@ fn render_composer_lines(app: &TuiApp<'_>) -> Vec<Line<'static>> {
 
 fn render_footer_left(app: &TuiApp<'_>) -> String {
     if app.input.is_empty() {
-        "  ? shortcuts | ctrl+p switch | /config settings | /dashboard web ui | ctrl+t transcript | enter send"
+        "  ? shortcuts | ctrl+p switch | /update release | /dashboard web ui | ctrl+t transcript | enter send"
             .to_string()
     } else {
-        "  enter send | ctrl+j newline | ctrl+p switch | /dashboard web ui | ctrl+t transcript"
+        "  enter send | ctrl+j newline | ctrl+p switch | /update release | ctrl+t transcript"
             .to_string()
     }
 }
@@ -1198,7 +1198,7 @@ fn format_tokens_compact(value: i64) -> String {
 }
 
 pub(super) fn help_text() -> &'static str {
-    "/help\n/status\n/config\n/dashboard\n/telegrams\n/discords\n/slacks\n/signals\n/home-assistant\n/telegram approvals\n/discord approvals\n/slack approvals\n/webhooks\n/inboxes\n/autopilot [on|pause|resume|status]\n/missions\n/events [limit]\n/schedule <seconds> <title>\n/repeat <seconds> <title>\n/watch <path> <title>\n/profile\n/memory [query]\n/memory rebuild [session]\n/remember <text>\n/forget <memory-id>\n/skills [drafts|published|rejected]\n/skills publish <draft-id>\n/skills reject <draft-id>\n/model [name]\n/provider [name]\n/mode [build|daily|default]\n/onboard\n/permissions [preset]\n/attach <path>\n/attachments\n/detach\n/thinking [level]\n/fast\n/review [instructions]\n/compact\n/resume\n/fork\n/rename <title>\n/new\n/clear\n!<command>\n/exit\n\nMain view:\n  Enter send\n  Ctrl+J or Shift+Enter newline\n  Ctrl+P provider and main switcher\n  Ctrl+T transcript overlay\n  Up/Down scroll transcript when composer is empty\n  PageUp/PageDown jump transcript\n  Ctrl+A / Ctrl+E line start/end\n\nSettings:\n  /config opens a simple settings home with categories\n  /dashboard opens the localhost web control room\n  /model opens the provider/alias switcher or accepts a direct alias/model\n  /provider lists logged-in providers or switches the current provider\n  /mode flips between build and daily task presets\n  /onboard wipes saved state and restarts setup\n\nOverlays:\n  Esc or q close\n  Up/Down or j/k scroll\n  PageUp/PageDown jump\n  Home/End top or bottom\n\nPickers:\n  Type to filter\n  Up/Down move selection\n  Enter select\n  Esc cancel\n  PageUp/PageDown jump\n  Mouse wheel scroll"
+    "/help\n/status\n/update\n/update status\n/config\n/dashboard\n/telegrams\n/discords\n/slacks\n/signals\n/home-assistant\n/telegram approvals\n/discord approvals\n/slack approvals\n/webhooks\n/inboxes\n/autopilot [on|pause|resume|status]\n/missions\n/events [limit]\n/schedule <seconds> <title>\n/repeat <seconds> <title>\n/watch <path> <title>\n/profile\n/memory [query]\n/memory rebuild [session]\n/remember <text>\n/forget <memory-id>\n/skills [drafts|published|rejected]\n/skills publish <draft-id>\n/skills reject <draft-id>\n/model [name]\n/provider [name]\n/mode [build|daily|default]\n/onboard\n/permissions [preset]\n/attach <path>\n/attachments\n/detach\n/thinking [level]\n/fast\n/review [instructions]\n/compact\n/resume\n/fork\n/rename <title>\n/new\n/clear\n!<command>\n/exit\n\nMain view:\n  Enter send\n  Ctrl+J or Shift+Enter newline\n  Ctrl+P provider and main switcher\n  Ctrl+T transcript overlay\n  Up/Down scroll transcript when composer is empty\n  PageUp/PageDown jump transcript\n  Ctrl+A / Ctrl+E line start/end\n\nSettings:\n  /config opens a simple settings home with categories\n  /dashboard opens the localhost web control room\n  /update checks for or applies the latest packaged GitHub release\n  /model opens the provider/alias switcher or accepts a direct alias/model\n  /provider lists logged-in providers or switches the current provider\n  /mode flips between build and daily task presets\n  /onboard wipes saved state and restarts setup\n\nOverlays:\n  Esc or q close\n  Up/Down or j/k scroll\n  PageUp/PageDown jump\n  Home/End top or bottom\n\nPickers:\n  Type to filter\n  Up/Down move selection\n  Enter select\n  Esc cancel\n  PageUp/PageDown jump\n  Mouse wheel scroll"
 }
 
 fn centered_rect(horizontal: u16, vertical: u16, area: Rect) -> Rect {

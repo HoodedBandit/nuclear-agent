@@ -351,7 +351,7 @@ mod tests {
         HostedPluginTool {
             plugin_id: "echo-toolkit".to_string(),
             plugin_name: "Echo Toolkit".to_string(),
-            plugin_version: "0.8.0".to_string(),
+            plugin_version: "0.8.1".to_string(),
             install_dir: root.to_path_buf(),
             command,
             args,

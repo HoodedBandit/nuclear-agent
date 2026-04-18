@@ -4,6 +4,7 @@ import {
   useQuery,
   useQueryClient
 } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { createHashRouter, RouterProvider } from "react-router-dom";
 import { clearDashboardSession, DashboardApiError, fetchBootstrap } from "../api/client";
 import { ConnectScreen } from "../features/auth/ConnectScreen";
@@ -12,6 +13,10 @@ import { IntegrationsPage } from "../features/integrations/IntegrationsPage";
 import { AppShell } from "../features/layout/AppShell";
 import { OperationsPage } from "../features/operations/OperationsPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
+import {
+  clearPendingUpdate,
+  hasPendingUpdate
+} from "../features/system/update-session";
 import { SystemPage } from "../features/system/SystemPage";
 import { DashboardDataProvider } from "./DashboardDataContext";
 
@@ -38,6 +43,25 @@ function AppRoot() {
     queryFn: fetchBootstrap,
     refetchInterval: 12000
   });
+  const pendingUpdate = hasPendingUpdate();
+
+  useEffect(() => {
+    if (bootstrapQuery.data && pendingUpdate) {
+      clearPendingUpdate();
+    }
+  }, [bootstrapQuery.data, pendingUpdate]);
+
+  useEffect(() => {
+    if (!pendingUpdate || bootstrapQuery.data || !bootstrapQuery.error) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void bootstrapQuery.refetch();
+    }, 1500);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [bootstrapQuery, pendingUpdate]);
 
   if (bootstrapQuery.isLoading) {
     return <div className="app-loading">Loading cockpit...</div>;
@@ -54,6 +78,14 @@ function AppRoot() {
   }
 
   if (bootstrapQuery.error) {
+    if (pendingUpdate) {
+      return (
+        <main className="app-loading">
+          <h1>Applying update</h1>
+          <p>Waiting for the daemon to restart with the updated build.</p>
+        </main>
+      );
+    }
     return (
       <main className="app-error">
         <h1>Dashboard bootstrap failed</h1>

@@ -3,7 +3,8 @@ import type {
   BrowserProviderAuthStatusResponse,
   DashboardBootstrapResponse,
   HealthReport,
-  SupportBundleResponse
+  SupportBundleResponse,
+  UpdateStatusResponse
 } from "./types";
 
 export class DashboardApiError extends Error {
@@ -119,4 +120,12 @@ export function createSupportBundle(payload: {
   session_limit: number;
 }) {
   return postJson<SupportBundleResponse>("/v1/support-bundle", payload);
+}
+
+export function fetchUpdateStatus() {
+  return getJson<UpdateStatusResponse>("/v1/update/status");
+}
+
+export function runUpdate(payload?: { wait_for_pid?: number | null }) {
+  return postJson<UpdateStatusResponse>("/v1/update/run", payload ?? {});
 }

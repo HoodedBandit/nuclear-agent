@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "echo-toolkit",
   "name": "Echo Toolkit",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Fixture plugin for dashboard E2E coverage",
   "compatibility": {
     "min_host_version": 1,

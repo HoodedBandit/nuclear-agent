@@ -455,7 +455,7 @@ mod tests {
             schema_version: PLUGIN_SCHEMA_VERSION,
             id: "echo".to_string(),
             name: "Echo".to_string(),
-            version: "0.8.0".to_string(),
+            version: "0.8.1".to_string(),
             description: "test".to_string(),
             homepage: None,
             compatibility: PluginCompatibility::default(),

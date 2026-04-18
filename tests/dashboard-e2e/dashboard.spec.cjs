@@ -132,3 +132,15 @@ test("installs a local plugin and creates a support bundle", async ({ page }) =>
 
   await expect(page.locator("#support-bundle-result")).toContainText("Bundle ready");
 });
+
+test("checks for a packaged update from the system workbench", async ({ page }) => {
+  await connectDashboard(page);
+  await openSection(page, "system");
+
+  await page.getByRole("button", { name: "updates" }).click();
+  await page.click("#update-check-button");
+
+  await expect(page.locator("#update-status-body")).toContainText("0.8.2 is available");
+  await expect(page.locator("#update-status-body")).toContainText("v0.8.2");
+  await expect(page.locator("#update-run-button")).toBeEnabled();
+});

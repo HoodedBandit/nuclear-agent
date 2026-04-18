@@ -9,6 +9,7 @@ mod bootstrap;
 mod operations;
 mod providers;
 mod system;
+mod update;
 
 #[cfg(test)]
 pub(crate) use bootstrap::OnboardingResetRequest;
@@ -32,6 +33,7 @@ pub(crate) use system::{
     update_delegation_config, update_enabled_skills, update_permission_preset, update_trust,
     upsert_mcp_server,
 };
+pub(crate) use update::{run_update, update_status};
 
 fn redact_provider_secret_metadata(mut provider: ProviderConfig) -> ProviderConfig {
     provider.keychain_account = None;

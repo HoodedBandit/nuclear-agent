@@ -24,6 +24,7 @@ mod repo_cli;
 mod session_support;
 mod skills_cli;
 mod tui;
+mod update_cli;
 
 #[cfg(test)]
 use agent_core::{DiscordChannelCursor, MessageRole, SessionResumePacket};
@@ -148,6 +149,10 @@ use tokio::{
     net::TcpListener,
     process::Command as TokioCommand,
     time::{sleep, timeout},
+};
+use update_cli::{
+    internal_update_helper_command, render_update_status, request_update_status,
+    run_update_request, should_exit_for_update, update_command,
 };
 use url::{form_urlencoded, Url};
 use uuid::Uuid;
@@ -331,10 +336,32 @@ enum Commands {
     },
     Dashboard(DashboardArgs),
     Doctor,
+    Update(UpdateArgs),
     #[command(name = "support-bundle")]
     SupportBundle(SupportBundleArgs),
+    #[command(name = "__update-helper", hide = true)]
+    InternalUpdateHelper(UpdateHelperArgs),
     #[command(name = "__daemon", hide = true)]
     InternalDaemon,
+}
+
+#[derive(Args)]
+struct UpdateArgs {
+    #[arg(long, default_value_t = false)]
+    json: bool,
+    #[command(subcommand)]
+    command: Option<UpdateSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum UpdateSubcommand {
+    Status,
+}
+
+#[derive(Args)]
+struct UpdateHelperArgs {
+    #[arg(long, value_name = "PATH")]
+    plan: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -1518,6 +1545,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if let Some(Commands::InternalUpdateHelper(args)) = &cli.command {
+        return internal_update_helper_command(UpdateHelperArgs {
+            plan: args.plan.clone(),
+        })
+        .await;
+    }
     if matches!(cli.command, Some(Commands::InternalDaemon)) {
         return agent_daemon::run_daemon().await;
     }
@@ -1582,7 +1615,9 @@ async fn main() -> Result<()> {
         Some(Commands::Logs { limit, follow }) => logs_command(&storage, limit, follow).await?,
         Some(Commands::Dashboard(args)) => dashboard_command(&storage, args).await?,
         Some(Commands::Doctor) => doctor_command(&storage).await?,
+        Some(Commands::Update(args)) => update_command(&storage, args).await?,
         Some(Commands::SupportBundle(args)) => support_bundle_command(&storage, args).await?,
+        Some(Commands::InternalUpdateHelper(_)) => unreachable!(),
         Some(Commands::InternalDaemon) => unreachable!(),
     }
 
@@ -1771,7 +1806,7 @@ async fn interactive_session(
         permission_preset = Some(storage.load_config()?.permission_preset);
     }
     println!(
-        "Interactive chat. Use /help for commands, /model or Ctrl+P for alias/main switching, /provider for provider switching, /mode to switch between build and daily presets, /onboard for a fresh setup reset, and /thinking to adjust reasoning."
+        "Interactive chat. Use /help for commands, /update to apply the latest packaged release, /model or Ctrl+P for alias/main switching, /provider for provider switching, /mode to switch between build and daily presets, /onboard for a fresh setup reset, and /thinking to adjust reasoning."
     );
 
     if let Some(prompt) = normalize_prompt_input(initial_prompt)? {
@@ -1823,6 +1858,7 @@ async fn interactive_session(
             match parse_interactive_command(line) {
                 Ok(Some(InteractiveCommand::Exit)) => break,
                 Ok(Some(command)) => {
+                    let mut exit_after_command = false;
                     let command_result: Result<()> = async {
                         match command {
                             InteractiveCommand::Exit => unreachable!(),
@@ -1842,9 +1878,24 @@ async fn interactive_session(
                                 )
                                 .await?;
                             }
+                            InteractiveCommand::UpdateStatus => {
+                                let status = request_update_status(&client).await?;
+                                println!("{}", render_update_status(&status));
+                            }
+                            InteractiveCommand::UpdateRun => {
+                                let status =
+                                    run_update_request(&client, Some(std::process::id())).await?;
+                                println!("{}", render_update_status(&status));
+                                if should_exit_for_update(&status) {
+                                    println!(
+                                        "Update staged. Closing this CLI session so the packaged installer can continue."
+                                    );
+                                    exit_after_command = true;
+                                }
+                            }
                             InteractiveCommand::ConfigShow => {
                                 println!(
-                                    "Settings:\n  /config opens the categorized settings menu in the TUI.\n  /dashboard opens the localhost web control room.\n  /model opens the alias/main switcher, /provider switches logged-in providers, and /mode, /thinking, and /permissions remain quick shortcuts."
+                                    "Settings:\n  /config opens the categorized settings menu in the TUI.\n  /dashboard opens the localhost web control room.\n  /update applies the latest packaged GitHub release.\n  /model opens the alias/main switcher, /provider switches logged-in providers, and /mode, /thinking, and /permissions remain quick shortcuts."
                                 );
                             }
                             InteractiveCommand::DashboardOpen => {
@@ -2767,6 +2818,8 @@ async fn interactive_session(
                     .await;
                     if let Err(error) = command_result {
                         println!("error: {error:#}");
+                    } else if exit_after_command {
+                        break;
                     }
                     continue;
                 }

@@ -6,7 +6,8 @@ use agent_core::{
     InstalledPluginConfig, MainTargetSummary, MemorySearchResponse, PermissionPreset,
     PluginCompatibility, PluginManifest, PluginPermissions, PluginProviderAdapterManifest,
     PluginSourceKind, ProviderKind, RunTaskResponse, SessionMessage, SessionSummary,
-    SignalSendResponse, SlackSendResponse, PLUGIN_SCHEMA_VERSION,
+    SignalSendResponse, SlackSendResponse, UpdateAvailabilityState, UpdateInstallKind,
+    UpdateInstallTarget, UpdateStatusResponse, PLUGIN_SCHEMA_VERSION,
 };
 use clap::Parser;
 use serde::Deserialize;
@@ -232,6 +233,29 @@ fn temp_file(name: &str, content: &str) -> PathBuf {
     path
 }
 
+fn update_status_fixture(availability: UpdateAvailabilityState) -> UpdateStatusResponse {
+    UpdateStatusResponse {
+        install: UpdateInstallTarget {
+            kind: UpdateInstallKind::Packaged,
+            executable_path: "C:\\Nuclear\\nuclear.exe".to_string(),
+            install_dir: Some("C:\\Nuclear".to_string()),
+            repo_root: None,
+            build_profile: None,
+        },
+        current_version: "0.8.1".to_string(),
+        current_commit: None,
+        availability,
+        checked_at: chrono::Utc::now(),
+        step: None,
+        candidate_version: Some("0.8.2".to_string()),
+        candidate_tag: Some("v0.8.2".to_string()),
+        candidate_commit: None,
+        published_at: None,
+        detail: Some("0.8.2 is available for windows-x64.".to_string()),
+        last_run: None,
+    }
+}
+
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 struct StreamFixture {
     value: String,
@@ -270,6 +294,80 @@ async fn dashboard_command_requests_launch_when_not_opening_browser() {
     let requests = server.finish().await.unwrap();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].path, "/v1/dashboard/launch");
+}
+
+#[tokio::test]
+async fn update_status_command_reads_daemon_endpoint() {
+    let storage = temp_storage();
+    let token = "test-update-status-token";
+    let server = spawn_mock_http_server(
+        vec![
+            MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+            MockHttpExpectation::json(
+                "GET",
+                "/v1/update/status",
+                &update_status_fixture(UpdateAvailabilityState::Available),
+            ),
+        ],
+        Some(format!("Bearer {token}")),
+    )
+    .await;
+    save_daemon_config(&storage, &server.origin, token);
+
+    update_command(
+        &storage,
+        UpdateArgs {
+            json: false,
+            command: Some(UpdateSubcommand::Status),
+        },
+    )
+    .await
+    .unwrap();
+
+    let requests = server.finish().await.unwrap();
+    assert!(requests
+        .iter()
+        .any(|request| request.path == "/v1/update/status"));
+}
+
+#[tokio::test]
+async fn update_command_posts_requester_pid_to_daemon() {
+    let storage = temp_storage();
+    let token = "test-update-run-token";
+    let server = spawn_mock_http_server(
+        vec![
+            MockHttpExpectation::json("GET", "/v1/status", &daemon_status_fixture()),
+            MockHttpExpectation::json(
+                "POST",
+                "/v1/update/run",
+                &update_status_fixture(UpdateAvailabilityState::InProgress),
+            ),
+        ],
+        Some(format!("Bearer {token}")),
+    )
+    .await;
+    save_daemon_config(&storage, &server.origin, token);
+
+    update_command(
+        &storage,
+        UpdateArgs {
+            json: false,
+            command: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let requests = server.finish().await.unwrap();
+    let run_request = requests
+        .iter()
+        .find(|request| request.path == "/v1/update/run")
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&run_request.body).unwrap();
+    assert_eq!(
+        body.get("wait_for_pid").and_then(serde_json::Value::as_u64),
+        Some(std::process::id() as u64)
+    );
 }
 
 #[tokio::test]
@@ -1636,6 +1734,10 @@ fn parse_interactive_command_supports_model_mode_and_thinking() {
         Some(InteractiveCommand::Onboard)
     );
     assert_eq!(
+        parse_interactive_command("/update").unwrap(),
+        Some(InteractiveCommand::UpdateRun)
+    );
+    assert_eq!(
         parse_interactive_command("/thinking high").unwrap(),
         Some(InteractiveCommand::ThinkingSet(Some(ThinkingLevel::High)))
     );
@@ -1744,6 +1846,10 @@ fn parse_interactive_command_supports_review_and_status() {
     assert_eq!(
         parse_interactive_command("/status").unwrap(),
         Some(InteractiveCommand::Status)
+    );
+    assert_eq!(
+        parse_interactive_command("/update status").unwrap(),
+        Some(InteractiveCommand::UpdateStatus)
     );
     assert_eq!(
         parse_interactive_command("/config").unwrap(),

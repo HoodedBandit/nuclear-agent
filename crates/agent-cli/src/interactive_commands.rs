@@ -6,6 +6,8 @@ pub(crate) enum InteractiveCommand {
     Exit,
     Help,
     Status,
+    UpdateStatus,
+    UpdateRun,
     ConfigShow,
     DashboardOpen,
     TelegramsShow,
@@ -99,6 +101,14 @@ pub(crate) fn parse_interactive_command(line: &str) -> Result<Option<Interactive
         "exit" | "quit" => InteractiveCommand::Exit,
         "help" => InteractiveCommand::Help,
         "status" => InteractiveCommand::Status,
+        "update" => match args.map(|value| value.to_ascii_lowercase()) {
+            None => InteractiveCommand::UpdateRun,
+            Some(value) if value == "run" || value == "apply" => InteractiveCommand::UpdateRun,
+            Some(value) if value == "status" || value == "check" => {
+                InteractiveCommand::UpdateStatus
+            }
+            Some(_) => bail!("usage: /update [status]"),
+        },
         "config" | "settings" => InteractiveCommand::ConfigShow,
         "dashboard" | "ui" => InteractiveCommand::DashboardOpen,
         "telegram" | "telegrams" => parse_telegram_interactive_command(args)?,

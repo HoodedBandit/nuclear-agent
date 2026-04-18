@@ -15,8 +15,10 @@ const dashboardRoot = path.join(repoRoot, "ui", "dashboard");
 const dashboardBundlePath = path.join(repoRoot, "crates", "agent-daemon", "static-modern", "index.html");
 const pluginFixtureDir = path.join(repoRoot, "tests", "dashboard-e2e", "fixtures", "echo-plugin");
 const pluginSourceDir = path.join(targetDir, "fixtures", "echo-plugin");
+const installDir = path.join(targetDir, "install");
 const daemonPort = 42791;
 const providerPort = 42792;
+const releasePort = 42793;
 const daemonToken = "playwright-daemon-token";
 const windowsExecutables = [
   path.join(repoRoot, "target", "debug", "nuclear.exe"),
@@ -27,6 +29,7 @@ const unixExecutables = [
 const rebuildExtensions = new Set([".rs", ".html", ".css", ".js", ".cjs", ".toml", ".lock", ".ts", ".tsx"]);
 
 let mockServer = null;
+let releaseServer = null;
 let daemonChild = null;
 let shuttingDown = false;
 
@@ -64,12 +67,17 @@ function makeEnv() {
     USERPROFILE: profileDir,
     APPDATA: appData,
     LOCALAPPDATA: localAppData,
+    NUCLEAR_UPDATE_RELEASES_URL: `http://127.0.0.1:${releasePort}/releases/latest`,
   };
 }
 
 function executablePath() {
   const candidates = process.platform === "win32" ? windowsExecutables : unixExecutables;
   return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+}
+
+function managedExecutableName() {
+  return process.platform === "win32" ? "nuclear.exe" : "nuclear";
 }
 
 function newestMtimeMs(entryPath) {
@@ -170,6 +178,34 @@ function ensureBinaryBuilt() {
     throw new Error(`expected built binary at ${exe}`);
   }
   return exe;
+}
+
+function prepareManagedExecutable(exe) {
+  ensureDir(installDir);
+  const managedExe = path.join(installDir, managedExecutableName());
+  fs.copyFileSync(exe, managedExe);
+  if (process.platform !== "win32") {
+    fs.chmodSync(managedExe, 0o755);
+  }
+  fs.writeFileSync(
+    path.join(installDir, "install-state.json"),
+    JSON.stringify(
+      {
+        schema_version: 1,
+        display_name: "Nuclear Agent",
+        command_name: "nuclear",
+        install_dir: installDir,
+        installed_at: new Date().toISOString(),
+        version: "0.8.1",
+        install_source: "bundled",
+        rollback_binary: null,
+        previous_binary_source: null,
+      },
+      null,
+      2
+    )
+  );
+  return managedExe;
 }
 
 function discoverConfigPath(exe, env) {
@@ -307,6 +343,48 @@ function startMockProviderServer() {
   });
 }
 
+function startReleaseServer() {
+  releaseServer = http.createServer((req, res) => {
+    const requestUrl = new URL(req.url, `http://${req.headers.host}`);
+    if (req.method === "GET" && requestUrl.pathname === "/releases/latest") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          tag_name: "v0.8.2",
+          draft: false,
+          prerelease: false,
+          published_at: "2026-04-17T00:00:00Z",
+          assets: [
+            {
+              name:
+                process.platform === "win32"
+                  ? "nuclear-0.8.2-windows-x64-full.zip"
+                  : "nuclear-0.8.2-linux-x64-full.tar.gz",
+              browser_download_url: `http://127.0.0.1:${releasePort}/downloads/archive`,
+            },
+            {
+              name:
+                process.platform === "win32"
+                  ? "nuclear-0.8.2-windows-x64-full.zip.sha256.txt"
+                  : "nuclear-0.8.2-linux-x64-full.tar.gz.sha256.txt",
+              browser_download_url: `http://127.0.0.1:${releasePort}/downloads/checksum`,
+            },
+          ],
+        })
+      );
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("unused");
+  });
+
+  return new Promise((resolve, reject) => {
+    releaseServer.once("error", reject);
+    releaseServer.listen(releasePort, "127.0.0.1", () => resolve());
+  });
+}
+
 function startDaemon(exe, env) {
   daemonChild = spawn(exe, ["__daemon"], {
     cwd: repoRoot,
@@ -356,6 +434,9 @@ async function cleanupAndExit(code) {
   if (mockServer) {
     await new Promise((resolve) => mockServer.close(resolve));
   }
+  if (releaseServer) {
+    await new Promise((resolve) => releaseServer.close(resolve));
+  }
   process.exit(code);
 }
 
@@ -366,10 +447,12 @@ async function main() {
   writeAttachmentFixture();
   ensureDashboardBuilt();
   const env = makeEnv();
-  const exe = ensureBinaryBuilt();
+  const builtExe = ensureBinaryBuilt();
+  const exe = prepareManagedExecutable(builtExe);
   const configPath = discoverConfigPath(exe, env);
   writeE2EConfig(configPath);
   await startMockProviderServer();
+  await startReleaseServer();
   startDaemon(exe, env);
   await waitForDaemonReady();
   process.stdout.write("[dashboard-e2e] ready\n");

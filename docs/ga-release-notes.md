@@ -2,7 +2,7 @@
 
 ## Summary
 
-Nuclear Agent `0.8.0` is the first public GA release of the local Rust agent runtime for Windows and Linux.
+Nuclear Agent `0.8.1` is a stability and operator-control patch release for the local Rust agent runtime on Windows and Linux.
 
 ## Platform Support
 
@@ -12,6 +12,9 @@ Nuclear Agent `0.8.0` is the first public GA release of the local Rust agent run
 
 ## Operational Highlights
 
+- packaged installs can now check GitHub Releases and apply updates through `nuclear update`, interactive `/update`, and the dashboard system workbench
+- the updater stages release bundles, verifies checksums, hands off to a dedicated update helper, and restarts the daemon after replacement
+- Windows PowerShell verification now resolves `npm.cmd` directly so release checks still work on machines with restrictive script execution policy
 - managed installs now write rollback state and install rollback companions
 - `nuclear support-bundle` exports redacted local diagnostics for offline incident triage
 - release verification now includes deterministic `release-eval`, packaged rollback smoke, support-bundle smoke, dashboard E2E, SBOM generation, provenance generation, and production release records

@@ -47,6 +47,17 @@ function Resolve-PythonCommand {
     throw "Python is required to $Purpose."
 }
 
+function Resolve-NpmCommand {
+    if (Get-Command "npm.cmd" -ErrorAction SilentlyContinue) {
+        return "npm.cmd"
+    }
+    if (Get-Command "npm" -ErrorAction SilentlyContinue) {
+        return "npm"
+    }
+
+    throw "npm is required to run dashboard tooling."
+}
+
 function Remove-PathWithRetry {
     param(
         [Parameter(Mandatory = $true)]
