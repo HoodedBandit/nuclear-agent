@@ -278,7 +278,7 @@ pub(super) fn collect_runnable_missions(
     limit: usize,
 ) -> Result<Vec<Mission>> {
     let mut missions = state.storage.list_missions()?;
-    missions.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+    missions.sort_by_key(|mission| mission.updated_at);
     let mut runnable = Vec::new();
     for mut mission in missions {
         if mission_ready_now(state, &mut mission, now)? {

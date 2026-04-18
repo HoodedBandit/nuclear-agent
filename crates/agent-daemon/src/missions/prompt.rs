@@ -352,16 +352,12 @@ fn parse_legacy_mission_directive(response: &str) -> MissionDirective {
                     _ => None,
                 };
             }
-            "handoff_summary" => {
-                if !value.is_empty() {
-                    directive.handoff_summary = Some(value.to_string());
-                }
+            "handoff_summary" if !value.is_empty() => {
+                directive.handoff_summary = Some(value.to_string());
             }
             "summary" => directive.summary = Some(value.to_string()),
-            "error" => {
-                if !value.is_empty() {
-                    directive.error = Some(value.to_string());
-                }
+            "error" if !value.is_empty() => {
+                directive.error = Some(value.to_string());
             }
             "follow_up_title" => directive.follow_up_title = Some(value.to_string()),
             "follow_up_details" => directive.follow_up_details = Some(value.to_string()),
@@ -375,15 +371,11 @@ fn parse_legacy_mission_directive(response: &str) -> MissionDirective {
                     _ => None,
                 };
             }
-            "improvement_goal" => {
-                if !value.is_empty() {
-                    directive.improvement_goal = Some(value.to_string());
-                }
+            "improvement_goal" if !value.is_empty() => {
+                directive.improvement_goal = Some(value.to_string());
             }
-            "verification_summary" => {
-                if !value.is_empty() {
-                    directive.verification_summary = Some(value.to_string());
-                }
+            "verification_summary" if !value.is_empty() => {
+                directive.verification_summary = Some(value.to_string());
             }
             "restart_required" => {
                 directive.restart_required = match value.to_ascii_lowercase().as_str() {

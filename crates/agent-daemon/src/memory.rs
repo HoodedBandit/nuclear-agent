@@ -126,7 +126,7 @@ pub(crate) async fn list_profile_memories(
             .list_memories_by_tag("workspace_profile", limit, None, None)?,
     );
     memories.retain(|memory| seen.insert(memory.id.clone()));
-    memories.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    memories.sort_by_key(|memory| std::cmp::Reverse(memory.updated_at));
     memories.truncate(limit);
     Ok(Json(memories))
 }
@@ -630,7 +630,7 @@ fn load_profile_memory_lines(
         workspace_key.as_deref(),
         provider_id,
     )?);
-    memories.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    memories.sort_by_key(|memory| std::cmp::Reverse(memory.updated_at));
     memories.truncate(6);
     for memory in &memories {
         let _ = state.storage.touch_memory(&memory.id);

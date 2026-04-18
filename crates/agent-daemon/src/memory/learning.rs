@@ -324,34 +324,33 @@ pub(super) fn learning_observations_from_session_messages(
                     );
                 }
             }
-            MessageRole::Assistant => {
-                if !message.content.trim().is_empty() {
-                    let source_tag =
-                        if latest_assistant_message_id.as_deref() == Some(message.id.as_str()) {
-                            "assistant_reply"
-                        } else {
-                            "assistant_transcript"
-                        };
-                    let confidence_adjustment = if source_tag == "assistant_reply" {
-                        -8
+            MessageRole::Assistant if !message.content.trim().is_empty() => {
+                let source_tag =
+                    if latest_assistant_message_id.as_deref() == Some(message.id.as_str()) {
+                        "assistant_reply"
                     } else {
-                        -10
+                        "assistant_transcript"
                     };
-                    observations.push(
-                        MemoryObservation::new(
-                            message.content.clone(),
-                            source_tag,
-                            confidence_adjustment,
-                            Some(message.id.clone()),
-                        )
-                        .with_message_evidence(
-                            MessageRole::Assistant,
-                            Some(message.id.clone()),
-                            message.created_at,
-                        ),
-                    );
-                }
+                let confidence_adjustment = if source_tag == "assistant_reply" {
+                    -8
+                } else {
+                    -10
+                };
+                observations.push(
+                    MemoryObservation::new(
+                        message.content.clone(),
+                        source_tag,
+                        confidence_adjustment,
+                        Some(message.id.clone()),
+                    )
+                    .with_message_evidence(
+                        MessageRole::Assistant,
+                        Some(message.id.clone()),
+                        message.created_at,
+                    ),
+                );
             }
+            MessageRole::Assistant => {}
             MessageRole::Tool => {
                 if let Some(text) = learning_text_from_session_tool_message(message) {
                     let source_tag = match message.tool_name.as_deref() {

@@ -293,7 +293,7 @@ fn build_session_resume_packet(
             .collect();
     }
 
-    linked_memories.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    linked_memories.sort_by_key(|memory| std::cmp::Reverse(memory.updated_at));
     linked_memories.truncate(12);
     for memory in &linked_memories {
         let _ = state.storage.touch_memory(&memory.id);
