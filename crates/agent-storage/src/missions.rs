@@ -148,7 +148,7 @@ impl Storage {
                 | MissionStatus::Cancelled => false,
             })
             .collect::<Vec<_>>();
-        missions.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+        missions.sort_by_key(|mission| mission.updated_at);
         missions.truncate(limit);
         Ok(missions)
     }
