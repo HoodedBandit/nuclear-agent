@@ -2,7 +2,7 @@
 
 ## Summary
 
-Nuclear Agent `0.8.1` is a stability and operator-control patch release for the local Rust agent runtime on Windows and Linux.
+Nuclear Agent `0.8.2` is a dashboard stabilization and operator-quality patch release for the local Rust agent runtime on Windows and Linux.
 
 ## Platform Support
 
@@ -12,13 +12,13 @@ Nuclear Agent `0.8.1` is a stability and operator-control patch release for the 
 
 ## Operational Highlights
 
-- packaged installs can now check GitHub Releases and apply updates through `nuclear update`, interactive `/update`, and the dashboard system workbench
-- the updater stages release bundles, verifies checksums, hands off to a dedicated update helper, and restarts the daemon after replacement
-- Windows PowerShell verification now resolves `npm.cmd` directly so release checks still work on machines with restrictive script execution policy
-- managed installs now write rollback state and install rollback companions
-- `nuclear support-bundle` exports redacted local diagnostics for offline incident triage
-- release verification now includes deterministic `release-eval`, packaged rollback smoke, support-bundle smoke, dashboard E2E, SBOM generation, provenance generation, and production release records
-- packaged release bundles now emit checksum, SBOM, provenance, and detached signature sidecars
+- the React dashboard shell now follows the OpenClaw-style navigation model more closely with grouped menus, a cleaner top bar, tighter route chrome, and reduced filler copy
+- dashboard wiring is regression-covered end to end for auth, chat, attachments, providers, aliases, connectors, plugins, support-bundle, and update-check flows
+- dashboard visual verification now includes bounded desktop, tablet, and mobile shell checks so overflow and clipping regressions fail in CI instead of shipping
+- packaged installs continue to check GitHub Releases and apply updates through `nuclear update`, interactive `/update`, and the dashboard system workbench
+- the packaged updater path and release mocks were realigned so post-release update checks continue to validate against the next available build instead of the just-shipped version
+- Windows PowerShell verification now retries locked dashboard E2E workspaces more defensively, reducing flaky cleanup failures during repeated UI runs
+- packaged release bundles continue to emit checksum, SBOM, provenance, and detached signature sidecars
 
 ## Release Commands
 

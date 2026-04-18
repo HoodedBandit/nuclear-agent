@@ -140,18 +140,18 @@ function updateFixture(availability: UpdateStatusResponse["availability"]): Upda
       repo_root: null,
       build_profile: null
     },
-    current_version: "0.8.1",
+    current_version: "0.8.2",
     current_commit: null,
     availability,
     checked_at: "2026-04-17T00:05:00Z",
     step: availability === "in_progress" ? "applying" : null,
-    candidate_version: "0.8.2",
-    candidate_tag: "v0.8.2",
+    candidate_version: "0.8.3",
+    candidate_tag: "v0.8.3",
     candidate_commit: null,
     published_at: "2026-04-17T00:00:00Z",
     detail:
       availability === "available"
-        ? "0.8.2 is available for windows-x64."
+        ? "0.8.3 is available for windows-x64."
         : "Applying staged package and restarting the daemon.",
     last_run: null
   };
@@ -202,8 +202,8 @@ describe("SystemPage updates", () => {
     await waitFor(() => {
       expect(fetchUpdateStatusMock).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByText("0.8.2 is available for windows-x64.")).toBeInTheDocument();
-    expect(screen.getByText(/tag v0\.8\.2 commit/i)).toBeInTheDocument();
+    expect(screen.getByText("0.8.3 is available for windows-x64.")).toBeInTheDocument();
+    expect(screen.getByText(/tag v0\.8\.3 commit/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Update now" })).toBeEnabled();
   });
 
@@ -214,7 +214,7 @@ describe("SystemPage updates", () => {
     renderSystemPage();
     fireEvent.click(screen.getByRole("button", { name: "updates" }));
     fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
-    await screen.findByText("0.8.2 is available for windows-x64.");
+    await screen.findByText("0.8.3 is available for windows-x64.");
 
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
 

@@ -2,7 +2,9 @@
   "name": "nuclear-agent-e2e",
   "private": true,
   "scripts": {
-    "test:e2e": "playwright test"
+    "capture:dashboard-visual": "node scripts/capture-dashboard-visuals.cjs",
+    "test:e2e": "playwright test",
+    "test:e2e:visual": "playwright test tests/dashboard-e2e/dashboard.visual.spec.cjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.53.2"

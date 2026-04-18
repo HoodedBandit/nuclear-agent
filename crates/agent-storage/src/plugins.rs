@@ -1069,7 +1069,7 @@ mod tests {
             schema_version: PLUGIN_SCHEMA_VERSION,
             id: "echo-toolkit".to_string(),
             name: "Echo Toolkit".to_string(),
-            version: "0.8.1".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             description: "Sample plugin".to_string(),
             homepage: None,
             compatibility: PluginCompatibility::default(),

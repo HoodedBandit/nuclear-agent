@@ -1,6 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 const { test, expect } = require("@playwright/test");
+const {
+  connectDashboard,
+  openDisclosure,
+  openRouteTab,
+  openSection,
+} = require("./helpers.cjs");
 
 const statePath = path.resolve(
   __dirname,
@@ -15,33 +21,10 @@ function readState() {
   return JSON.parse(fs.readFileSync(statePath, "utf8"));
 }
 
-async function connectDashboard(page) {
-  const state = readState();
-  await page.goto("/ui");
-  await page.fill("#token-input", state.token);
-  await page.click("#connect-button");
-  await expect(page.getByTestId("modern-main-workspace")).toBeVisible();
-  await expect(page.getByTestId("modern-nav-rail")).toContainText("Nuclear Agent");
-  return state;
-}
-
-async function openSection(page, name) {
-  await page.getByTestId(`nav-${name}`).click();
-}
-
-async function openIntegrationsTab(page, tab) {
-  await page.locator(`[data-integrations-tab-trigger='${tab}']`).click();
-}
-
-async function openDisclosure(page, title) {
-  const summary = page.locator("summary", { hasText: title });
-  await summary.click();
-}
-
 test.describe.configure({ mode: "serial" });
 
 test("connects through the dashboard auth form and renders workspace inspection", async ({ page }) => {
-  await connectDashboard(page);
+  await connectDashboard(page, expect);
 
   await page.click("#workspace-inspect-submit");
   await expect(page.locator("#workspace-overview")).toContainText("Workspace root");
@@ -50,7 +33,7 @@ test("connects through the dashboard auth form and renders workspace inspection"
 });
 
 test("runs a chat task with daily mode and restores the transcript context", async ({ page }) => {
-  await connectDashboard(page);
+  await connectDashboard(page, expect);
   await openSection(page, "chat");
 
   await page.selectOption("#run-task-alias", "main");
@@ -68,7 +51,7 @@ test("runs a chat task with daily mode and restores the transcript context", asy
 });
 
 test("stages an attachment in the cockpit chat form", async ({ page }) => {
-  const state = await connectDashboard(page);
+  const state = await connectDashboard(page, expect);
   await openSection(page, "chat");
 
   await openDisclosure(page, "Attachments");
@@ -82,9 +65,9 @@ test("stages an attachment in the cockpit chat form", async ({ page }) => {
 });
 
 test("creates a provider and alias from the integrations workbench", async ({ page }) => {
-  await connectDashboard(page);
-  await openSection(page, "integrations");
-  await openIntegrationsTab(page, "providers");
+  await connectDashboard(page, expect);
+  await openSection(page, "infrastructure");
+  await openRouteTab(page, "Infrastructure sections", "providers");
 
   await page.selectOption("#provider-preset", "ollama");
   await page.fill("#provider-id", "ollama-e2e");
@@ -100,9 +83,8 @@ test("creates a provider and alias from the integrations workbench", async ({ pa
 });
 
 test("creates an inbox connector from the integrations workbench", async ({ page }) => {
-  const state = await connectDashboard(page);
-  await openSection(page, "integrations");
-  await openIntegrationsTab(page, "connectors");
+  const state = await connectDashboard(page, expect);
+  await openSection(page, "channels");
 
   await page.selectOption("#connector-kind", "inbox");
   await page.fill("#connector-name", "Inbox E2E");
@@ -114,9 +96,9 @@ test("creates an inbox connector from the integrations workbench", async ({ page
 });
 
 test("installs a local plugin and creates a support bundle", async ({ page }) => {
-  const state = await connectDashboard(page);
-  await openSection(page, "integrations");
-  await openIntegrationsTab(page, "plugins");
+  const state = await connectDashboard(page, expect);
+  await openSection(page, "infrastructure");
+  await openRouteTab(page, "Infrastructure sections", "plugins");
 
   await page.fill("#plugin-install-path", state.pluginPath);
   await page.check("#plugin-install-trusted");
@@ -125,8 +107,7 @@ test("installs a local plugin and creates a support bundle", async ({ page }) =>
   await expect(page.locator("#plugins-list")).toContainText("Echo Toolkit");
   await expect(page.locator("#plugins-health")).toContainText("Echo Toolkit");
 
-  await openSection(page, "system");
-  await page.getByRole("button", { name: "diagnostics" }).click();
+  await openSection(page, "debug");
   await page.getByRole("button", { name: "support bundle" }).click();
   await page.click("#support-bundle-submit");
 
@@ -134,13 +115,13 @@ test("installs a local plugin and creates a support bundle", async ({ page }) =>
 });
 
 test("checks for a packaged update from the system workbench", async ({ page }) => {
-  await connectDashboard(page);
-  await openSection(page, "system");
+  await connectDashboard(page, expect);
+  await openSection(page, "config");
 
   await page.getByRole("button", { name: "updates" }).click();
   await page.click("#update-check-button");
 
-  await expect(page.locator("#update-status-body")).toContainText("0.8.2 is available");
-  await expect(page.locator("#update-status-body")).toContainText("v0.8.2");
+  await expect(page.locator("#update-status-body")).toContainText("0.8.3 is available");
+  await expect(page.locator("#update-status-body")).toContainText("v0.8.3");
   await expect(page.locator("#update-run-button")).toBeEnabled();
 });

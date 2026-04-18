@@ -5,19 +5,28 @@ import {
   useQueryClient
 } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { createHashRouter, RouterProvider } from "react-router-dom";
+import {
+  createHashRouter,
+  Navigate,
+  RouterProvider
+} from "react-router-dom";
 import { clearDashboardSession, DashboardApiError, fetchBootstrap } from "../api/client";
+import { AutomationPage } from "../features/automation/AutomationPage";
 import { ConnectScreen } from "../features/auth/ConnectScreen";
+import { ChannelsPage } from "../features/channels/ChannelsPage";
 import { ChatPage } from "../features/chat/ChatPage";
-import { IntegrationsPage } from "../features/integrations/IntegrationsPage";
+import { ConfigPage } from "../features/config/ConfigPage";
+import { DebugPage } from "../features/debug/DebugPage";
+import { InfrastructurePage } from "../features/infrastructure/InfrastructurePage";
 import { AppShell } from "../features/layout/AppShell";
-import { OperationsPage } from "../features/operations/OperationsPage";
+import { LogsPage } from "../features/logs/LogsPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
+import { SessionsPage } from "../features/sessions/SessionsPage";
+import { SkillsPage } from "../features/skills/SkillsPage";
 import {
   clearPendingUpdate,
   hasPendingUpdate
 } from "../features/system/update-session";
-import { SystemPage } from "../features/system/SystemPage";
 import { DashboardDataProvider } from "./DashboardDataContext";
 
 const router = createHashRouter([
@@ -25,11 +34,20 @@ const router = createHashRouter([
     path: "/",
     element: <AppShell />,
     children: [
-      { index: true, element: <OverviewPage /> },
+      { index: true, element: <Navigate to="/overview" replace /> },
+      { path: "overview", element: <OverviewPage /> },
       { path: "chat", element: <ChatPage /> },
-      { path: "operations", element: <OperationsPage /> },
-      { path: "integrations", element: <IntegrationsPage /> },
-      { path: "system", element: <SystemPage /> }
+      { path: "channels", element: <ChannelsPage /> },
+      { path: "sessions", element: <SessionsPage /> },
+      { path: "logs", element: <LogsPage /> },
+      { path: "automation", element: <AutomationPage /> },
+      { path: "skills", element: <SkillsPage /> },
+      { path: "infrastructure", element: <InfrastructurePage /> },
+      { path: "config", element: <ConfigPage /> },
+      { path: "debug", element: <DebugPage /> },
+      { path: "integrations", element: <Navigate to="/infrastructure" replace /> },
+      { path: "operations", element: <Navigate to="/automation" replace /> },
+      { path: "system", element: <Navigate to="/config" replace /> }
     ]
   }
 ]);
@@ -82,13 +100,13 @@ function AppRoot() {
       return (
         <main className="app-loading">
           <h1>Applying update</h1>
-          <p>Waiting for the daemon to restart with the updated build.</p>
+          <p>Waiting for the daemon restart.</p>
         </main>
       );
     }
     return (
       <main className="app-error">
-        <h1>Dashboard bootstrap failed</h1>
+        <h1>Bootstrap failed</h1>
         <p>
           {bootstrapQuery.error instanceof Error
             ? bootstrapQuery.error.message

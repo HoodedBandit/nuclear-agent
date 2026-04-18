@@ -120,39 +120,63 @@ function bootstrapFixture(): DashboardBootstrapResponse {
   };
 }
 
+function renderShell(initialEntries: string[] = ["/chat"]) {
+  const router = createMemoryRouter(
+    [
+      {
+        path: "/",
+        element: (
+          <DashboardDataProvider
+            bootstrap={bootstrapFixture()}
+            onLogout={async () => undefined}
+          >
+            <AppShell />
+          </DashboardDataProvider>
+        ),
+        children: [
+          { index: true, element: <div>overview-body</div> },
+          { path: "chat", element: <div>chat-body</div> },
+          { path: "config", element: <div>config-body</div> }
+        ]
+      }
+    ],
+    { initialEntries }
+  );
+
+  render(<RouterProvider router={router} />);
+}
+
 describe("AppShell", () => {
-  it("renders the operator chrome and route-specific heading", () => {
-    const router = createMemoryRouter(
-      [
-        {
-          path: "/",
-          element: (
-            <DashboardDataProvider
-              bootstrap={bootstrapFixture()}
-              onLogout={async () => undefined}
-            >
-              <AppShell />
-            </DashboardDataProvider>
-          ),
-          children: [
-            { index: true, element: <div>overview-body</div> },
-            { path: "chat", element: <div>chat-body</div> }
-          ]
-        }
-      ],
-      { initialEntries: ["/chat"] }
-    );
+  it("renders the OpenClaw-style shell and parity drawer", () => {
+    renderShell();
 
-    render(<RouterProvider router={router} />);
+    expect(screen.getAllByText("Nuclear").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Control").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Chat").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Search pages" })).toBeInTheDocument();
+    expect(screen.getByText("Runtime")).toBeInTheDocument();
+    expect(screen.getByText("main · shell")).toBeInTheDocument();
 
-    expect(screen.getByText("Nuclear Agent")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /chat/i })).toBeInTheDocument();
-    expect(screen.getByText("Codex -> gpt-5.4")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open parity gaps" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Open context" }));
-
-    expect(screen.getByText("main -> gpt-5.4")).toBeInTheDocument();
-    expect(screen.getByText("daemon ready")).toBeInTheDocument();
+    expect(screen.getByText("OpenClaw delta")).toBeInTheDocument();
+    expect(
+      screen.getByText("Backed by Nuclear run and session APIs.")
+    ).toBeInTheDocument();
     expect(screen.getByText("chat-body")).toBeInTheDocument();
+  });
+
+  it("opens quick nav and filters results", () => {
+    renderShell(["/chat"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Search pages" }));
+
+    expect(screen.getByRole("dialog", { name: "Search pages" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search chat, config, logs..."), {
+      target: { value: "config" }
+    });
+
+    expect(screen.getByRole("button", { name: /config/i })).toBeInTheDocument();
   });
 });

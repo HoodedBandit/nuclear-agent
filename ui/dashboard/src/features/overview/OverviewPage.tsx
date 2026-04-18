@@ -48,7 +48,7 @@ export function OverviewPage() {
     <>
       <Panel
         eyebrow="Overview"
-        title="Runtime posture"
+        title="Runtime"
         meta={`Started ${fmtDate(status.started_at)}`}
       >
         <div className="metric-grid" data-testid="modern-overview-page">
@@ -69,7 +69,7 @@ export function OverviewPage() {
       </Panel>
 
       <div className="split-panels">
-        <Panel eyebrow="Health" title="Doctor summary">
+        <Panel eyebrow="Health" title="Doctor">
           {doctorQuery.data ? (
             <div className="stack-list" id="doctor-summary">
               <article className="stack-card">
@@ -92,14 +92,14 @@ export function OverviewPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="Doctor pending" copy="Waiting for the health report." />
+            <EmptyState title="Doctor pending" copy="Waiting for report." />
           )}
         </Panel>
 
-        <Panel eyebrow="Workspace" title="Inspect workspace">
+        <Panel eyebrow="Workspace" title="Inspect">
           <form className="stack-list" id="workspace-inspect-form" onSubmit={inspectWorkspace}>
             <label className="field">
-              <span>Workspace path</span>
+              <span>Path</span>
               <input
                 id="workspace-inspect-path"
                 name="path"
@@ -108,7 +108,7 @@ export function OverviewPage() {
             </label>
             <div className="button-row">
               <button id="workspace-inspect-submit" type="submit">
-                Inspect workspace
+                Inspect
               </button>
             </div>
           </form>
@@ -145,15 +145,15 @@ export function OverviewPage() {
             </div>
           ) : (
             <EmptyState
-              title="Workspace summary pending"
-              copy="Run an inspection to render manifests, languages, and hotspots."
+              title="No workspace scan"
+              copy="Run inspect."
             />
           )}
         </Panel>
       </div>
 
       <div className="split-panels">
-        <Panel eyebrow="Recent" title="Event ribbon">
+        <Panel eyebrow="Events" title="Recent">
           <div className="stack-list" id="overview-events">
             {events.length ? (
               events.slice(0, 8).map((entry) => (
@@ -166,12 +166,12 @@ export function OverviewPage() {
                 </article>
               ))
             ) : (
-              <EmptyState title="No events yet" copy="Live daemon activity will appear here." />
+              <EmptyState title="No events" copy="Event feed idle." />
             )}
           </div>
         </Panel>
 
-        <Panel eyebrow="Sessions" title="Recent sessions">
+        <Panel eyebrow="Sessions" title="Recent">
           <div className="stack-list" id="overview-sessions">
             {sessions.length ? (
               sessions.slice(0, 8).map((session) => (
@@ -187,7 +187,7 @@ export function OverviewPage() {
                 </article>
               ))
             ) : (
-              <EmptyState title="No sessions yet" copy="Run a task to seed the session ledger." />
+              <EmptyState title="No sessions" copy="Run a task." />
             )}
           </div>
         </Panel>

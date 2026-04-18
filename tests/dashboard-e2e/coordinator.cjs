@@ -27,6 +27,8 @@ const unixExecutables = [
   path.join(repoRoot, "target", "debug", "nuclear"),
 ];
 const rebuildExtensions = new Set([".rs", ".html", ".css", ".js", ".cjs", ".toml", ".lock", ".ts", ".tsx"]);
+const currentVersion = "0.8.2";
+const candidateVersion = "0.8.3";
 
 let mockServer = null;
 let releaseServer = null;
@@ -39,6 +41,20 @@ function ensureDir(dir) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeDirWithRetry(dir, attempts = 8, delayMs = 350) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === attempts || !["ENOTEMPTY", "EBUSY", "EPERM"].includes(error.code)) {
+        throw error;
+      }
+      await sleep(delayMs);
+    }
+  }
 }
 
 function copyDirRecursive(source, target) {
@@ -196,7 +212,7 @@ function prepareManagedExecutable(exe) {
         command_name: "nuclear",
         install_dir: installDir,
         installed_at: new Date().toISOString(),
-        version: "0.8.1",
+        version: currentVersion,
         install_source: "bundled",
         rollback_binary: null,
         previous_binary_source: null,
@@ -350,7 +366,7 @@ function startReleaseServer() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
-          tag_name: "v0.8.2",
+          tag_name: `v${candidateVersion}`,
           draft: false,
           prerelease: false,
           published_at: "2026-04-17T00:00:00Z",
@@ -358,15 +374,15 @@ function startReleaseServer() {
             {
               name:
                 process.platform === "win32"
-                  ? "nuclear-0.8.2-windows-x64-full.zip"
-                  : "nuclear-0.8.2-linux-x64-full.tar.gz",
+                  ? `nuclear-${candidateVersion}-windows-x64-full.zip`
+                  : `nuclear-${candidateVersion}-linux-x64-full.tar.gz`,
               browser_download_url: `http://127.0.0.1:${releasePort}/downloads/archive`,
             },
             {
               name:
                 process.platform === "win32"
-                  ? "nuclear-0.8.2-windows-x64-full.zip.sha256.txt"
-                  : "nuclear-0.8.2-linux-x64-full.tar.gz.sha256.txt",
+                  ? `nuclear-${candidateVersion}-windows-x64-full.zip.sha256.txt`
+                  : `nuclear-${candidateVersion}-linux-x64-full.tar.gz.sha256.txt`,
               browser_download_url: `http://127.0.0.1:${releasePort}/downloads/checksum`,
             },
           ],
@@ -441,7 +457,7 @@ async function cleanupAndExit(code) {
 }
 
 async function main() {
-  fs.rmSync(targetDir, { recursive: true, force: true });
+  await removeDirWithRetry(targetDir);
   ensureDir(targetDir);
   copyDirRecursive(pluginFixtureDir, pluginSourceDir);
   writeAttachmentFixture();

@@ -411,3 +411,19 @@
   padding: 0 0.95rem 0.95rem;
   border-top: 1px solid var(--line);
 }
+
+@media (max-width: 768px) {
+  .panel-surface__header,
+  .stack-card__title,
+  .metric-card__meta,
+  .disclosure__summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .panel-surface__meta,
+  .disclosure__meta {
+    max-width: none;
+    text-align: left;
+  }
+}

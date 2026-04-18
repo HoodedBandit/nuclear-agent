@@ -1145,7 +1145,11 @@ mod tests {
     #[tokio::test]
     async fn apply_packaged_update_runs_extracted_installer() {
         let root = temp_dir("nuclear-packaged-update");
-        let bundle_name = format!("nuclear-0.8.2-{}-full", current_platform_tag());
+        let bundle_name = format!(
+            "nuclear-{}-{}-full",
+            env!("CARGO_PKG_VERSION"),
+            current_platform_tag()
+        );
         let bundle_root = root.join(&bundle_name);
         let install_dir = root.join("install");
         fs::create_dir_all(&bundle_root).unwrap();
