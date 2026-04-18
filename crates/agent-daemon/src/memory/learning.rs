@@ -269,23 +269,22 @@ fn learning_observations(
                     );
                 }
             }
-            MessageRole::Assistant => {
-                if !message.content.trim().is_empty() {
-                    observations.push(
-                        MemoryObservation::new(
-                            message.content.clone(),
-                            "assistant_transcript",
-                            -10,
-                            None,
-                        )
-                        .with_message_evidence(
-                            MessageRole::Assistant,
-                            None,
-                            Utc::now(),
-                        ),
-                    );
-                }
+            MessageRole::Assistant if !message.content.trim().is_empty() => {
+                observations.push(
+                    MemoryObservation::new(
+                        message.content.clone(),
+                        "assistant_transcript",
+                        -10,
+                        None,
+                    )
+                    .with_message_evidence(
+                        MessageRole::Assistant,
+                        None,
+                        Utc::now(),
+                    ),
+                );
             }
+            MessageRole::Assistant => {}
             _ => {}
         }
     }
