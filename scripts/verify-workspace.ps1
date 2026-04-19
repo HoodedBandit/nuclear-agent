@@ -92,6 +92,25 @@ function Invoke-WorkspaceDependencyDriftCheck {
     throw "Python is required for the workspace dependency drift check"
 }
 
+function Invoke-ReleaseGateScriptTests {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        & python -m unittest discover -s (Join-Path $RepoRoot "scripts\tests") -p "test_*.py"
+        return
+    }
+
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        & py -3 -m unittest discover -s (Join-Path $RepoRoot "scripts\tests") -p "test_*.py"
+        return
+    }
+
+    throw "Python is required for the release gate script tests"
+}
+
 function Resolve-NpmCommand {
     if (Get-Command "npm.cmd" -ErrorAction SilentlyContinue) {
         return "npm.cmd"
@@ -247,6 +266,9 @@ try {
     }
     Invoke-Step "workspace dependency drift" {
         Invoke-WorkspaceDependencyDriftCheck -RepoRoot $repoRoot
+    }
+    Invoke-Step "release gate script tests" {
+        Invoke-ReleaseGateScriptTests -RepoRoot $repoRoot
     }
     Invoke-Step "cargo audit" {
         Invoke-OptionalCargoTool -Tool "audit"

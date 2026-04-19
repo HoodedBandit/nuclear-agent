@@ -41,6 +41,24 @@ Local operations signoff:
 
 ### Core automated verification
 
+Preferred release path from `main`:
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release-main.ps1
+```
+
+Linux:
+
+```bash
+bash ./scripts/release-main.sh
+```
+
+`release-main` enforces the clean-tree rule, runs local `verify-ga`, pushes `main`, waits for the matching GitHub `ga-verify` run on that exact commit to pass, and only then dispatches `finalize-release`.
+
+Manual verification remains available when you explicitly need it:
+
 Windows:
 
 ```powershell
@@ -66,6 +84,8 @@ Linux:
 - blocking `coding-deterministic`
 
 ### Final release packaging
+
+`finalize-release` is now hard-gated on a successful `ga-verify` run for the exact release commit. If GitHub has not already verified that commit on `main`, the release workflow fails immediately instead of burning a public red release run.
 
 Windows:
 

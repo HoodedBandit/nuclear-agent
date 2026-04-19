@@ -8,9 +8,42 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: finalize-release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  require-ga-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve release commit
+        id: release_commit
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful ga-verify on the release commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/require_green_ga.py \
+            --repo "${{ github.repository }}" \
+            --sha "${{ steps.release_commit.outputs.sha }}" \
+            --branch "main"
+
   finalize:
+    needs: require-ga-verify
     strategy:
       fail-fast: false
       matrix:

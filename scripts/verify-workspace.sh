@@ -45,6 +45,21 @@ run_workspace_dependency_drift_check() {
   "$python_cmd" "$repo_root/scripts/check-workspace-dependency-drift.py"
 }
 
+run_release_gate_script_tests() {
+  local python_cmd
+
+  if command -v python3 >/dev/null 2>&1; then
+    python_cmd=python3
+  elif command -v python >/dev/null 2>&1; then
+    python_cmd=python
+  else
+    printf 'Python is required for the release gate script tests\n' >&2
+    return 1
+  fi
+
+  "$python_cmd" -m unittest discover -s "$repo_root/scripts/tests" -p "test_*.py"
+}
+
 run_dashboard_checks() {
   local dashboard_root="$repo_root/ui/dashboard"
   if [ ! -d "$dashboard_root" ]; then
@@ -133,6 +148,7 @@ step "cargo build --release --bin nuclear" cargo build --release --bin nuclear
 step "runtime smoke validation" run_runtime_smoke
 step "cargo tree --workspace --duplicates" cargo tree --workspace --duplicates
 step "workspace dependency drift" run_workspace_dependency_drift_check
+step "release gate script tests" run_release_gate_script_tests
 step "cargo audit" optional_cargo_tool audit
 step "cargo deny check advisories licenses bans" optional_cargo_tool deny check advisories licenses bans
 step "cargo outdated -R" optional_cargo_tool outdated -R

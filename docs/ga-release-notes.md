@@ -19,6 +19,7 @@ Nuclear Agent `0.8.2` is a dashboard stabilization and operator-quality patch re
 - the packaged updater path and release mocks were realigned so post-release update checks continue to validate against the next available build instead of the just-shipped version
 - Windows PowerShell verification now retries locked dashboard E2E workspaces more defensively, reducing flaky cleanup failures during repeated UI runs
 - packaged release bundles continue to emit checksum, SBOM, provenance, and detached signature sidecars
+- release operations now have a dedicated `release-main` helper plus a GitHub-side gate that blocks `finalize-release` until the exact commit has already passed `ga-verify`
 
 ## Release Commands
 
