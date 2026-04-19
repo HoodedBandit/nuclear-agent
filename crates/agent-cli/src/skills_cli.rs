@@ -63,7 +63,7 @@ pub(crate) async fn load_profile_memories(
         let mut memories = storage.list_memories_by_tag("system_profile", limit, None, None)?;
         memories.extend(storage.list_memories_by_tag("workspace_profile", limit, None, None)?);
         memories.retain(|memory| seen.insert(memory.id.clone()));
-        memories.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        memories.sort_by_key(|memory| std::cmp::Reverse(memory.updated_at));
         memories.truncate(limit);
         Ok(memories)
     }

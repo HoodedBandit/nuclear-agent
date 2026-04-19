@@ -282,8 +282,7 @@ impl<'a> TuiApp<'a> {
             }
             self.recent_events.push(event);
         }
-        self.recent_events
-            .sort_by(|left, right| left.created_at.cmp(&right.created_at));
+        self.recent_events.sort_by_key(|event| event.created_at);
         if self.recent_events.len() > 60 {
             let drop_count = self.recent_events.len() - 60;
             self.recent_events.drain(0..drop_count);
@@ -763,22 +762,26 @@ impl<'a> TuiApp<'a> {
                 KeyEvent {
                     code: KeyCode::Backspace,
                     ..
-                } => {
-                    if *cursor > 0 {
-                        let previous = previous_char_boundary(value, *cursor);
-                        value.drain(previous..*cursor);
-                        *cursor = previous;
-                    }
+                } if *cursor > 0 => {
+                    let previous = previous_char_boundary(value, *cursor);
+                    value.drain(previous..*cursor);
+                    *cursor = previous;
+                }
+                KeyEvent {
+                    code: KeyCode::Backspace,
+                    ..
+                } => {}
+                KeyEvent {
+                    code: KeyCode::Delete,
+                    ..
+                } if *cursor < value.len() => {
+                    let next = next_char_boundary(value, *cursor);
+                    value.drain(*cursor..next);
                 }
                 KeyEvent {
                     code: KeyCode::Delete,
                     ..
-                } => {
-                    if *cursor < value.len() {
-                        let next = next_char_boundary(value, *cursor);
-                        value.drain(*cursor..next);
-                    }
-                }
+                } => {}
                 KeyEvent {
                     code: KeyCode::Left,
                     ..

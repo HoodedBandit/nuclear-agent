@@ -132,7 +132,7 @@ fn build_local_session_resume_packet(
             .collect();
     }
 
-    linked_memories.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    linked_memories.sort_by_key(|memory| std::cmp::Reverse(memory.updated_at));
     linked_memories.truncate(12);
     for memory in &linked_memories {
         let _ = storage.touch_memory(&memory.id);
@@ -469,7 +469,7 @@ pub(crate) fn rank_sessions_for_picker(
             return Ok(matching);
         }
     }
-    sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
     Ok(sessions)
 }
 

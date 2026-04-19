@@ -99,13 +99,12 @@ pub(crate) async fn run_tui_session(
                     app.record_error(format!("{error:#}"));
                 }
             }
-            Event::Mouse(mouse) => {
-                if should_process_mouse_event(&mouse) {
-                    if let Err(error) = app.handle_mouse(mouse).await {
-                        app.record_error(format!("{error:#}"));
-                    }
+            Event::Mouse(mouse) if should_process_mouse_event(&mouse) => {
+                if let Err(error) = app.handle_mouse(mouse).await {
+                    app.record_error(format!("{error:#}"));
                 }
             }
+            Event::Mouse(_) => {}
             _ => {}
         }
     }
