@@ -382,13 +382,14 @@ mod tests {
     #[test]
     fn resolve_path_within_root_accepts_non_existing_targets_under_root() {
         let root = temp_dir("agent-core-safety-root");
+        let normalized_root = normalize_canonical_path(fs::canonicalize(&root).unwrap());
         let target = resolve_relative_path_within_root(
             &root,
             Path::new("nested/output/file.txt"),
             "candidate",
         )
         .unwrap();
-        assert!(target.starts_with(&root));
+        assert!(target.starts_with(&normalized_root));
         assert!(target.ends_with(Path::new("nested").join("output").join("file.txt")));
     }
 
