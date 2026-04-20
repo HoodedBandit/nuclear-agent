@@ -27,8 +27,8 @@ const unixExecutables = [
   path.join(repoRoot, "target", "debug", "nuclear"),
 ];
 const rebuildExtensions = new Set([".rs", ".html", ".css", ".js", ".cjs", ".toml", ".lock", ".ts", ".tsx"]);
-const currentVersion = "0.8.2";
-const candidateVersion = "0.8.3";
+const currentVersion = "0.8.3";
+const candidateVersion = "0.8.4";
 
 let mockServer = null;
 let releaseServer = null;

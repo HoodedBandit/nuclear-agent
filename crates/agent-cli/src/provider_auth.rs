@@ -1,4 +1,5 @@
 use super::*;
+use agent_core::redact_sensitive_text;
 use dialoguer::FuzzySelect;
 use sha2::{Digest, Sha256};
 
@@ -323,7 +324,10 @@ pub(crate) async fn resolve_hosted_model_after_auth(
             if should_abort_after_auth_discovery_error(request, &error) {
                 return Err(error);
             }
-            println!("Could not load models automatically after authentication: {error}");
+            println!(
+                "Could not load models automatically after authentication: {}",
+                redact_sensitive_text(&error.to_string())
+            );
             prompt_for_model(theme)
         }
     }
@@ -380,7 +384,10 @@ pub(crate) async fn determine_local_model(
         }
         Err(error) => {
             if let Some(theme) = theme {
-                println!("Could not detect models automatically: {error}");
+                println!(
+                    "Could not detect models automatically: {}",
+                    redact_sensitive_text(&error.to_string())
+                );
                 prompt_for_model(theme)
             } else {
                 Err(error).context("could not detect a local model; pass --model explicitly")
@@ -418,7 +425,7 @@ pub(crate) fn build_oauth_provider(
         .allow_empty(true)
         .interact_text()?;
 
-    Ok(ProviderConfig {
+    let provider = ProviderConfig {
         id,
         display_name: name,
         kind,
@@ -435,7 +442,9 @@ pub(crate) fn build_oauth_provider(
             extra_token_params: parse_key_value_list(&token_params_input)?,
         }),
         local: false,
-    })
+    };
+    provider.validate_oauth_configuration()?;
+    Ok(provider)
 }
 
 pub(crate) async fn complete_browser_login(
@@ -516,7 +525,10 @@ pub(crate) async fn complete_openai_browser_login() -> Result<OAuthToken> {
 
     match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for OpenAI sign-in."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
+        Err(error) => println!(
+            "Could not open browser automatically: {}",
+            redact_sensitive_text(&error.to_string())
+        ),
     }
     println!("If needed, open this URL manually:\n{authorization_url}\n");
 
@@ -815,7 +827,10 @@ pub(crate) async fn complete_claude_browser_login() -> Result<BrowserLoginResult
     let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
     match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for Claude sign-in."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
+        Err(error) => println!(
+            "Could not open browser automatically: {}",
+            redact_sensitive_text(&error.to_string())
+        ),
     }
     println!("If needed, open this URL manually:\n{authorization_url}\n");
 
@@ -1180,7 +1195,10 @@ pub(crate) async fn complete_openrouter_browser_login() -> Result<String> {
     let callback_task = tokio::spawn(wait_for_code_callback(listener));
     match opener::open_browser(authorization_url.as_str()) {
         Ok(_) => println!("Opened browser for OpenRouter login."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
+        Err(error) => println!(
+            "Could not open browser automatically: {}",
+            redact_sensitive_text(&error.to_string())
+        ),
     }
     println!(
         "If needed, open this URL manually:\n{}\n",
@@ -1245,7 +1263,10 @@ pub(crate) async fn capture_browser_api_key(
     ));
     match opener::open_browser(&helper_url) {
         Ok(_) => println!("Opened browser helper for {} login.", provider_name),
-        Err(error) => println!("Could not open browser automatically: {error}"),
+        Err(error) => println!(
+            "Could not open browser automatically: {}",
+            redact_sensitive_text(&error.to_string())
+        ),
     }
     println!("If needed, open this URL manually:\n{helper_url}\n");
 
@@ -1489,7 +1510,10 @@ pub(crate) async fn complete_oauth_login(provider: &ProviderConfig) -> Result<OA
     let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
     match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for OAuth login."),
-        Err(error) => println!("Could not open browser automatically: {error}"),
+        Err(error) => println!(
+            "Could not open browser automatically: {}",
+            redact_sensitive_text(&error.to_string())
+        ),
     }
     println!("If needed, open this URL manually:\n{authorization_url}\n");
 
@@ -1539,7 +1563,10 @@ pub(crate) async fn wait_for_code_callback(listener: TcpListener) -> Result<Brow
     write_html_response(&mut stream, status, &body).await?;
 
     if let Some(error) = error {
-        bail!("browser login failed: {error}");
+        bail!(
+            "browser login failed: {}",
+            redact_sensitive_text(&error.to_string())
+        );
     }
 
     Ok(BrowserCodeCallback {

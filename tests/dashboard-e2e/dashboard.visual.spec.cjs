@@ -61,7 +61,7 @@ test("operator surfaces stay bounded on desktop", async ({ page }, testInfo) => 
   await openSection(page, "config");
   await page.getByRole("button", { name: "updates" }).click();
   await page.click("#update-check-button");
-  await expect(page.locator("#update-status-body")).toContainText("0.8.3 is available");
+  await expect(page.locator("#update-status-body")).toContainText("0.8.4 is available");
   await assertShellLayout(page, expect);
   await captureArtifact(page, testInfo, "desktop-config.png");
 

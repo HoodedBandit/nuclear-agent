@@ -268,6 +268,7 @@ pub(crate) fn base_token_form(oauth: &OAuthConfig) -> Vec<(String, String)> {
 }
 
 pub(crate) fn oauth_config(provider: &ProviderConfig) -> Result<&OAuthConfig> {
+    provider.validate_oauth_configuration()?;
     provider
         .oauth
         .as_ref()
@@ -505,7 +506,7 @@ pub(crate) fn parse_token_endpoint_error(body: &str) -> String {
 
     let parsed = match serde_json::from_str::<Value>(trimmed) {
         Ok(value) => value,
-        Err(_) => return trimmed.to_string(),
+        Err(_) => return redact_sensitive_text(trimmed),
     };
 
     if let Some(text) = parsed
@@ -513,7 +514,7 @@ pub(crate) fn parse_token_endpoint_error(body: &str) -> String {
         .and_then(Value::as_str)
         .filter(|text| !text.trim().is_empty())
     {
-        return text.to_string();
+        return redact_sensitive_text(text);
     }
 
     if let Some(text) = parsed
@@ -522,7 +523,7 @@ pub(crate) fn parse_token_endpoint_error(body: &str) -> String {
         .and_then(Value::as_str)
         .filter(|text| !text.trim().is_empty())
     {
-        return text.to_string();
+        return redact_sensitive_text(text);
     }
 
     if let Some(text) = parsed
@@ -530,7 +531,7 @@ pub(crate) fn parse_token_endpoint_error(body: &str) -> String {
         .and_then(Value::as_str)
         .filter(|text| !text.trim().is_empty())
     {
-        return text.to_string();
+        return redact_sensitive_text(text);
     }
 
     if let Some(text) = parsed
@@ -540,8 +541,10 @@ pub(crate) fn parse_token_endpoint_error(body: &str) -> String {
         .and_then(Value::as_str)
         .filter(|text| !text.trim().is_empty())
     {
-        return text.to_string();
+        return redact_sensitive_text(text);
     }
 
-    trimmed.to_string()
+    serde_json::to_string(&redact_sensitive_json_value(&parsed))
+        .map(|text| redact_sensitive_text(&text))
+        .unwrap_or_else(|_| "[REDACTED]".to_string())
 }

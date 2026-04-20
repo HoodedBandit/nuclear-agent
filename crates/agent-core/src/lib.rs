@@ -10,6 +10,7 @@ mod control;
 mod foundation;
 mod plugins;
 mod runtime;
+mod safety;
 #[cfg(test)]
 mod tests;
 mod workspace;
@@ -19,6 +20,7 @@ pub use control::*;
 pub use foundation::*;
 pub use plugins::*;
 pub use runtime::*;
+pub use safety::*;
 pub use workspace::*;
 
 pub const APP_NAME: &str = "Nuclear";

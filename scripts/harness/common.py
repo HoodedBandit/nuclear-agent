@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -9,6 +10,31 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+REDACTED = "[REDACTED]"
+SENSITIVE_KEYS = (
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "authorization",
+    "password",
+    "secret",
+    "subject_token",
+    "daemon_token",
+    "token",
+)
+KEY_VALUE_PATTERN = re.compile(
+    r"(?i)\b("
+    + "|".join(re.escape(key) for key in SENSITIVE_KEYS)
+    + r")\b\s*[:=]\s*([^\s,\"';]+)"
+)
+BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._-]{6,}")
+TOKEN_PREFIX_PATTERN = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+|glpat-[A-Za-z0-9_-]+|xox[baprs]-[A-Za-z0-9-]+)\b"
+)
+JWT_PATTERN = re.compile(r"\b[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b")
 
 
 def utc_now_iso() -> str:
@@ -41,6 +67,35 @@ def ensure_dir(path: Path) -> Path:
 
 def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def sanitize_text(value: str) -> str:
+    redacted = BEARER_PATTERN.sub(f"Bearer {REDACTED}", value)
+    redacted = KEY_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}={REDACTED}", redacted)
+    redacted = TOKEN_PREFIX_PATTERN.sub(REDACTED, redacted)
+    redacted = JWT_PATTERN.sub(REDACTED, redacted)
+    return redacted
+
+
+def sanitize_artifact_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        sanitized: dict[Any, Any] = {}
+        for key, value in payload.items():
+            key_text = str(key).strip().lower()
+            if any(fragment in key_text for fragment in SENSITIVE_KEYS):
+                sanitized[key] = REDACTED
+            else:
+                sanitized[key] = sanitize_artifact_payload(value)
+        return sanitized
+    if isinstance(payload, list):
+        return [sanitize_artifact_payload(value) for value in payload]
+    if isinstance(payload, str):
+        return sanitize_text(payload)
+    return payload
+
+
+def write_json_artifact(path: Path, payload: Any) -> None:
+    write_json(path, sanitize_artifact_payload(payload))
 
 
 def read_json(path: Path) -> Any:

@@ -5,7 +5,13 @@ import argparse
 from pathlib import Path
 
 from harness.artifacts import create_run_dir
-from harness.common import allocate_local_port, repo_root_from_script, resolve_binary_path, write_json
+from harness.common import (
+    allocate_local_port,
+    repo_root_from_script,
+    resolve_binary_path,
+    sanitize_text,
+    write_json_artifact,
+)
 from harness.evaluator import run_analysis_tasks, run_coding_tasks, run_runtime_cert, run_soak_lane
 from harness.provider_adapters import SCRIPTED_MODEL, HarnessProviderServer, load_scripted_turns
 from harness.tasks import (
@@ -125,8 +131,8 @@ def main(argv: list[str] | None = None) -> int:
             workspace=args.workspace,
         )
 
-    write_json(run_dir / "summary.json", summary)
-    print(f"Harness output written to {summary['run_dir']}")
+    write_json_artifact(run_dir / "summary.json", summary)
+    print(sanitize_text(f"Harness output written to {run_dir}"))
     return 0 if summary.get("failed", 1) == 0 else 1
 
 

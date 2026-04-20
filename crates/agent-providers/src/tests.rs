@@ -1018,6 +1018,104 @@ fn oauth_token_exchange_surfaces_plain_text_errors() {
 }
 
 #[test]
+fn oauth_authorization_url_rejects_remote_http_endpoint() {
+    let provider = oauth_provider_with_endpoints(
+        "http://example.com/authorize".to_string(),
+        "https://auth.example.com/token".to_string(),
+    );
+
+    let error = build_oauth_authorization_url(
+        &provider,
+        "http://127.0.0.1:8080/callback",
+        "state",
+        "challenge",
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("authorization_url"));
+    assert!(error.to_string().contains("must use https"));
+}
+
+#[test]
+fn oauth_token_exchange_rejects_remote_http_token_endpoint() {
+    let provider = oauth_provider_with_endpoints(
+        "https://auth.example.com/authorize".to_string(),
+        "http://example.com/token".to_string(),
+    );
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let error = runtime
+        .block_on(exchange_oauth_code(
+            &Client::new(),
+            &provider,
+            "code-123",
+            "verifier-123",
+            "http://127.0.0.1:8080/callback",
+        ))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("token_url"));
+    assert!(error.to_string().contains("must use https"));
+}
+
+#[test]
+fn oauth_authorization_url_allows_loopback_http_endpoints() {
+    let provider = oauth_provider_with_endpoints(
+        "http://127.0.0.1:45454/authorize".to_string(),
+        "http://127.0.0.1:45454/token".to_string(),
+    );
+
+    let url = build_oauth_authorization_url(
+        &provider,
+        "http://127.0.0.1:8080/callback",
+        "state",
+        "challenge",
+    )
+    .unwrap();
+
+    assert!(url.starts_with("http://127.0.0.1:45454/authorize?"));
+}
+
+#[test]
+fn oauth_token_exchange_redacts_plain_text_tokens() {
+    let (token_url, _request_rx) = spawn_response_server(
+        "502 Bad Gateway",
+        "text/plain",
+        "Bearer sk-live-123456 refresh_token=refresh-secret",
+    );
+    let provider = oauth_provider(token_url);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let error = runtime
+        .block_on(exchange_oauth_code(
+            &Client::new(),
+            &provider,
+            "code-123",
+            "verifier-123",
+            "http://127.0.0.1:8080/callback",
+        ))
+        .unwrap_err();
+
+    let message = error.to_string();
+    assert!(!message.contains("sk-live-123456"));
+    assert!(!message.contains("refresh-secret"));
+    assert!(message.contains("[REDACTED]"));
+}
+
+#[test]
+fn extract_error_redacts_nested_secret_fields() {
+    let message = extract_error(&json!({
+        "error": {
+            "message": "request failed for access_token=access-secret refresh_token=refresh-secret"
+        }
+    }));
+
+    assert!(!message.contains("access-secret"));
+    assert!(!message.contains("refresh-secret"));
+    assert!(message.contains("[REDACTED]"));
+}
+
+#[test]
 fn refresh_keeps_existing_refresh_token_when_provider_omits_it() {
     let (token_url, request_rx) = spawn_json_server(json!({
         "access_token": "access-456",
@@ -1149,6 +1247,10 @@ fn split_secret_chunks_respects_utf16_boundaries() {
 }
 
 fn oauth_provider(token_url: String) -> ProviderConfig {
+    oauth_provider_with_endpoints("https://auth.example.com/authorize".to_string(), token_url)
+}
+
+fn oauth_provider_with_endpoints(authorization_url: String, token_url: String) -> ProviderConfig {
     ProviderConfig {
         id: "oauth".to_string(),
         display_name: "OAuth".to_string(),
@@ -1159,7 +1261,7 @@ fn oauth_provider(token_url: String) -> ProviderConfig {
         keychain_account: None,
         oauth: Some(OAuthConfig {
             client_id: "client".to_string(),
-            authorization_url: "https://auth.example.com/authorize".to_string(),
+            authorization_url,
             token_url,
             scopes: vec!["profile".to_string(), "offline_access".to_string()],
             extra_authorize_params: Vec::new(),

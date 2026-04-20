@@ -8,6 +8,8 @@ use std::{
 };
 
 use agent_core::{
+    redact_sensitive_json_value, redact_sensitive_text, resolve_path_within_root,
+    resolve_relative_path_within_root, validate_relative_path, validate_single_path_component,
     UpdateAvailabilityState, UpdateInstallKind, UpdateInstallTarget, UpdateOperationStep,
     UpdateRunRequest, UpdateRunState, UpdateRunSummary, UpdateStatusResponse, INTERNAL_DAEMON_ARG,
     INTERNAL_UPDATE_HELPER_ARG,
@@ -205,9 +207,16 @@ pub(crate) async fn trigger_update(
             )?;
 
             let run_root = create_update_run_root(&state.storage)?;
-            let archive_path = run_root.join(&candidate.archive_name);
-            let checksum_path = run_root.join(&candidate.checksum_name);
-            let extract_root = run_root.join("extract");
+            let archive_path =
+                staged_asset_path(&run_root, &candidate.archive_name, "update archive path")?;
+            let checksum_path =
+                staged_asset_path(&run_root, &candidate.checksum_name, "update checksum path")?;
+            let extract_root = resolve_relative_path_within_root(
+                &run_root,
+                Path::new("extract"),
+                "update extract directory",
+            )
+            .map_err(ApiError::from)?;
 
             let downloading = build_status(
                 &probe,
@@ -318,7 +327,7 @@ pub async fn run_update_helper_from_plan(plan_path: &Path) -> Result<()> {
     };
 
     if let Err(error) = apply_result {
-        let detail = format!("{error:#}");
+        let detail = redact_sensitive_text(&format!("{error:#}"));
         let restart_path = match &plan.kind {
             UpdateExecutionPlanKind::Packaged(packaged) => packaged.target_executable.clone(),
         };
@@ -519,7 +528,7 @@ async fn check_packaged_update(
 
     let platform_tag = current_platform_tag();
     let Some((archive_asset, checksum_asset)) =
-        select_packaged_assets(&release.assets, &platform_tag)
+        select_packaged_assets(&release.assets, &platform_tag)?
     else {
         return Ok(UpdateCheckOutcome {
             status: UpdateStatusResponse {
@@ -628,18 +637,28 @@ async fn fetch_latest_release(client: &reqwest::Client) -> Result<GitHubRelease,
 fn select_packaged_assets(
     assets: &[GitHubReleaseAsset],
     platform_tag: &str,
-) -> Option<(GitHubReleaseAsset, GitHubReleaseAsset)> {
+) -> Result<Option<(GitHubReleaseAsset, GitHubReleaseAsset)>, ApiError> {
     let archive_suffix = format!("-{platform_tag}-full{}", archive_extension());
     let checksum_suffix = format!("{archive_suffix}.sha256.txt");
-    let archive = assets
+    let Some(archive) = assets
         .iter()
-        .find(|asset| asset.name.ends_with(&archive_suffix))?
-        .clone();
-    let checksum = assets
+        .find(|asset| asset.name.ends_with(&archive_suffix))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let Some(checksum) = assets
         .iter()
-        .find(|asset| asset.name.ends_with(&checksum_suffix))?
-        .clone();
-    Some((archive, checksum))
+        .find(|asset| asset.name.ends_with(&checksum_suffix))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    validate_single_path_component(&archive.name, "release archive asset name")
+        .map_err(ApiError::from)?;
+    validate_single_path_component(&checksum.name, "release checksum asset name")
+        .map_err(ApiError::from)?;
+    Ok(Some((archive, checksum)))
 }
 
 fn normalize_release_version(tag_name: &str) -> Result<String> {
@@ -707,11 +726,19 @@ fn verify_checksum(archive_path: &Path, checksum_path: &Path) -> Result<(), ApiE
 }
 
 fn create_update_run_root(storage: &Storage) -> Result<PathBuf, ApiError> {
-    let root = storage
-        .paths()
-        .data_dir
-        .join(UPDATE_STAGING_DIR_NAME)
-        .join(Uuid::new_v4().to_string());
+    let staging_root = resolve_relative_path_within_root(
+        &storage.paths().data_dir,
+        Path::new(UPDATE_STAGING_DIR_NAME),
+        "update staging directory",
+    )
+    .map_err(ApiError::from)?;
+    fs::create_dir_all(&staging_root).map_err(ApiError::from)?;
+    let root = resolve_relative_path_within_root(
+        &staging_root,
+        Path::new(&Uuid::new_v4().to_string()),
+        "update run root",
+    )
+    .map_err(ApiError::from)?;
     fs::create_dir_all(&root).map_err(ApiError::from)?;
     Ok(root)
 }
@@ -721,17 +748,32 @@ fn update_state_path(storage: &Storage) -> PathBuf {
 }
 
 fn write_plan(run_root: &Path, plan: &UpdateExecutionPlan) -> Result<PathBuf, ApiError> {
-    let path = run_root.join(UPDATE_PLAN_FILE_NAME);
+    let path = resolve_relative_path_within_root(
+        run_root,
+        Path::new(UPDATE_PLAN_FILE_NAME),
+        "update plan path",
+    )
+    .map_err(ApiError::from)?;
     write_json_file(&path, plan).map_err(ApiError::from)?;
     Ok(path)
 }
 
 fn spawn_update_helper(plan_path: &Path) -> Result<(), ApiError> {
+    let run_root = plan_path.parent().ok_or_else(|| {
+        ApiError::from(anyhow!(
+            "update plan path '{}' has no parent",
+            plan_path.display()
+        ))
+    })?;
+    let plan_path = resolve_path_within_root(run_root, plan_path, "update plan path")
+        .map_err(ApiError::from)?;
     let current_executable = std::env::current_exe().map_err(ApiError::from)?;
-    let helper_path = plan_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(helper_binary_name());
+    let helper_path = resolve_relative_path_within_root(
+        run_root,
+        Path::new(&helper_binary_name()),
+        "update helper path",
+    )
+    .map_err(ApiError::from)?;
     fs::copy(&current_executable, &helper_path).map_err(ApiError::from)?;
     make_binary_executable(&helper_path).map_err(ApiError::from)?;
 
@@ -796,6 +838,7 @@ async fn apply_packaged_update(plan: &PackagedUpdatePlan) -> Result<()> {
 }
 
 async fn extract_archive(archive_path: &Path, destination: &Path) -> Result<()> {
+    validate_archive_contents(archive_path, destination).await?;
     if destination.exists() {
         fs::remove_dir_all(destination).with_context(|| {
             format!(
@@ -887,13 +930,18 @@ fn write_persisted_status(
 }
 
 fn read_plan(plan_path: &Path) -> Result<UpdateExecutionPlan> {
-    let content = fs::read_to_string(plan_path)
+    let run_root = plan_path
+        .parent()
+        .ok_or_else(|| anyhow!("update plan path '{}' has no parent", plan_path.display()))?;
+    let plan_path = resolve_path_within_root(run_root, plan_path, "update plan path")?;
+    let content = fs::read_to_string(&plan_path)
         .with_context(|| format!("failed to read {}", plan_path.display()))?;
     let plan: UpdateExecutionPlan = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse {}", plan_path.display()))?;
     if plan.schema_version != UPDATE_STATE_SCHEMA_VERSION {
         bail!("unsupported update plan schema {}", plan.schema_version);
     }
+    validate_update_plan_paths(&plan, run_root)?;
     Ok(plan)
 }
 
@@ -932,7 +980,8 @@ fn write_json_file(path: &Path, value: &impl Serialize) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let temp_path = path.with_extension("tmp");
-    let content = serde_json::to_string_pretty(value)?;
+    let value = serde_json::to_value(value)?;
+    let content = serde_json::to_string_pretty(&redact_sensitive_json_value(&value))?;
     fs::write(&temp_path, content)
         .with_context(|| format!("failed to write {}", temp_path.display()))?;
     fs::rename(&temp_path, path)
@@ -1021,12 +1070,13 @@ fn git_output(repo_root: &Path, args: &[&str]) -> Result<String> {
 fn command_output_summary(output: &Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    match (stdout.is_empty(), stderr.is_empty()) {
+    let summary = match (stdout.is_empty(), stderr.is_empty()) {
         (true, true) => format!("exit={}", output.status),
         (false, true) => stdout,
         (true, false) => stderr,
         (false, false) => format!("{stdout}\n{stderr}"),
-    }
+    };
+    redact_sensitive_text(&summary)
 }
 
 fn spawn_daemon_process(executable: &Path) -> Result<()> {
@@ -1045,6 +1095,105 @@ fn spawn_daemon_process(executable: &Path) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+fn staged_asset_path(run_root: &Path, file_name: &str, label: &str) -> Result<PathBuf, ApiError> {
+    let file_name = validate_single_path_component(file_name, label).map_err(ApiError::from)?;
+    resolve_relative_path_within_root(run_root, Path::new(&file_name), label)
+        .map_err(ApiError::from)
+}
+
+fn update_data_dir_from_run_root(run_root: &Path) -> Result<&Path> {
+    let staging_root = run_root.parent().ok_or_else(|| {
+        anyhow!(
+            "update run root '{}' has no staging parent",
+            run_root.display()
+        )
+    })?;
+    let data_dir = staging_root.parent().ok_or_else(|| {
+        anyhow!(
+            "update staging directory '{}' has no data root parent",
+            staging_root.display()
+        )
+    })?;
+    Ok(data_dir)
+}
+
+fn validate_update_plan_paths(plan: &UpdateExecutionPlan, run_root: &Path) -> Result<()> {
+    let data_dir = update_data_dir_from_run_root(run_root)?;
+    resolve_path_within_root(data_dir, &plan.status_path, "update status path")?;
+    match &plan.kind {
+        UpdateExecutionPlanKind::Packaged(packaged) => {
+            resolve_path_within_root(run_root, &packaged.archive_path, "update archive path")?;
+            resolve_path_within_root(run_root, &packaged.extract_root, "update extract directory")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_archive_entry_destination(destination: &Path, entry_name: &str) -> Result<PathBuf> {
+    let relative = validate_relative_path(Path::new(entry_name.trim()), "archive entry path")?;
+    resolve_relative_path_within_root(destination, &relative, "archive entry destination")
+}
+
+async fn validate_archive_contents(archive_path: &Path, destination: &Path) -> Result<()> {
+    let entries = list_archive_entries(archive_path).await?;
+    for entry in entries {
+        validate_archive_entry_destination(destination, &entry)?;
+    }
+    Ok(())
+}
+
+async fn list_archive_entries(archive_path: &Path) -> Result<Vec<String>> {
+    #[cfg(windows)]
+    {
+        let command = format!(
+            "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip=[IO.Compression.ZipFile]::OpenRead('{}'); try {{ $zip.Entries | ForEach-Object {{ $_.FullName }} }} finally {{ $zip.Dispose() }}",
+            escape_powershell_literal(archive_path)
+        );
+        let mut process = Command::new("powershell");
+        process
+            .arg("-NoLogo")
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(command);
+        configure_no_window(&mut process);
+        let output = process.output().await?;
+        if !output.status.success() {
+            bail!(
+                "inspect packaged archive: {}",
+                command_output_summary(&output)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("tar")
+            .arg("-tzf")
+            .arg(archive_path)
+            .output()
+            .await?;
+        if !output.status.success() {
+            bail!(
+                "inspect packaged archive: {}",
+                command_output_summary(&output)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect())
+    }
 }
 
 fn current_platform_tag() -> String {
@@ -1235,5 +1384,113 @@ mod tests {
             fs::read(install_dir.join(binary_name())).unwrap(),
             b"updated-build"
         );
+    }
+
+    #[test]
+    fn validate_archive_entry_destination_rejects_traversal() {
+        let root = temp_dir("nuclear-update-archive");
+        let error = validate_archive_entry_destination(&root, "../escape").unwrap_err();
+
+        assert!(error.to_string().contains("traversal"));
+    }
+
+    #[test]
+    fn select_packaged_assets_rejects_separator_bearing_asset_names() {
+        let platform_tag = current_platform_tag();
+        let assets = vec![
+            GitHubReleaseAsset {
+                name: format!(
+                    "nested/nuclear-1.0.0-{platform_tag}-full{}",
+                    archive_extension()
+                ),
+                browser_download_url: "https://example.invalid/archive".to_string(),
+            },
+            GitHubReleaseAsset {
+                name: format!(
+                    "nuclear-1.0.0-{platform_tag}-full{}.sha256.txt",
+                    archive_extension()
+                ),
+                browser_download_url: "https://example.invalid/checksum".to_string(),
+            },
+        ];
+
+        let error = select_packaged_assets(&assets, &platform_tag).unwrap_err();
+
+        assert!(error.message.contains("asset name"));
+    }
+
+    #[test]
+    fn create_update_run_root_stays_under_managed_data_dir() {
+        let storage = Storage::open_at(temp_dir("nuclear-update-storage")).unwrap();
+
+        let run_root = create_update_run_root(&storage).unwrap();
+
+        assert!(run_root.starts_with(&storage.paths().data_dir));
+        assert!(run_root
+            .strip_prefix(storage.paths().data_dir.join(UPDATE_STAGING_DIR_NAME))
+            .is_ok());
+    }
+
+    #[test]
+    fn read_plan_rejects_archive_path_outside_run_root() {
+        let root = temp_dir("nuclear-update-plan");
+        let run_root = root
+            .join("data")
+            .join(UPDATE_STAGING_DIR_NAME)
+            .join("run-1");
+        fs::create_dir_all(&run_root).unwrap();
+        let plan_path = run_root.join(UPDATE_PLAN_FILE_NAME);
+        let status_path = root.join("data").join(UPDATE_STATE_FILE_NAME);
+        let invalid_archive = root.join("outside").join("nuclear.zip");
+        let plan = serde_json::json!({
+            "schema_version": UPDATE_STATE_SCHEMA_VERSION,
+            "status_path": status_path,
+            "wait_for_pids": [],
+            "install": {
+                "kind": "packaged",
+                "executable_path": "C:/Nuclear/nuclear.exe",
+                "install_dir": "C:/Nuclear",
+                "repo_root": null,
+                "build_profile": null
+            },
+            "current_version": "0.8.3",
+            "current_commit": null,
+            "candidate_version": "0.8.4",
+            "candidate_tag": "v0.8.4",
+            "candidate_commit": null,
+            "published_at": null,
+            "detail": "Applying update.",
+            "kind": {
+                "kind": "packaged",
+                "install_dir": root.join("install"),
+                "archive_path": invalid_archive,
+                "extract_root": run_root.join("extract"),
+                "target_executable": root.join("install").join(binary_name())
+            }
+        });
+        fs::write(&plan_path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+
+        let error = read_plan(&plan_path).unwrap_err();
+
+        assert!(error.to_string().contains("escapes managed root"));
+    }
+
+    #[test]
+    fn write_json_file_redacts_sensitive_values() {
+        let root = temp_dir("nuclear-update-json");
+        let path = root.join("status.json");
+
+        write_json_file(
+            &path,
+            &serde_json::json!({
+                "detail": "Bearer sk-live-123456 refresh_token=refresh-secret"
+            }),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(path).unwrap();
+        assert!(!content.contains("sk-live-123456"));
+        assert!(!content.contains("refresh-secret"));
+        assert!(content.contains("[REDACTED]"));
     }
 }

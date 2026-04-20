@@ -15,18 +15,19 @@ dependencies = [
 
 [[package]]
 name = "agent-core"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "chrono",
  "serde",
  "serde_json",
+ "url",
  "uuid",
 ]
 
 [[package]]
 name = "agent-daemon"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "agent-core",
  "agent-policy",
@@ -54,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "agent-policy"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -62,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "agent-providers"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -84,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "agent-storage"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -2092,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "nuclear"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "agent-core",
  "agent-daemon",

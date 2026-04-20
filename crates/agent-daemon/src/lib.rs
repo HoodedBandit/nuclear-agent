@@ -33,7 +33,8 @@ use crate::delegation::{
 };
 use crate::routes::{build_protected_routes, build_public_routes};
 use agent_core::{
-    AppConfig, LogEntry, ModelAlias, ProviderConfig, SkillDraftStatus, INTERNAL_DAEMON_ARG,
+    redact_sensitive_text, AppConfig, LogEntry, ModelAlias, ProviderConfig, SkillDraftStatus,
+    INTERNAL_DAEMON_ARG,
 };
 #[cfg(test)]
 use agent_core::{
@@ -464,7 +465,7 @@ impl ApiError {
     fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
-            message: message.into(),
+            message: redact_sensitive_text(&message.into()),
         }
     }
 }
@@ -475,10 +476,11 @@ where
 {
     fn from(error: E) -> Self {
         let error = error.into();
-        error!("{error:#}");
+        let detail = redact_sensitive_text(&format!("{error:#}"));
+        error!("{detail}");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: error.to_string(),
+            message: redact_sensitive_text(&error.to_string()),
         }
     }
 }

@@ -7,6 +7,7 @@ use std::{
 };
 
 use agent_core::{
+    resolve_path_within_root, resolve_relative_path_within_root, validate_single_path_component,
     InstalledPluginConfig, PluginDoctorReport, PluginInstallRequest, PluginManifest,
     PluginPermissions, PluginSourceKind, PluginUpdateRequest, PLUGIN_HOST_VERSION,
     PLUGIN_MANIFEST_FILE_NAME, PLUGIN_SCHEMA_VERSION,
@@ -101,12 +102,21 @@ pub fn install_plugin_package(
 ) -> Result<InstalledPluginConfig> {
     paths.ensure()?;
     let resolved = resolve_plugin_install_request(paths, request)?;
-    let install_dir = paths.plugin_dir.join(&resolved.manifest.id);
-    let temp_dir = paths.plugin_dir.join(format!(
-        ".install-{}-{}",
-        resolved.manifest.id,
-        Uuid::new_v4()
-    ));
+    validate_single_path_component(&resolved.manifest.id, "plugin manifest id")?;
+    let install_dir = resolve_relative_path_within_root(
+        &paths.plugin_dir,
+        Path::new(&resolved.manifest.id),
+        "plugin install directory",
+    )?;
+    let temp_dir = resolve_relative_path_within_root(
+        &paths.plugin_dir,
+        Path::new(&format!(
+            ".install-{}-{}",
+            resolved.manifest.id,
+            Uuid::new_v4()
+        )),
+        "plugin staging directory",
+    )?;
 
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir).with_context(|| {
@@ -234,12 +244,17 @@ pub fn update_plugin_package(
     )
 }
 
-pub fn uninstall_plugin_package(plugin: &InstalledPluginConfig) -> Result<()> {
-    if plugin.install_dir.exists() {
-        fs::remove_dir_all(&plugin.install_dir).with_context(|| {
+pub fn uninstall_plugin_package(paths: &AppPaths, plugin: &InstalledPluginConfig) -> Result<()> {
+    let install_dir = resolve_path_within_root(
+        &paths.plugin_dir,
+        &plugin.install_dir,
+        "plugin install directory",
+    )?;
+    if install_dir.exists() {
+        fs::remove_dir_all(&install_dir).with_context(|| {
             format!(
                 "failed to remove plugin install directory '{}'",
-                plugin.install_dir.display()
+                install_dir.display()
             )
         })?;
     }
@@ -513,14 +528,18 @@ fn resolve_git_plugin_source(
     source_reference: &str,
 ) -> Result<ResolvedPluginSource> {
     let git = parse_git_source_reference(source_reference)?;
-    let cache_root = plugin_source_cache_dir(paths);
+    let cache_root = plugin_source_cache_dir(paths)?;
     fs::create_dir_all(&cache_root).with_context(|| {
         format!(
             "failed to create plugin source cache directory '{}'",
             cache_root.display()
         )
     })?;
-    let checkout_dir = cache_root.join(format!("git-{}", stable_hash(source_reference)));
+    let checkout_dir = resolve_relative_path_within_root(
+        &cache_root,
+        Path::new(&format!("git-{}", stable_hash(source_reference))),
+        "plugin git checkout directory",
+    )?;
     if checkout_dir.exists() {
         fs::remove_dir_all(&checkout_dir).with_context(|| {
             format!(
@@ -546,7 +565,14 @@ fn resolve_git_plugin_source(
     let source_probe = git
         .subdir
         .as_ref()
-        .map(|subdir| checkout_dir.join(subdir))
+        .map(|subdir| {
+            resolve_relative_path_within_root(
+                &checkout_dir,
+                subdir,
+                "plugin git source subdirectory",
+            )
+        })
+        .transpose()?
         .unwrap_or_else(|| checkout_dir.clone());
     let source_probe = fs::canonicalize(&source_probe).with_context(|| {
         format!(
@@ -633,6 +659,7 @@ fn parse_marketplace_reference(source_reference: &str) -> Result<(String, Option
     if plugin_id.trim().is_empty() {
         bail!("marketplace source is missing a plugin id");
     }
+    validate_single_path_component(plugin_id, "marketplace plugin id")?;
     Ok((plugin_id.to_string(), version))
 }
 
@@ -676,8 +703,12 @@ fn normalize_marketplace_source(source: &str, base_dir: &Path) -> Result<String>
     }
 }
 
-fn plugin_source_cache_dir(paths: &AppPaths) -> PathBuf {
-    paths.data_dir.join("plugin-sources")
+fn plugin_source_cache_dir(paths: &AppPaths) -> Result<PathBuf> {
+    resolve_relative_path_within_root(
+        &paths.data_dir,
+        Path::new("plugin-sources"),
+        "plugin source cache directory",
+    )
 }
 
 fn stable_hash(value: &str) -> String {
@@ -741,6 +772,7 @@ fn validate_plugin_manifest(manifest: &PluginManifest) -> Result<()> {
     if manifest.id.trim().is_empty() {
         bail!("plugin manifest id must not be empty");
     }
+    validate_single_path_component(&manifest.id, "plugin manifest id")?;
     if !manifest
         .id
         .chars()
@@ -1301,6 +1333,68 @@ mod tests {
         assert_eq!(resolved.source_kind, PluginSourceKind::Marketplace);
         assert_eq!(resolved.source_reference, "market:echo-toolkit");
         assert_eq!(resolved.manifest.id, "echo-toolkit");
+    }
+
+    #[test]
+    fn validate_plugin_manifest_rejects_path_like_id() {
+        let mut manifest = sample_manifest();
+        manifest.id = "../escape".to_string();
+
+        let error = validate_plugin_manifest(&manifest).unwrap_err();
+
+        assert!(error.to_string().contains("plugin manifest id"));
+    }
+
+    #[test]
+    fn parse_marketplace_reference_rejects_path_like_id() {
+        let error = parse_marketplace_reference("market:../../escape").unwrap_err();
+
+        assert!(error.to_string().contains("marketplace plugin id"));
+    }
+
+    #[test]
+    fn parse_git_source_reference_rejects_escape_subdir_during_resolution() {
+        let paths = temp_paths();
+        let checkout_dir = paths.data_dir.join("plugin-sources").join("git-checkout");
+        fs::create_dir_all(&checkout_dir).unwrap();
+
+        let git =
+            parse_git_source_reference("git+https://example.invalid/repo.git::../escape").unwrap();
+        let error = resolve_relative_path_within_root(
+            &checkout_dir,
+            git.subdir.as_deref().unwrap(),
+            "plugin git source subdirectory",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("traversal"));
+    }
+
+    #[test]
+    fn uninstall_plugin_package_rejects_escape_install_dir() {
+        let paths = temp_paths();
+        let manifest = sample_manifest();
+        let plugin = InstalledPluginConfig {
+            id: manifest.id.clone(),
+            manifest,
+            source_kind: PluginSourceKind::LocalPath,
+            install_dir: paths.root_dir.join("..").join("escape"),
+            source_reference: String::new(),
+            source_path: paths.root_dir.join("plugin-source"),
+            integrity_sha256: String::new(),
+            enabled: false,
+            trusted: false,
+            granted_permissions: PluginPermissions::default(),
+            reviewed_integrity_sha256: String::new(),
+            reviewed_at: None,
+            pinned: false,
+            installed_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let error = uninstall_plugin_package(&paths, &plugin).unwrap_err();
+
+        assert!(error.to_string().contains("escapes managed root"));
     }
 
     #[test]

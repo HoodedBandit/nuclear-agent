@@ -100,6 +100,7 @@ impl AppConfig {
                     provider.id
                 ));
             }
+            provider.validate_oauth_configuration()?;
         }
 
         for alias in &self.aliases {
@@ -665,4 +666,55 @@ fn validate_unique_non_empty<'a>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oauth_provider(authorization_url: &str, token_url: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: "oauth".to_string(),
+            display_name: "OAuth".to_string(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: "https://example.com/v1".to_string(),
+            auth_mode: AuthMode::OAuth,
+            default_model: Some("model".to_string()),
+            keychain_account: None,
+            oauth: Some(OAuthConfig {
+                client_id: "client".to_string(),
+                authorization_url: authorization_url.to_string(),
+                token_url: token_url.to_string(),
+                scopes: Vec::new(),
+                extra_authorize_params: Vec::new(),
+                extra_token_params: Vec::new(),
+            }),
+            local: false,
+        }
+    }
+
+    #[test]
+    fn validate_dashboard_mutation_rejects_remote_http_oauth_endpoints() {
+        let mut config = AppConfig::default();
+        config.providers.push(oauth_provider(
+            "http://example.com/authorize",
+            "https://auth.example.com/token",
+        ));
+
+        let error = config.validate_dashboard_mutation().unwrap_err();
+
+        assert!(error.to_string().contains("authorization_url"));
+        assert!(error.to_string().contains("must use https"));
+    }
+
+    #[test]
+    fn validate_dashboard_mutation_accepts_loopback_http_oauth_endpoints() {
+        let mut config = AppConfig::default();
+        config.providers.push(oauth_provider(
+            "http://127.0.0.1:45454/authorize",
+            "http://127.0.0.1:45454/token",
+        ));
+
+        config.validate_dashboard_mutation().unwrap();
+    }
 }

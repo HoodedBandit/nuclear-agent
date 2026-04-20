@@ -242,7 +242,7 @@ pub(crate) async fn delete_plugin(
         plugin
     };
 
-    storage_plugins::uninstall_plugin_package(&removed)
+    storage_plugins::uninstall_plugin_package(state.storage.paths(), &removed)
         .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
     append_log(
         &state,

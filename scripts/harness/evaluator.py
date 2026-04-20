@@ -15,7 +15,7 @@ from .common import (
     resolve_command_argv,
     run_command,
     utc_now_iso,
-    write_json,
+    write_json_artifact,
 )
 from .provider_adapters import ANALYSIS_MODEL, SCRIPTED_MODEL, HarnessProviderServer
 
@@ -91,7 +91,7 @@ def run_analysis_tasks(
     try:
         for task in tasks:
             task_dir = ensure_dir(output_root / task["id"])
-            write_json(task_dir / "request.json", task)
+            write_json_artifact(task_dir / "request.json", task)
             stdout_path = task_dir / "stdout.txt"
             stderr_path = task_dir / "stderr.txt"
             with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open(
@@ -127,7 +127,7 @@ def run_analysis_tasks(
             }
             if events:
                 events_path = task_dir / "events.json"
-                write_json(events_path, events)
+                write_json_artifact(events_path, events)
                 result["artifacts"]["events"] = str(events_path)
             if final_response:
                 for key in ("session_id", "alias", "provider_id", "model"):
@@ -135,11 +135,11 @@ def run_analysis_tasks(
                         result[key] = final_response[key]
                 if isinstance(final_response.get("structured_output"), dict):
                     structured_path = task_dir / "structured_output.json"
-                    write_json(structured_path, final_response["structured_output"])
+                    write_json_artifact(structured_path, final_response["structured_output"])
                     result["artifacts"]["structured_output"] = str(structured_path)
             if stderr_text.strip():
                 result["stderr_preview"] = stderr_text.strip().splitlines()[:3]
-            write_json(task_dir / "result.json", result)
+            write_json_artifact(task_dir / "result.json", result)
             results.append(result)
     finally:
         bootstrap.stop_daemon(repo_root, binary_path, env)
@@ -159,7 +159,7 @@ def run_analysis_tasks(
         "bootstrap_profile": bootstrap_info,
         "results": results,
     }
-    write_json(output_root / "summary.json", summary)
+    write_json_artifact(output_root / "summary.json", summary)
     (output_root / "summary.md").write_text(
         _summary_markdown("Analysis Smoke Summary", results, lane="analysis-smoke", started_at=started_at, finished_at=finished_at),
         encoding="utf-8",
@@ -198,7 +198,7 @@ def _run_command_spec(
         "passed": completed.returncode == int(command["expected_exit_code"]),
         "artifacts": {"stdout": str(stdout_path), "stderr": str(stderr_path)},
     }
-    write_json(command_root / "result.json", result)
+    write_json_artifact(command_root / "result.json", result)
     return result
 
 
@@ -231,9 +231,9 @@ def _git_changed_paths(workspace: Path) -> list[str]:
 def _write_exec_artifacts(task_dir: Path, stdout_text: str, stderr_text: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     events, final_response = parse_json_output(stdout_text)
     if events:
-        write_json(task_dir / "events.json", events)
+        write_json_artifact(task_dir / "events.json", events)
     if final_response:
-        write_json(task_dir / "final_response.json", final_response)
+        write_json_artifact(task_dir / "final_response.json", final_response)
     if stderr_text.strip():
         (task_dir / "stderr-preview.txt").write_text("\n".join(stderr_text.strip().splitlines()[:20]), encoding="utf-8")
     return events, final_response
@@ -430,7 +430,7 @@ def _run_coding_task(
 
         changed_paths = _git_changed_paths(workspace)
         failures.extend(_evaluate_changed_paths(task, changed_paths))
-        write_json(task_dir / "changed-paths.json", changed_paths)
+        write_json_artifact(task_dir / "changed-paths.json", changed_paths)
         diff = run_command(["git", "diff", "--stat", "--patch", "HEAD"], cwd=workspace, check=True).stdout
         (task_dir / "diff.patch").write_text(diff, encoding="utf-8")
     finally:
@@ -484,7 +484,7 @@ def run_coding_tasks(
             reference_profile=reference_profile,
             scripted_server_port=scripted_server_port,
         )
-        write_json(task_dir / "result.json", result)
+        write_json_artifact(task_dir / "result.json", result)
         results.append(result)
     finished_at = utc_now_iso()
     summary = {
@@ -500,7 +500,7 @@ def run_coding_tasks(
         "results": results,
         "reference_profile": reference_profile or {},
     }
-    write_json(output_root / "summary.json", summary)
+    write_json_artifact(output_root / "summary.json", summary)
     (output_root / "summary.md").write_text(
         _summary_markdown("Coding Harness Summary", results, lane=lane, started_at=started_at, finished_at=finished_at),
         encoding="utf-8",
@@ -566,7 +566,7 @@ def run_runtime_cert(
             "summary": "passed" if completed.returncode == 0 else "step failed",
             "artifacts": {"stdout": str(stdout_path), "stderr": str(stderr_path)},
         }
-        write_json(step_dir / "result.json", result)
+        write_json_artifact(step_dir / "result.json", result)
         results.append(result)
     finished_at = utc_now_iso()
     summary = {
@@ -580,7 +580,7 @@ def run_runtime_cert(
         "failed": sum(1 for result in results if not result["passed"]),
         "results": results,
     }
-    write_json(output_root / "summary.json", summary)
+    write_json_artifact(output_root / "summary.json", summary)
     (output_root / "summary.md").write_text(
         _summary_markdown("Runtime Certification Summary", results, lane="runtime-cert", started_at=started_at, finished_at=finished_at),
         encoding="utf-8",
@@ -629,7 +629,7 @@ def run_soak_lane(
             }
         ],
     }
-    write_json(output_root / "summary.json", summary)
+    write_json_artifact(output_root / "summary.json", summary)
     (output_root / "summary.md").write_text(
         _summary_markdown("Soak Summary", summary["results"], lane="soak", started_at=summary["started_at"], finished_at=summary["finished_at"]),
         encoding="utf-8",

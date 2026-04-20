@@ -1,8 +1,8 @@
 use agent_core::{
-    AttachmentKind, AuthMode, ConversationMessage, HostedToolKind, InputAttachment, MessageRole,
-    ModelToolCapabilities, OAuthConfig, OAuthToken, ProviderConfig, ProviderHealth, ProviderKind,
-    ProviderOutputItem, ProviderReply, ThinkingLevel, ToolBackend, ToolCall, ToolDefinition,
-    KEYCHAIN_SERVICE,
+    redact_sensitive_json_value, redact_sensitive_text, AttachmentKind, AuthMode,
+    ConversationMessage, HostedToolKind, InputAttachment, MessageRole, ModelToolCapabilities,
+    OAuthConfig, OAuthToken, ProviderConfig, ProviderHealth, ProviderKind, ProviderOutputItem,
+    ProviderReply, ThinkingLevel, ToolBackend, ToolCall, ToolDefinition, KEYCHAIN_SERVICE,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -191,14 +191,16 @@ fn extract_error(body: &Value) -> String {
         .and_then(|error| error.get("message"))
         .and_then(Value::as_str)
     {
-        return text.to_string();
+        return redact_sensitive_text(text);
     }
 
     if let Some(text) = body.get("error_description").and_then(Value::as_str) {
-        return text.to_string();
+        return redact_sensitive_text(text);
     }
 
-    body.to_string()
+    serde_json::to_string(&redact_sensitive_json_value(body))
+        .map(|text| redact_sensitive_text(&text))
+        .unwrap_or_else(|_| "[REDACTED]".to_string())
 }
 
 fn extract_text(value: &Value) -> String {

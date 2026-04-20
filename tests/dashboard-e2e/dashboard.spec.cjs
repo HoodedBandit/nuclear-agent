@@ -121,7 +121,7 @@ test("checks for a packaged update from the system workbench", async ({ page }) 
   await page.getByRole("button", { name: "updates" }).click();
   await page.click("#update-check-button");
 
-  await expect(page.locator("#update-status-body")).toContainText("0.8.3 is available");
-  await expect(page.locator("#update-status-body")).toContainText("v0.8.3");
+  await expect(page.locator("#update-status-body")).toContainText("0.8.4 is available");
+  await expect(page.locator("#update-status-body")).toContainText("v0.8.4");
   await expect(page.locator("#update-run-button")).toBeEnabled();
 });

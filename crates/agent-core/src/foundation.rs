@@ -1,4 +1,6 @@
 use super::*;
+use anyhow::{anyhow, bail, Context, Result};
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -473,12 +475,65 @@ impl ProviderConfig {
                 .is_some_and(|account| !account.trim().is_empty())
     }
 
+    pub fn validate_oauth_configuration(&self) -> Result<()> {
+        if self.auth_mode != AuthMode::OAuth {
+            return Ok(());
+        }
+
+        let oauth = self.oauth.as_ref().ok_or_else(|| {
+            anyhow!(
+                "provider '{}' is configured for OAuth but is missing oauth settings",
+                self.id
+            )
+        })?;
+        validate_oauth_endpoint_url(&self.id, "authorization_url", &oauth.authorization_url)?;
+        validate_oauth_endpoint_url(&self.id, "token_url", &oauth.token_url)?;
+        Ok(())
+    }
+
     #[deprecated(
         note = "metadata-only helper; use runtime credential validation for actual usability checks"
     )]
     pub fn has_usable_saved_access(&self) -> bool {
         self.has_saved_access_reference()
     }
+}
+
+fn validate_oauth_endpoint_url(provider_id: &str, field: &str, value: &str) -> Result<()> {
+    let parsed = Url::parse(value).with_context(|| {
+        format!(
+            "provider '{}' {} '{}' is not a valid URL",
+            provider_id, field, value
+        )
+    })?;
+    let host = parsed.host_str().ok_or_else(|| {
+        anyhow!(
+            "provider '{}' {} '{}' is missing a host",
+            provider_id,
+            field,
+            value
+        )
+    })?;
+
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_host(host) => Ok(()),
+        "http" => bail!(
+            "provider '{}' {} must use https unless it targets localhost or a loopback address",
+            provider_id,
+            field
+        ),
+        scheme => bail!(
+            "provider '{}' {} must use https or loopback-local http; found '{}'",
+            provider_id,
+            field,
+            scheme
+        ),
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

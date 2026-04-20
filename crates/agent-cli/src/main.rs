@@ -77,10 +77,10 @@ pub(crate) use session_support::{
 };
 
 use agent_core::{
-    AliasUpsertRequest, AppConfig, AuthMode, AutonomyEnableRequest, AutonomyMode, AutopilotConfig,
-    AutopilotState, AutopilotUpdateRequest, BatchTaskRequest, BatchTaskResponse,
-    ConnectorApprovalStatus, ConnectorKind, DaemonConfigUpdateRequest, DaemonStatus,
-    DashboardLaunchResponse, DiscordConnectorConfig, DiscordConnectorUpsertRequest,
+    redact_sensitive_text, AliasUpsertRequest, AppConfig, AuthMode, AutonomyEnableRequest,
+    AutonomyMode, AutopilotConfig, AutopilotState, AutopilotUpdateRequest, BatchTaskRequest,
+    BatchTaskResponse, ConnectorApprovalStatus, ConnectorKind, DaemonConfigUpdateRequest,
+    DaemonStatus, DashboardLaunchResponse, DiscordConnectorConfig, DiscordConnectorUpsertRequest,
     DiscordPollResponse, DiscordSendRequest, DiscordSendResponse, EvolveConfig, EvolveStartRequest,
     HealthReport, HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest,
     HomeAssistantEntityState, HomeAssistantPollResponse, HomeAssistantServiceCallRequest,
@@ -1849,7 +1849,7 @@ async fn interactive_session(
                         println!("{output}");
                     }
                 }
-                Err(error) => println!("error: {error:#}"),
+                Err(error) => println!("error: {}", redact_sensitive_text(&format!("{error:#}"))),
             }
             continue;
         }
@@ -2817,7 +2817,7 @@ async fn interactive_session(
                     }
                     .await;
                     if let Err(error) = command_result {
-                        println!("error: {error:#}");
+                        println!("error: {}", redact_sensitive_text(&format!("{error:#}")));
                     } else if exit_after_command {
                         break;
                     }
@@ -2825,7 +2825,7 @@ async fn interactive_session(
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    println!("error: {error:#}");
+                    println!("error: {}", redact_sensitive_text(&format!("{error:#}")));
                     continue;
                 }
             }
@@ -3024,7 +3024,11 @@ impl DaemonClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            bail!("daemon returned {}: {}", status, body);
+            bail!(
+                "daemon returned {}: {}",
+                status,
+                redact_sensitive_text(&body)
+            );
         }
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::new();
@@ -3058,7 +3062,11 @@ impl DaemonClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            bail!("daemon returned {}: {}", status, body);
+            bail!(
+                "daemon returned {}: {}",
+                status,
+                redact_sensitive_text(&body)
+            );
         }
         response
             .json::<T>()

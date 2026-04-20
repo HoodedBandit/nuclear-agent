@@ -335,7 +335,7 @@ async fn remove_plugin(storage: &Storage, id: &str) -> Result<()> {
         .ok_or_else(|| anyhow!("unknown plugin '{id}'"))?;
     config.remove_plugin(id);
     storage.save_config(&config)?;
-    storage_plugins::uninstall_plugin_package(&plugin)?;
+    storage_plugins::uninstall_plugin_package(storage.paths(), &plugin)?;
     Ok(())
 }
 
