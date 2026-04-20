@@ -1422,12 +1422,15 @@ mod tests {
     #[test]
     fn create_update_run_root_stays_under_managed_data_dir() {
         let storage = Storage::open_at(temp_dir("nuclear-update-storage")).unwrap();
+        let normalized_data_dir =
+            agent_core::resolve_operator_path(&storage.paths().data_dir, "managed data dir")
+                .unwrap();
 
         let run_root = create_update_run_root(&storage).unwrap();
 
-        assert!(run_root.starts_with(&storage.paths().data_dir));
+        assert!(run_root.starts_with(&normalized_data_dir));
         assert!(run_root
-            .strip_prefix(storage.paths().data_dir.join(UPDATE_STAGING_DIR_NAME))
+            .strip_prefix(normalized_data_dir.join(UPDATE_STAGING_DIR_NAME))
             .is_ok());
     }
 

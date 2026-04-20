@@ -290,10 +290,12 @@ mod tests {
     fn resolve_support_bundle_dir_accepts_default_managed_output() {
         let data_dir = temp_dir("support-bundle-data");
         let generated_at = Utc::now();
+        let normalized_data_dir =
+            resolve_operator_path(&data_dir, "support bundle data directory").unwrap();
 
         let bundle_dir = resolve_support_bundle_dir(&data_dir, generated_at, None).unwrap();
 
-        assert!(bundle_dir.starts_with(&data_dir));
+        assert!(bundle_dir.starts_with(&normalized_data_dir));
         assert!(bundle_dir.ends_with(generated_at.format("%Y%m%d-%H%M%S").to_string()));
     }
 
@@ -302,11 +304,13 @@ mod tests {
         let data_dir = temp_dir("support-bundle-data");
         let export_root = temp_dir("support-bundle-export");
         let requested = export_root.join("nested").join("bundle");
+        let normalized_requested =
+            resolve_operator_path(&requested, "support bundle output directory").unwrap();
 
         let bundle_dir =
             resolve_support_bundle_dir(&data_dir, Utc::now(), Some(requested.as_path())).unwrap();
 
-        assert_eq!(bundle_dir, requested);
+        assert_eq!(bundle_dir, normalized_requested);
     }
 
     #[test]
