@@ -183,7 +183,8 @@ impl AppPaths {
     }
 
     pub fn migrate_legacy_state(&self) -> Result<Option<PathMigrationRecord>> {
-        let existing_record = load_migration_record(&self.migration_path)?;
+        let migration_path = self.validated_migration_path()?;
+        let existing_record = load_migration_record(&migration_path)?;
         self.migrate_legacy_candidates(self.legacy_candidates(), existing_record.as_ref())
     }
 
@@ -254,7 +255,8 @@ impl AppPaths {
             self.ensure()?;
             let content = serde_json::to_string_pretty(&record)
                 .context("failed to encode path migration state")?;
-            write_atomic(&self.migration_path, content.as_bytes())?;
+            let migration_path = self.validated_migration_path()?;
+            write_atomic(&migration_path, content.as_bytes())?;
             return Ok(Some(record));
         }
 
@@ -288,41 +290,22 @@ impl AppPaths {
         resolve_operator_path(&self.root_dir, "application root directory")
     }
 
-    fn validated_state_root_dir(&self) -> Result<PathBuf> {
-        let config_parent = self.config_dir.parent().ok_or_else(|| {
-            anyhow!(
-                "configuration directory '{}' has no parent directory",
-                self.config_dir.display()
-            )
-        })?;
-        let state_root = resolve_operator_path(config_parent, "application state directory")?;
-
-        let data_parent = self.data_dir.parent().ok_or_else(|| {
-            anyhow!(
-                "data directory '{}' has no parent directory",
-                self.data_dir.display()
-            )
-        })?;
-        let data_parent = resolve_operator_path(data_parent, "application state directory")?;
-        if data_parent != state_root {
-            bail!(
-                "data directory parent '{}' does not match managed state root '{}'",
-                data_parent.display(),
-                state_root.display()
-            );
-        }
-
-        Ok(state_root)
+    fn validated_layout_roots(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let root_dir = self.validated_root_dir()?;
+        let config_dir = resolve_operator_path(&self.config_dir, "configuration directory")?;
+        let data_dir = resolve_operator_path(&self.data_dir, "data directory")?;
+        validate_layout_association(&root_dir, &config_dir, &data_dir)?;
+        Ok((root_dir, config_dir, data_dir))
     }
 
     pub fn validated_config_dir(&self) -> Result<PathBuf> {
-        let state_root = self.validated_state_root_dir()?;
-        resolve_path_within_root(&state_root, &self.config_dir, "configuration directory")
+        let (_, config_dir, _) = self.validated_layout_roots()?;
+        Ok(config_dir)
     }
 
     pub fn validated_data_dir(&self) -> Result<PathBuf> {
-        let state_root = self.validated_state_root_dir()?;
-        resolve_path_within_root(&state_root, &self.data_dir, "data directory")
+        let (_, _, data_dir) = self.validated_layout_roots()?;
+        Ok(data_dir)
     }
 
     pub fn validated_log_dir(&self) -> Result<PathBuf> {
@@ -340,6 +323,48 @@ impl AppPaths {
         resolve_path_from_existing_parent(&self.config_path, "configuration file")
             .and_then(|path| resolve_path_within_root(&config_dir, &path, "configuration file"))
     }
+
+    pub fn validated_db_path(&self) -> Result<PathBuf> {
+        let data_dir = self.validated_data_dir()?;
+        resolve_path_from_existing_parent(&self.db_path, "database file")
+            .and_then(|path| resolve_path_within_root(&data_dir, &path, "database file"))
+    }
+
+    pub fn validated_migration_path(&self) -> Result<PathBuf> {
+        let config_dir = self.validated_config_dir()?;
+        resolve_path_from_existing_parent(&self.migration_path, "path migration state file")
+            .and_then(|path| {
+                resolve_path_within_root(&config_dir, &path, "path migration state file")
+            })
+    }
+}
+
+fn validate_layout_association(root_dir: &Path, config_dir: &Path, data_dir: &Path) -> Result<()> {
+    if config_dir.starts_with(root_dir) && data_dir.starts_with(root_dir) {
+        return Ok(());
+    }
+
+    if config_dir
+        .parent()
+        .zip(data_dir.parent())
+        .is_some_and(|(config_parent, data_parent)| config_parent == data_parent)
+    {
+        return Ok(());
+    }
+
+    let same_project_leaf = root_dir.file_name().is_some()
+        && root_dir.file_name() == config_dir.file_name()
+        && root_dir.file_name() == data_dir.file_name();
+    if same_project_leaf {
+        return Ok(());
+    }
+
+    bail!(
+        "configuration directory '{}' and data directory '{}' are not associated with application root '{}'",
+        config_dir.display(),
+        data_dir.display(),
+        root_dir.display()
+    );
 }
 
 fn load_migration_record(migration_path: &Path) -> Result<Option<PathMigrationRecord>> {
@@ -548,6 +573,28 @@ mod tests {
     }
 
     #[test]
+    fn ensure_accepts_xdg_split_project_roots() {
+        let temp =
+            std::env::temp_dir().join(format!("agent-storage-paths-test-{}", uuid::Uuid::new_v4()));
+        let paths = super::AppPaths::from_standard_dirs(
+            temp.join("xdg-config").join("nuclear"),
+            temp.join("xdg-data").join("nuclear"),
+            temp.join("xdg-state").join("nuclear"),
+        );
+
+        paths.ensure().unwrap();
+        let storage = super::Storage::open_with_paths(paths.clone()).unwrap();
+
+        assert!(paths.config_dir.exists());
+        assert!(paths.data_dir.exists());
+        assert!(paths.plugin_dir.exists());
+        assert!(paths.log_dir.exists());
+        assert!(storage.paths().db_path.exists());
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
     fn migrate_legacy_candidates_is_idempotent_after_copy_fallback() {
         let temp =
             std::env::temp_dir().join(format!("agent-storage-paths-test-{}", uuid::Uuid::new_v4()));
@@ -618,7 +665,7 @@ mod tests {
         let message = error.to_string();
         assert!(
             message.contains("escapes managed root")
-                || message.contains("does not match managed state root")
+                || message.contains("not associated with application root")
         );
         let _ = std::fs::remove_dir_all(&temp);
     }

@@ -2,8 +2,9 @@ use super::*;
 
 impl Storage {
     pub(crate) fn connection(&self) -> Result<Connection> {
-        let connection = Connection::open(&self.paths.db_path)
-            .with_context(|| format!("failed to open database {}", self.paths.db_path.display()))?;
+        let db_path = self.paths.validated_db_path()?;
+        let connection = Connection::open(&db_path)
+            .with_context(|| format!("failed to open database {}", db_path.display()))?;
         configure_connection(&connection)?;
         Ok(connection)
     }
