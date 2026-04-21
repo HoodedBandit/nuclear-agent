@@ -7,8 +7,7 @@ pub fn build_oauth_authorization_url(
     code_challenge: &str,
 ) -> Result<String> {
     let oauth = oauth_config(provider)?;
-    let mut url =
-        Url::parse(&oauth.authorization_url).context("failed to parse OAuth authorization URL")?;
+    let mut url = oauth_authorization_url(provider)?;
     {
         let mut query = url.query_pairs_mut();
         query.append_pair("response_type", "code");
@@ -35,6 +34,7 @@ pub async fn exchange_oauth_code(
     redirect_uri: &str,
 ) -> Result<OAuthToken> {
     let oauth = oauth_config(provider)?;
+    let token_url = oauth_token_url(provider)?;
     let form = base_token_form(oauth)
         .into_iter()
         .chain([
@@ -46,7 +46,7 @@ pub async fn exchange_oauth_code(
         .collect::<Vec<_>>();
 
     let response = client
-        .post(&oauth.token_url)
+        .post(token_url)
         .form(&form)
         .send()
         .await
@@ -160,6 +160,7 @@ pub(crate) async fn refresh_oauth_token(
     }
 
     let oauth = oauth_config(provider)?;
+    let token_url = oauth_token_url(provider)?;
     let refresh_token = token
         .refresh_token
         .as_deref()
@@ -173,7 +174,7 @@ pub(crate) async fn refresh_oauth_token(
         .collect::<Vec<_>>();
 
     let response = client
-        .post(&oauth.token_url)
+        .post(token_url)
         .form(&form)
         .send()
         .await
@@ -275,18 +276,29 @@ pub(crate) fn oauth_config(provider: &ProviderConfig) -> Result<&OAuthConfig> {
         .ok_or_else(|| anyhow!("provider '{}' is missing OAuth configuration", provider.id))
 }
 
+fn oauth_authorization_url(provider: &ProviderConfig) -> Result<Url> {
+    let oauth = oauth_config(provider)?;
+    Url::parse(&oauth.authorization_url).context("failed to parse OAuth authorization URL")
+}
+
+fn oauth_token_url(provider: &ProviderConfig) -> Result<Url> {
+    let oauth = oauth_config(provider)?;
+    Url::parse(&oauth.token_url).context("failed to parse OAuth token URL")
+}
+
 pub(crate) async fn refresh_openai_oauth_token(
     client: &Client,
     provider: &ProviderConfig,
     token: &OAuthToken,
 ) -> Result<OAuthToken> {
     let oauth = oauth_config(provider)?;
+    let token_url = oauth_token_url(provider)?;
     let refresh_token = token
         .refresh_token
         .as_deref()
         .ok_or_else(|| anyhow!("provider '{}' has no refresh token", provider.id))?;
     let response = client
-        .post(&oauth.token_url)
+        .post(token_url)
         .json(&json!({
             "client_id": oauth.client_id,
             "grant_type": "refresh_token",
@@ -329,7 +341,7 @@ pub(crate) async fn exchange_openai_api_key(
             provider.id
         )
     })?;
-    let token_url = Url::parse(&oauth.token_url).context("failed to parse OpenAI token URL")?;
+    let token_url = oauth_token_url(provider)?;
     let issuer = format!(
         "{}://{}",
         token_url.scheme(),
@@ -547,4 +559,98 @@ pub(crate) fn parse_token_endpoint_error(body: &str) -> String {
     serde_json::to_string(&redact_sensitive_json_value(&parsed))
         .map(|text| redact_sensitive_text(&text))
         .unwrap_or_else(|_| "[REDACTED]".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oauth_provider(authorization_url: &str, token_url: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: "oauth-test".to_string(),
+            display_name: "OAuth Test".to_string(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: "https://example.invalid".to_string(),
+            auth_mode: AuthMode::OAuth,
+            default_model: None,
+            keychain_account: Some("oauth-test".to_string()),
+            oauth: Some(OAuthConfig {
+                client_id: "client-id".to_string(),
+                authorization_url: authorization_url.to_string(),
+                token_url: token_url.to_string(),
+                scopes: vec!["openid".to_string()],
+                extra_authorize_params: Vec::new(),
+                extra_token_params: Vec::new(),
+            }),
+            local: false,
+        }
+    }
+
+    #[test]
+    fn build_oauth_authorization_url_rejects_remote_http() {
+        let provider = oauth_provider(
+            "http://example.invalid/oauth/authorize",
+            "https://example.invalid/oauth/token",
+        );
+
+        let error = build_oauth_authorization_url(
+            &provider,
+            "http://127.0.0.1:8123/callback",
+            "state",
+            "challenge",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("https"));
+    }
+
+    #[test]
+    fn build_oauth_authorization_url_allows_loopback_http() {
+        let provider = oauth_provider(
+            "http://127.0.0.1:8123/oauth/authorize",
+            "http://127.0.0.1:8123/oauth/token",
+        );
+
+        let url = build_oauth_authorization_url(
+            &provider,
+            "http://127.0.0.1:3000/callback",
+            "state",
+            "challenge",
+        )
+        .unwrap();
+
+        assert!(url.starts_with("http://127.0.0.1:8123/oauth/authorize"));
+        assert!(url.contains("code_challenge=challenge"));
+    }
+
+    #[tokio::test]
+    async fn exchange_oauth_code_rejects_invalid_token_url_before_request() {
+        let provider = oauth_provider(
+            "https://example.invalid/oauth/authorize",
+            "http://example.invalid/oauth/token",
+        );
+
+        let error = exchange_oauth_code(
+            &Client::new(),
+            &provider,
+            "code",
+            "verifier",
+            "http://127.0.0.1:3000/callback",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("https"));
+    }
+
+    #[test]
+    fn parse_token_endpoint_error_redacts_nested_secret_fields() {
+        let rendered = parse_token_endpoint_error(
+            r#"{"error":{"message":"bad bearer Bearer sk-live-123456"},"refresh_token":"refresh-secret"}"#,
+        );
+
+        assert!(!rendered.contains("sk-live-123456"));
+        assert!(!rendered.contains("refresh-secret"));
+        assert!(rendered.contains("[REDACTED]"));
+    }
 }

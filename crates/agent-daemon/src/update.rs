@@ -8,11 +8,11 @@ use std::{
 };
 
 use agent_core::{
-    redact_sensitive_json_value, redact_sensitive_text, resolve_path_within_root,
-    resolve_relative_path_within_root, validate_relative_path, validate_single_path_component,
-    UpdateAvailabilityState, UpdateInstallKind, UpdateInstallTarget, UpdateOperationStep,
-    UpdateRunRequest, UpdateRunState, UpdateRunSummary, UpdateStatusResponse, INTERNAL_DAEMON_ARG,
-    INTERNAL_UPDATE_HELPER_ARG,
+    redact_sensitive_json_value, redact_sensitive_text, resolve_path_from_existing_parent,
+    resolve_path_within_root, resolve_relative_path_within_root, validate_relative_path,
+    validate_single_path_component, UpdateAvailabilityState, UpdateInstallKind,
+    UpdateInstallTarget, UpdateOperationStep, UpdateRunRequest, UpdateRunState, UpdateRunSummary,
+    UpdateStatusResponse, INTERNAL_DAEMON_ARG, INTERNAL_UPDATE_HELPER_ARG,
 };
 use agent_storage::Storage;
 use anyhow::{anyhow, bail, Context, Result};
@@ -252,7 +252,7 @@ pub(crate) async fn trigger_update(
 
             let plan = UpdateExecutionPlan {
                 schema_version: UPDATE_STATE_SCHEMA_VERSION,
-                status_path: update_state_path(&state.storage),
+                status_path: update_state_path(&state.storage)?,
                 wait_for_pids: collect_wait_pids(std::process::id(), request.wait_for_pid),
                 install: probe.target.clone(),
                 current_version: probe.current_version.clone(),
@@ -726,8 +726,12 @@ fn verify_checksum(archive_path: &Path, checksum_path: &Path) -> Result<(), ApiE
 }
 
 fn create_update_run_root(storage: &Storage) -> Result<PathBuf, ApiError> {
+    let data_dir = storage
+        .paths()
+        .validated_data_dir()
+        .map_err(ApiError::from)?;
     let staging_root = resolve_relative_path_within_root(
-        &storage.paths().data_dir,
+        &data_dir,
         Path::new(UPDATE_STAGING_DIR_NAME),
         "update staging directory",
     )
@@ -743,8 +747,17 @@ fn create_update_run_root(storage: &Storage) -> Result<PathBuf, ApiError> {
     Ok(root)
 }
 
-fn update_state_path(storage: &Storage) -> PathBuf {
-    storage.paths().data_dir.join(UPDATE_STATE_FILE_NAME)
+fn update_state_path(storage: &Storage) -> Result<PathBuf, ApiError> {
+    let data_dir = storage
+        .paths()
+        .validated_data_dir()
+        .map_err(ApiError::from)?;
+    resolve_relative_path_within_root(
+        &data_dir,
+        Path::new(UPDATE_STATE_FILE_NAME),
+        "update status file",
+    )
+    .map_err(ApiError::from)
 }
 
 fn write_plan(run_root: &Path, plan: &UpdateExecutionPlan) -> Result<PathBuf, ApiError> {
@@ -905,7 +918,7 @@ fn locate_bundle_root(extract_root: &Path) -> Result<PathBuf> {
 }
 
 fn read_persisted_status(storage: &Storage) -> Result<Option<UpdateStatusResponse>, ApiError> {
-    let path = update_state_path(storage);
+    let path = update_state_path(storage)?;
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -920,7 +933,7 @@ fn write_persisted_status(
     status: &UpdateStatusResponse,
 ) -> Result<(), ApiError> {
     write_json_file(
-        &update_state_path(storage),
+        &update_state_path(storage)?,
         &UpdateStatusEnvelope {
             schema_version: UPDATE_STATE_SCHEMA_VERSION,
             status: status.clone(),
@@ -975,16 +988,18 @@ fn write_helper_status(
 }
 
 fn write_json_file(path: &Path, value: &impl Serialize) -> Result<()> {
+    let path = resolve_path_from_existing_parent(path, "update JSON file")?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let temp_path = path.with_extension("tmp");
+    let temp_path =
+        resolve_path_from_existing_parent(&path.with_extension("tmp"), "update JSON temp file")?;
     let value = serde_json::to_value(value)?;
     let content = serde_json::to_string_pretty(&redact_sensitive_json_value(&value))?;
     fs::write(&temp_path, content)
         .with_context(|| format!("failed to write {}", temp_path.display()))?;
-    fs::rename(&temp_path, path)
+    fs::rename(&temp_path, &path)
         .with_context(|| format!("failed to move {} into place", path.display()))?;
     Ok(())
 }

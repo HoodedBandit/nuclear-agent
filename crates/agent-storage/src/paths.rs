@@ -1,5 +1,8 @@
 use super::*;
-use agent_core::CONFIG_VERSION;
+use agent_core::{
+    resolve_operator_path, resolve_path_from_existing_parent, resolve_path_within_root,
+    CONFIG_VERSION,
+};
 use serde::{Deserialize, Serialize};
 
 const PATH_MIGRATION_SCHEMA_VERSION: u32 = 1;
@@ -164,11 +167,17 @@ impl AppPaths {
     }
 
     pub fn ensure(&self) -> Result<()> {
-        fs::create_dir_all(&self.root_dir).context("failed to create root dir")?;
-        fs::create_dir_all(&self.config_dir).context("failed to create config dir")?;
-        fs::create_dir_all(&self.data_dir).context("failed to create data dir")?;
-        fs::create_dir_all(&self.log_dir).context("failed to create log dir")?;
-        fs::create_dir_all(&self.plugin_dir).context("failed to create plugin dir")?;
+        let root_dir = self.validated_root_dir()?;
+        let config_dir = self.validated_config_dir()?;
+        let data_dir = self.validated_data_dir()?;
+        let log_dir = self.validated_log_dir()?;
+        let plugin_dir = self.validated_plugin_dir()?;
+
+        fs::create_dir_all(&root_dir).context("failed to create root dir")?;
+        fs::create_dir_all(&config_dir).context("failed to create config dir")?;
+        fs::create_dir_all(&data_dir).context("failed to create data dir")?;
+        fs::create_dir_all(&log_dir).context("failed to create log dir")?;
+        fs::create_dir_all(&plugin_dir).context("failed to create plugin dir")?;
         Ok(())
     }
 
@@ -272,6 +281,36 @@ impl AppPaths {
             }
         }
         candidates
+    }
+
+    pub fn validated_root_dir(&self) -> Result<PathBuf> {
+        resolve_operator_path(&self.root_dir, "application root directory")
+    }
+
+    pub fn validated_config_dir(&self) -> Result<PathBuf> {
+        let root_dir = self.validated_root_dir()?;
+        resolve_path_within_root(&root_dir, &self.config_dir, "configuration directory")
+    }
+
+    pub fn validated_data_dir(&self) -> Result<PathBuf> {
+        let root_dir = self.validated_root_dir()?;
+        resolve_path_within_root(&root_dir, &self.data_dir, "data directory")
+    }
+
+    pub fn validated_log_dir(&self) -> Result<PathBuf> {
+        let root_dir = self.validated_root_dir()?;
+        resolve_path_within_root(&root_dir, &self.log_dir, "log directory")
+    }
+
+    pub fn validated_plugin_dir(&self) -> Result<PathBuf> {
+        let data_dir = self.validated_data_dir()?;
+        resolve_path_within_root(&data_dir, &self.plugin_dir, "plugin directory")
+    }
+
+    pub fn validated_config_path(&self) -> Result<PathBuf> {
+        let config_dir = self.validated_config_dir()?;
+        resolve_path_from_existing_parent(&self.config_path, "configuration file")
+            .and_then(|path| resolve_path_within_root(&config_dir, &path, "configuration file"))
     }
 }
 
@@ -500,6 +539,37 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp);
     }
+
+    #[test]
+    fn ensure_rejects_directories_outside_root() {
+        let temp =
+            std::env::temp_dir().join(format!("agent-storage-paths-test-{}", uuid::Uuid::new_v4()));
+        let mut paths = super::AppPaths::under_root(temp.join("canonical"));
+        paths.log_dir = temp.join("escape-logs");
+
+        let error = paths.ensure().unwrap_err();
+
+        assert!(error.to_string().contains("escapes managed root"));
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn reset_all_rejects_directories_outside_root() {
+        let temp =
+            std::env::temp_dir().join(format!("agent-storage-paths-test-{}", uuid::Uuid::new_v4()));
+        let root = temp.join("canonical");
+        let escape = temp.join("escape-data");
+        let mut paths = super::AppPaths::under_root(&root);
+        paths.ensure().unwrap();
+        std::fs::create_dir_all(&escape).unwrap();
+        paths.data_dir = escape;
+        let storage = super::Storage { paths };
+
+        let error = storage.reset_all().unwrap_err();
+
+        assert!(error.to_string().contains("escapes managed root"));
+        let _ = std::fs::remove_dir_all(&temp);
+    }
 }
 
 impl Storage {
@@ -516,7 +586,7 @@ impl Storage {
         paths.ensure()?;
         let storage = Self { paths };
         storage.init_schema()?;
-        if !storage.paths.config_path.exists() {
+        if !storage.paths.validated_config_path()?.exists() {
             storage.save_config(&AppConfig::default())?;
         } else {
             let mut config = storage.load_config()?;
@@ -533,8 +603,9 @@ impl Storage {
     }
 
     pub fn load_config(&self) -> Result<AppConfig> {
-        let content = fs::read_to_string(&self.paths.config_path)
-            .with_context(|| format!("failed to read {}", self.paths.config_path.display()))?;
+        let config_path = self.paths.validated_config_path()?;
+        let content = fs::read_to_string(&config_path)
+            .with_context(|| format!("failed to read {}", config_path.display()))?;
         let config =
             serde_json::from_str::<AppConfig>(&content).context("failed to parse config")?;
         Ok(config)
@@ -542,34 +613,29 @@ impl Storage {
 
     pub fn save_config(&self, config: &AppConfig) -> Result<()> {
         let content = serde_json::to_string_pretty(config).context("failed to serialize config")?;
-        write_atomic(&self.paths.config_path, content.as_bytes())?;
+        let config_path = self.paths.validated_config_path()?;
+        write_atomic(&config_path, content.as_bytes())?;
         Ok(())
     }
 
     pub fn reset_all(&self) -> Result<()> {
-        if self.paths.config_dir.exists() {
-            fs::remove_dir_all(&self.paths.config_dir).with_context(|| {
-                format!(
-                    "failed to remove config directory {}",
-                    self.paths.config_dir.display()
-                )
+        let config_dir = self.paths.validated_config_dir()?;
+        let data_dir = self.paths.validated_data_dir()?;
+        let log_dir = self.paths.validated_log_dir()?;
+
+        if config_dir.exists() {
+            fs::remove_dir_all(&config_dir).with_context(|| {
+                format!("failed to remove config directory {}", config_dir.display())
             })?;
         }
-        if self.paths.data_dir.exists() {
-            fs::remove_dir_all(&self.paths.data_dir).with_context(|| {
-                format!(
-                    "failed to remove data directory {}",
-                    self.paths.data_dir.display()
-                )
+        if data_dir.exists() {
+            fs::remove_dir_all(&data_dir).with_context(|| {
+                format!("failed to remove data directory {}", data_dir.display())
             })?;
         }
-        if self.paths.log_dir.exists() {
-            fs::remove_dir_all(&self.paths.log_dir).with_context(|| {
-                format!(
-                    "failed to remove log directory {}",
-                    self.paths.log_dir.display()
-                )
-            })?;
+        if log_dir.exists() {
+            fs::remove_dir_all(&log_dir)
+                .with_context(|| format!("failed to remove log directory {}", log_dir.display()))?;
         }
 
         self.paths.ensure()?;

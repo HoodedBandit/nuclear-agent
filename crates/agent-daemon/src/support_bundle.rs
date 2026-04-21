@@ -4,8 +4,9 @@ use std::{
 };
 
 use agent_core::{
-    redact_sensitive_json_value, resolve_operator_path, resolve_relative_path_within_root,
-    validate_relative_path, validate_single_path_component, HealthReport,
+    redact_sensitive_json_value, resolve_operator_path, resolve_path_from_existing_parent,
+    resolve_relative_path_within_root, validate_relative_path, validate_single_path_component,
+    HealthReport,
 };
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
@@ -200,17 +201,21 @@ async fn gather_health_report(
 }
 
 fn write_json_file(path: &Path, value: &impl Serialize) -> Result<(), ApiError> {
+    let path = resolve_path_from_existing_parent(path, "support bundle JSON file")
+        .map_err(internal_error)?;
     let value = serde_json::to_value(value).map_err(internal_error)?;
     let content = serde_json::to_string_pretty(&redact_sensitive_json_value(&value))
         .map_err(internal_error)?;
-    fs::write(path, content).map_err(internal_error)
+    fs::write(&path, content).map_err(internal_error)
 }
 
 fn load_optional_json_file(path: &Path) -> Result<Option<serde_json::Value>, ApiError> {
+    let path = resolve_path_from_existing_parent(path, "support bundle JSON source")
+        .map_err(internal_error)?;
     if !path.exists() {
         return Ok(None);
     }
-    let content = fs::read_to_string(path).map_err(internal_error)?;
+    let content = fs::read_to_string(&path).map_err(internal_error)?;
     let value = serde_json::from_str(&content).map_err(internal_error)?;
     Ok(Some(value))
 }

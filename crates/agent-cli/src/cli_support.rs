@@ -380,7 +380,10 @@ pub(crate) async fn print_interactive_status(
         .ok_or_else(|| anyhow!("unknown provider '{}'", active_alias.provider_id))?;
     let selected_model = resolved_requested_model(active_alias, requested_model);
     let daemon_status: DaemonStatus = client.get("/v1/status").await?;
-    println!("session={}", session_id.unwrap_or("(new)"));
+    println!(
+        "session={}",
+        agent_core::redact_sensitive_text(session_id.unwrap_or("(new)"))
+    );
     if let Some(session) = current_session {
         println!("title={}", session.title.as_deref().unwrap_or("(untitled)"));
     }

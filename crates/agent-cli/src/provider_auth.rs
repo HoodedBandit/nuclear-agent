@@ -306,7 +306,7 @@ pub(crate) async fn resolve_hosted_model_after_auth(
     match discovered {
         Ok(models) if !models.is_empty() => {
             if models.len() == 1 {
-                println!("Detected model '{}'.", models[0]);
+                println!("Detected model '{}'.", redact_sensitive_text(&models[0]));
                 return Ok(models[0].clone());
             }
             let selection = FuzzySelect::with_theme(theme)
@@ -530,7 +530,10 @@ pub(crate) async fn complete_openai_browser_login() -> Result<OAuthToken> {
             redact_sensitive_text(&error.to_string())
         ),
     }
-    println!("If needed, open this URL manually:\n{authorization_url}\n");
+    println!(
+        "If needed, open this URL manually:\n{}\n",
+        redact_sensitive_text(&authorization_url)
+    );
 
     timeout(
         OAUTH_TIMEOUT,
@@ -832,7 +835,10 @@ pub(crate) async fn complete_claude_browser_login() -> Result<BrowserLoginResult
             redact_sensitive_text(&error.to_string())
         ),
     }
-    println!("If needed, open this URL manually:\n{authorization_url}\n");
+    println!(
+        "If needed, open this URL manually:\n{}\n",
+        redact_sensitive_text(&authorization_url)
+    );
 
     let callback = timeout(OAUTH_TIMEOUT, callback_task)
         .await
@@ -1202,7 +1208,7 @@ pub(crate) async fn complete_openrouter_browser_login() -> Result<String> {
     }
     println!(
         "If needed, open this URL manually:\n{}\n",
-        authorization_url.as_str()
+        redact_sensitive_text(authorization_url.as_str())
     );
 
     let callback = timeout(OAUTH_TIMEOUT, callback_task)
@@ -1268,7 +1274,10 @@ pub(crate) async fn capture_browser_api_key(
             redact_sensitive_text(&error.to_string())
         ),
     }
-    println!("If needed, open this URL manually:\n{helper_url}\n");
+    println!(
+        "If needed, open this URL manually:\n{}\n",
+        redact_sensitive_text(&helper_url)
+    );
 
     timeout(OAUTH_TIMEOUT, capture_task)
         .await
@@ -1515,7 +1524,10 @@ pub(crate) async fn complete_oauth_login(provider: &ProviderConfig) -> Result<OA
             redact_sensitive_text(&error.to_string())
         ),
     }
-    println!("If needed, open this URL manually:\n{authorization_url}\n");
+    println!(
+        "If needed, open this URL manually:\n{}\n",
+        redact_sensitive_text(&authorization_url)
+    );
 
     let callback = timeout(OAUTH_TIMEOUT, callback_task)
         .await

@@ -533,7 +533,80 @@ fn validate_oauth_endpoint_url(provider_id: &str, field: &str, value: &str) -> R
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    let candidate = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    candidate
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider_with_oauth(authorization_url: &str, token_url: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: "oauth-test".to_string(),
+            display_name: "OAuth Test".to_string(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: "https://example.invalid".to_string(),
+            auth_mode: AuthMode::OAuth,
+            default_model: None,
+            keychain_account: Some("oauth-test".to_string()),
+            oauth: Some(OAuthConfig {
+                client_id: "client-id".to_string(),
+                authorization_url: authorization_url.to_string(),
+                token_url: token_url.to_string(),
+                scopes: Vec::new(),
+                extra_authorize_params: Vec::new(),
+                extra_token_params: Vec::new(),
+            }),
+            local: false,
+        }
+    }
+
+    #[test]
+    fn validate_oauth_configuration_rejects_remote_http_endpoint() {
+        let provider = provider_with_oauth(
+            "https://example.invalid/oauth/authorize",
+            "http://example.invalid/oauth/token",
+        );
+
+        let error = provider.validate_oauth_configuration().unwrap_err();
+
+        assert!(error.to_string().contains("https"));
+    }
+
+    #[test]
+    fn validate_oauth_configuration_accepts_https_endpoints() {
+        let provider = provider_with_oauth(
+            "https://example.invalid/oauth/authorize",
+            "https://example.invalid/oauth/token",
+        );
+
+        provider.validate_oauth_configuration().unwrap();
+    }
+
+    #[test]
+    fn validate_oauth_configuration_accepts_loopback_http_endpoints() {
+        let urls = [
+            "http://localhost:8123/oauth/token",
+            "http://127.0.0.1:8123/oauth/token",
+            "http://[::1]:8123/oauth/token",
+        ];
+
+        for token_url in urls {
+            let provider = provider_with_oauth("http://127.0.0.1:8123/oauth/authorize", token_url);
+            provider.validate_oauth_configuration().unwrap();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -333,7 +333,7 @@ pub(crate) async fn model_command(storage: &Storage, command: ModelCommands) -> 
                 .ok_or_else(|| anyhow!("unknown provider"))?;
             let models = provider_list_models(&build_http_client(), &provider).await?;
             for model in models {
-                println!("{model}");
+                println!("{}", agent_core::redact_sensitive_text(&model));
             }
         }
     }

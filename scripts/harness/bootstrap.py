@@ -10,7 +10,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .common import parse_key_value_output, python_launcher, read_json, run_command, write_json
+from .common import (
+    parse_key_value_output,
+    python_launcher,
+    read_json,
+    run_command,
+    write_json_config,
+)
 
 
 DEFAULT_ALIAS = "main"
@@ -159,7 +165,7 @@ def bootstrap_mock_profile(
             "description": "Harness deterministic alias",
         }
     ]
-    write_json(paths["config_path"], config)
+    write_json_config(paths["config_path"], config)
     return env, {
         "config_path": str(paths["config_path"]),
         "data_path": str(paths["data_path"]),
@@ -202,7 +208,7 @@ def clone_current_profile(
         daemon_token=daemon_token,
         trust_paths=trust_paths,
     )
-    write_json(dest_paths["config_path"], config)
+    write_json_config(dest_paths["config_path"], config)
     return env, {
         "config_path": str(dest_paths["config_path"]),
         "data_path": str(dest_paths["data_path"]),
@@ -241,7 +247,7 @@ def provision_reference_profile(
         daemon_token=daemon_token,
         trust_paths=trust_paths,
     )
-    write_json(paths["config_path"], config)
+    write_json_config(paths["config_path"], config)
 
     api_key = None
     if api_key_env:
@@ -274,7 +280,7 @@ def provision_reference_profile(
         trust_paths=trust_paths,
     )
     config["main_agent_alias"] = alias
-    write_json(paths["config_path"], config)
+    write_json_config(paths["config_path"], config)
     return env, {
         "config_path": str(paths["config_path"]),
         "data_path": str(paths["data_path"]),

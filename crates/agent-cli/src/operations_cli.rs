@@ -8,11 +8,13 @@ pub(crate) async fn session_command(storage: &Storage, command: SessionCommands)
             for session in storage.list_sessions(50)? {
                 println!(
                     "{} {} {} {} {} {} {}",
-                    session.id,
-                    session.title.as_deref().unwrap_or("(untitled)"),
-                    session.alias,
-                    session.provider_id,
-                    session.model,
+                    agent_core::redact_sensitive_text(&session.id),
+                    agent_core::redact_sensitive_text(
+                        session.title.as_deref().unwrap_or("(untitled)")
+                    ),
+                    agent_core::redact_sensitive_text(&session.alias),
+                    agent_core::redact_sensitive_text(&session.provider_id),
+                    agent_core::redact_sensitive_text(&session.model),
                     session
                         .cwd
                         .as_deref()
@@ -32,11 +34,13 @@ pub(crate) async fn session_command(storage: &Storage, command: SessionCommands)
             };
             println!(
                 "session={} title={} alias={} provider={} model={}",
-                transcript.session.id,
-                transcript.session.title.as_deref().unwrap_or("(untitled)"),
-                transcript.session.alias,
-                transcript.session.provider_id,
-                transcript.session.model
+                agent_core::redact_sensitive_text(&transcript.session.id),
+                agent_core::redact_sensitive_text(
+                    transcript.session.title.as_deref().unwrap_or("(untitled)")
+                ),
+                agent_core::redact_sensitive_text(&transcript.session.alias),
+                agent_core::redact_sensitive_text(&transcript.session.provider_id),
+                agent_core::redact_sensitive_text(&transcript.session.model)
             );
             for message in transcript.messages {
                 println!(
@@ -56,7 +60,11 @@ pub(crate) async fn session_command(storage: &Storage, command: SessionCommands)
                 bail!("session title cannot be empty");
             }
             storage.rename_session(&id, title)?;
-            println!("renamed session={} title={}", id, title);
+            println!(
+                "renamed session={} title={}",
+                agent_core::redact_sensitive_text(&id),
+                agent_core::redact_sensitive_text(title)
+            );
         }
     }
     Ok(())
@@ -472,7 +480,10 @@ pub(crate) async fn mission_command(storage: &Storage, command: MissionCommands)
                     checkpoint.created_at, checkpoint.status, checkpoint.summary
                 );
                 if let Some(session_id) = checkpoint.session_id {
-                    println!("  session={}", session_id);
+                    println!(
+                        "  session={}",
+                        agent_core::redact_sensitive_text(&session_id)
+                    );
                 }
             }
         }

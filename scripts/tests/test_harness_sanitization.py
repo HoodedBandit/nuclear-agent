@@ -8,7 +8,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from harness.common import sanitize_artifact_payload, sanitize_text, write_json_artifact
+from harness.common import (
+    sanitize_artifact_payload,
+    sanitize_text,
+    write_json,
+    write_json_artifact,
+    write_json_config,
+)
 
 
 class HarnessSanitizationTests(unittest.TestCase):
@@ -57,6 +63,43 @@ class HarnessSanitizationTests(unittest.TestCase):
         self.assertNotIn("sk-live-123456", content)
         self.assertNotIn("refresh-secret", content)
         self.assertIn("[REDACTED]", content)
+
+    def test_write_json_sanitizes_by_default(self) -> None:
+        root = Path(self.id()).with_suffix("")
+        output_dir = Path.cwd() / "target" / "scripts-tests" / root
+        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = output_dir / "artifact-default.json"
+
+        write_json(
+            artifact_path,
+            {
+                "access_token": "access-secret",
+                "note": "Bearer sk-live-123456",
+            },
+        )
+
+        content = artifact_path.read_text(encoding="utf-8")
+        self.assertNotIn("access-secret", content)
+        self.assertNotIn("sk-live-123456", content)
+        self.assertIn("[REDACTED]", content)
+
+    def test_write_json_config_preserves_config_values(self) -> None:
+        root = Path(self.id()).with_suffix("")
+        output_dir = Path.cwd() / "target" / "scripts-tests" / root
+        output_dir.mkdir(parents=True, exist_ok=True)
+        config_path = output_dir / "config.json"
+
+        write_json_config(
+            config_path,
+            {
+                "daemon_token": "keep-for-config-tests",
+                "provider": {"api_key": "configured-key"},
+            },
+        )
+
+        content = config_path.read_text(encoding="utf-8")
+        self.assertIn("keep-for-config-tests", content)
+        self.assertIn("configured-key", content)
 
 
 if __name__ == "__main__":

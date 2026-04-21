@@ -107,6 +107,21 @@ pub fn resolve_operator_path(path: &Path, label: &str) -> Result<PathBuf> {
     resolve_existing_ancestor(path, label)
 }
 
+pub fn resolve_path_from_existing_parent(path: &Path, label: &str) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        bail!("{label} must not be empty");
+    }
+
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "{label} '{}' could not be resolved from a parent directory",
+            path.display()
+        )
+    })?;
+    let parent = resolve_operator_path(parent, &format!("{label} parent directory"))?;
+    resolve_path_within_root(&parent, path, label)
+}
+
 pub fn redact_sensitive_json_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
@@ -391,6 +406,19 @@ mod tests {
         .unwrap();
         assert!(target.starts_with(&normalized_root));
         assert!(target.ends_with(Path::new("nested").join("output").join("file.txt")));
+    }
+
+    #[test]
+    fn resolve_path_from_existing_parent_accepts_non_existing_targets() {
+        let root = temp_dir("agent-core-safety-parent");
+        let target = resolve_path_from_existing_parent(
+            &root.join("nested").join("artifact.json"),
+            "artifact path",
+        )
+        .unwrap();
+
+        assert!(target.starts_with(normalize_canonical_path(fs::canonicalize(&root).unwrap())));
+        assert!(target.ends_with(Path::new("nested").join("artifact.json")));
     }
 
     #[test]

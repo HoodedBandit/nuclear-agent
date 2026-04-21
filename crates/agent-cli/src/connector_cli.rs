@@ -784,10 +784,10 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
                 for connector in connectors {
                     println!(
                         "{} [{}] enabled={} account={} cli_path={} require_pairing_approval={} monitored_groups={} allowed_groups={} users={} alias={} model={} cwd={}",
-                        connector.id,
-                        connector.name,
+                        agent_core::redact_sensitive_text(&connector.id),
+                        agent_core::redact_sensitive_text(&connector.name),
                         connector.enabled,
-                        connector.account,
+                        agent_core::redact_sensitive_text(&connector.account),
                         connector
                             .cli_path
                             .as_ref()
@@ -797,8 +797,10 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
                         format_string_list(&connector.monitored_group_ids),
                         format_string_list(&connector.allowed_group_ids),
                         format_string_list(&connector.allowed_user_ids),
-                        connector.alias.as_deref().unwrap_or("-"),
-                        connector.requested_model.as_deref().unwrap_or("-"),
+                        agent_core::redact_sensitive_text(connector.alias.as_deref().unwrap_or("-")),
+                        agent_core::redact_sensitive_text(
+                            connector.requested_model.as_deref().unwrap_or("-")
+                        ),
                         connector
                             .cwd
                             .as_ref()
@@ -817,10 +819,16 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
             if json {
                 println!("{}", serde_json::to_string_pretty(&connector)?);
             } else {
-                println!("id={}", connector.id);
-                println!("name={}", connector.name);
+                println!("id={}", agent_core::redact_sensitive_text(&connector.id));
+                println!(
+                    "name={}",
+                    agent_core::redact_sensitive_text(&connector.name)
+                );
                 println!("enabled={}", connector.enabled);
-                println!("account={}", connector.account);
+                println!(
+                    "account={}",
+                    agent_core::redact_sensitive_text(&connector.account)
+                );
                 println!(
                     "cli_path={}",
                     connector
@@ -892,8 +900,8 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
             }
             println!(
                 "signal='{}' configured account={} monitored_groups={} allowed_groups={} users={} auto_poll=daemon",
-                connector.id,
-                connector.account,
+                agent_core::redact_sensitive_text(&connector.id),
+                agent_core::redact_sensitive_text(&connector.account),
                 format_string_list(&connector.monitored_group_ids),
                 format_string_list(&connector.allowed_group_ids),
                 format_string_list(&connector.allowed_user_ids)

@@ -7,10 +7,10 @@ use std::{
 };
 
 use agent_core::{
-    resolve_path_within_root, resolve_relative_path_within_root, validate_single_path_component,
-    InstalledPluginConfig, PluginDoctorReport, PluginInstallRequest, PluginManifest,
-    PluginPermissions, PluginSourceKind, PluginUpdateRequest, PLUGIN_HOST_VERSION,
-    PLUGIN_MANIFEST_FILE_NAME, PLUGIN_SCHEMA_VERSION,
+    resolve_operator_path, resolve_path_within_root, resolve_relative_path_within_root,
+    validate_single_path_component, InstalledPluginConfig, PluginDoctorReport,
+    PluginInstallRequest, PluginManifest, PluginPermissions, PluginSourceKind, PluginUpdateRequest,
+    PLUGIN_HOST_VERSION, PLUGIN_MANIFEST_FILE_NAME, PLUGIN_SCHEMA_VERSION,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
@@ -103,13 +103,14 @@ pub fn install_plugin_package(
     paths.ensure()?;
     let resolved = resolve_plugin_install_request(paths, request)?;
     validate_single_path_component(&resolved.manifest.id, "plugin manifest id")?;
+    let plugin_root = paths.validated_plugin_dir()?;
     let install_dir = resolve_relative_path_within_root(
-        &paths.plugin_dir,
+        &plugin_root,
         Path::new(&resolved.manifest.id),
         "plugin install directory",
     )?;
     let temp_dir = resolve_relative_path_within_root(
-        &paths.plugin_dir,
+        &plugin_root,
         Path::new(&format!(
             ".install-{}-{}",
             resolved.manifest.id,
@@ -245,8 +246,9 @@ pub fn update_plugin_package(
 }
 
 pub fn uninstall_plugin_package(paths: &AppPaths, plugin: &InstalledPluginConfig) -> Result<()> {
+    let plugin_root = paths.validated_plugin_dir()?;
     let install_dir = resolve_path_within_root(
-        &paths.plugin_dir,
+        &plugin_root,
         &plugin.install_dir,
         "plugin install directory",
     )?;
@@ -704,8 +706,9 @@ fn normalize_marketplace_source(source: &str, base_dir: &Path) -> Result<String>
 }
 
 fn plugin_source_cache_dir(paths: &AppPaths) -> Result<PathBuf> {
+    let data_dir = paths.validated_data_dir()?;
     resolve_relative_path_within_root(
-        &paths.data_dir,
+        &data_dir,
         Path::new("plugin-sources"),
         "plugin source cache directory",
     )
@@ -974,26 +977,45 @@ fn resolve_plugin_command_path(base: &Path, command: &str) -> Option<PathBuf> {
 }
 
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<()> {
-    fs::create_dir_all(target).with_context(|| {
+    let source_root = resolve_operator_path(source, "plugin source directory")?;
+    let target_root = resolve_operator_path(target, "plugin target directory")?;
+    copy_dir_recursive_inner(&source_root, &source_root, &target_root, &target_root)
+}
+
+fn copy_dir_recursive_inner(
+    source_root: &Path,
+    source_dir: &Path,
+    target_root: &Path,
+    target_dir: &Path,
+) -> Result<()> {
+    let source_dir = resolve_path_within_root(source_root, source_dir, "plugin source directory")?;
+    let target_dir = resolve_path_within_root(target_root, target_dir, "plugin target directory")?;
+
+    fs::create_dir_all(&target_dir).with_context(|| {
         format!(
             "failed to create plugin target directory '{}'",
-            target.display()
+            target_dir.display()
         )
     })?;
 
-    for entry in fs::read_dir(source).with_context(|| {
+    for entry in fs::read_dir(&source_dir).with_context(|| {
         format!(
             "failed to read plugin source directory '{}'",
-            source.display()
+            source_dir.display()
         )
     })? {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
+        let source_path =
+            resolve_path_within_root(source_root, &entry.path(), "plugin source entry")?;
+        let target_path = resolve_relative_path_within_root(
+            &target_dir,
+            Path::new(&entry.file_name()),
+            "plugin target entry",
+        )?;
 
         if file_type.is_dir() {
-            copy_dir_recursive(&source_path, &target_path)?;
+            copy_dir_recursive_inner(source_root, &source_path, target_root, &target_path)?;
         } else if file_type.is_file() {
             fs::copy(&source_path, &target_path).with_context(|| {
                 format!(
@@ -1428,5 +1450,30 @@ mod tests {
         assert_eq!(resolved.manifest.id, "echo-toolkit");
         assert!(resolved.source_path.exists());
         assert!(resolved.source_root.join("bin").join("tool.py").exists());
+    }
+
+    #[test]
+    fn install_plugin_package_rejects_plugin_root_outside_data_dir() {
+        let mut paths = temp_paths();
+        let source_root = paths.root_dir.join("plugin-source");
+        let manifest = sample_manifest();
+        write_manifest(&source_root, &manifest);
+        paths.plugin_dir = paths.root_dir.join("..").join("escape-plugins");
+
+        let error = install_plugin_package(
+            &paths,
+            &PluginInstallRequest {
+                source: None,
+                source_path: Some(source_root),
+                enabled: Some(true),
+                trusted: Some(true),
+                granted_permissions: None,
+                pinned: false,
+            },
+            None,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("escapes managed root"));
     }
 }

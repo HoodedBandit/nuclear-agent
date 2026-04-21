@@ -1717,7 +1717,10 @@ async fn run_command(storage: &Storage, args: RunArgs) -> Result<()> {
         println!("{}", response.response);
         println!(
             "\nsession={} alias={} provider={} model={}",
-            response.session_id, response.alias, response.provider_id, response.model
+            redact_sensitive_text(&response.session_id),
+            redact_sensitive_text(&response.alias),
+            redact_sensitive_text(&response.provider_id),
+            redact_sensitive_text(&response.model)
         );
     }
     Ok(())
@@ -1999,11 +2002,11 @@ async fn interactive_session(
                                     for connector in connectors {
                                         println!(
                                             "{} [{}] enabled={} require_pairing_approval={} account={} cli_path={} groups={} allowed_groups={} users={} alias={} model={} cwd={}",
-                                            connector.id,
-                                            connector.name,
+                                            redact_sensitive_text(&connector.id),
+                                            redact_sensitive_text(&connector.name),
                                             connector.enabled,
                                             connector.require_pairing_approval,
-                                            connector.account,
+                                            redact_sensitive_text(&connector.account),
                                             connector
                                                 .cli_path
                                                 .as_ref()
@@ -2012,8 +2015,10 @@ async fn interactive_session(
                                             format_string_list(&connector.monitored_group_ids),
                                             format_string_list(&connector.allowed_group_ids),
                                             format_string_list(&connector.allowed_user_ids),
-                                            connector.alias.as_deref().unwrap_or("-"),
-                                            connector.requested_model.as_deref().unwrap_or("-"),
+                                            redact_sensitive_text(connector.alias.as_deref().unwrap_or("-")),
+                                            redact_sensitive_text(
+                                                connector.requested_model.as_deref().unwrap_or("-")
+                                            ),
                                             connector
                                                 .cwd
                                                 .as_ref()
@@ -2606,7 +2611,8 @@ async fn interactive_session(
                                 session_id = Some(new_session_id.clone());
                                 println!(
                                     "Compacted session {} -> {}",
-                                    transcript.session.id, new_session_id
+                                    redact_sensitive_text(&transcript.session.id),
+                                    redact_sensitive_text(&new_session_id)
                                 );
                             }
                             InteractiveCommand::Init => {
@@ -2726,7 +2732,11 @@ async fn interactive_session(
                                     bail!("session title cannot be empty");
                                 }
                                 storage.rename_session(current_session, title)?;
-                                println!("renamed session={} title={}", current_session, title);
+                                println!(
+                                    "renamed session={} title={}",
+                                    redact_sensitive_text(current_session),
+                                    redact_sensitive_text(title)
+                                );
                             }
                             InteractiveCommand::Review(custom_prompt) => {
                                 let prompt = build_uncommitted_review_prompt(custom_prompt)?;
@@ -2761,11 +2771,13 @@ async fn interactive_session(
                                 )?;
                                 println!(
                                     "Resumed session={} title={} alias={} provider={} model={} mode={}",
-                                    transcript.session.id,
-                                    transcript.session.title.as_deref().unwrap_or("(untitled)"),
-                                    transcript.session.alias,
-                                    transcript.session.provider_id,
-                                    transcript.session.model,
+                                    redact_sensitive_text(&transcript.session.id),
+                                    redact_sensitive_text(
+                                        transcript.session.title.as_deref().unwrap_or("(untitled)")
+                                    ),
+                                    redact_sensitive_text(&transcript.session.alias),
+                                    redact_sensitive_text(&transcript.session.provider_id),
+                                    redact_sensitive_text(&transcript.session.model),
                                     task_mode_label(transcript.session.task_mode),
                                 );
                                 last_output = latest_assistant_output_from_transcript(&transcript);
@@ -2793,9 +2805,11 @@ async fn interactive_session(
                                 let new_session_id = fork_session(storage, &transcript)?;
                                 println!(
                                     "Forked session {} ({}) -> {}",
-                                    transcript.session.id,
-                                    transcript.session.title.as_deref().unwrap_or("(untitled)"),
-                                    new_session_id
+                                    redact_sensitive_text(&transcript.session.id),
+                                    redact_sensitive_text(
+                                        transcript.session.title.as_deref().unwrap_or("(untitled)")
+                                    ),
+                                    redact_sensitive_text(&new_session_id)
                                 );
                                 last_output = latest_assistant_output_from_transcript(&transcript);
                                 alias = Some(transcript.session.alias.clone());
@@ -2879,7 +2893,10 @@ async fn review_command(storage: &Storage, args: ReviewArgs) -> Result<()> {
     println!("{}", response.response);
     println!(
         "\nsession={} alias={} provider={} model={}",
-        response.session_id, response.alias, response.provider_id, response.model
+        redact_sensitive_text(&response.session_id),
+        redact_sensitive_text(&response.alias),
+        redact_sensitive_text(&response.provider_id),
+        redact_sensitive_text(&response.model)
     );
     Ok(())
 }
@@ -2888,11 +2905,11 @@ async fn resume_command(storage: &Storage, args: ResumeArgs) -> Result<()> {
     let transcript = load_session_for_command(storage, args.session_id, args.last, args.all)?;
     println!(
         "Resuming session={} title={} alias={} provider={} model={} mode={}",
-        transcript.session.id,
-        transcript.session.title.as_deref().unwrap_or("(untitled)"),
-        transcript.session.alias,
-        transcript.session.provider_id,
-        transcript.session.model,
+        redact_sensitive_text(&transcript.session.id),
+        redact_sensitive_text(transcript.session.title.as_deref().unwrap_or("(untitled)")),
+        redact_sensitive_text(&transcript.session.alias),
+        redact_sensitive_text(&transcript.session.provider_id),
+        redact_sensitive_text(&transcript.session.model),
         task_mode_label(transcript.session.task_mode),
     );
     launch_chat_session(
@@ -2914,9 +2931,9 @@ async fn fork_command(storage: &Storage, args: ForkArgs) -> Result<()> {
     let new_session_id = fork_session(storage, &transcript)?;
     println!(
         "Forked session {} ({}) -> {}",
-        transcript.session.id,
-        transcript.session.title.as_deref().unwrap_or("(untitled)"),
-        new_session_id
+        redact_sensitive_text(&transcript.session.id),
+        redact_sensitive_text(transcript.session.title.as_deref().unwrap_or("(untitled)")),
+        redact_sensitive_text(&new_session_id)
     );
     launch_chat_session(
         storage,

@@ -65,8 +65,12 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def write_json(path: Path, payload: Any) -> None:
+def write_json_config(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def write_json(path: Path, payload: Any) -> None:
+    write_json_config(path, sanitize_artifact_payload(payload))
 
 
 def sanitize_text(value: str) -> str:
@@ -95,7 +99,7 @@ def sanitize_artifact_payload(payload: Any) -> Any:
 
 
 def write_json_artifact(path: Path, payload: Any) -> None:
-    write_json(path, sanitize_artifact_payload(payload))
+    write_json(path, payload)
 
 
 def read_json(path: Path) -> Any:
