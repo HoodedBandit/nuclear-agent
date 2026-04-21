@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::bail;
 use agent_core::{
     resolve_operator_path, resolve_path_from_existing_parent, resolve_path_within_root,
     CONFIG_VERSION,
@@ -287,14 +288,41 @@ impl AppPaths {
         resolve_operator_path(&self.root_dir, "application root directory")
     }
 
+    fn validated_state_root_dir(&self) -> Result<PathBuf> {
+        let config_parent = self.config_dir.parent().ok_or_else(|| {
+            anyhow!(
+                "configuration directory '{}' has no parent directory",
+                self.config_dir.display()
+            )
+        })?;
+        let state_root = resolve_operator_path(config_parent, "application state directory")?;
+
+        let data_parent = self.data_dir.parent().ok_or_else(|| {
+            anyhow!(
+                "data directory '{}' has no parent directory",
+                self.data_dir.display()
+            )
+        })?;
+        let data_parent = resolve_operator_path(data_parent, "application state directory")?;
+        if data_parent != state_root {
+            bail!(
+                "data directory parent '{}' does not match managed state root '{}'",
+                data_parent.display(),
+                state_root.display()
+            );
+        }
+
+        Ok(state_root)
+    }
+
     pub fn validated_config_dir(&self) -> Result<PathBuf> {
-        let root_dir = self.validated_root_dir()?;
-        resolve_path_within_root(&root_dir, &self.config_dir, "configuration directory")
+        let state_root = self.validated_state_root_dir()?;
+        resolve_path_within_root(&state_root, &self.config_dir, "configuration directory")
     }
 
     pub fn validated_data_dir(&self) -> Result<PathBuf> {
-        let root_dir = self.validated_root_dir()?;
-        resolve_path_within_root(&root_dir, &self.data_dir, "data directory")
+        let state_root = self.validated_state_root_dir()?;
+        resolve_path_within_root(&state_root, &self.data_dir, "data directory")
     }
 
     pub fn validated_log_dir(&self) -> Result<PathBuf> {
@@ -500,6 +528,26 @@ mod tests {
     }
 
     #[test]
+    fn ensure_accepts_split_state_and_local_roots() {
+        let temp =
+            std::env::temp_dir().join(format!("agent-storage-paths-test-{}", uuid::Uuid::new_v4()));
+        let paths = super::AppPaths::from_standard_dirs(
+            temp.join("roaming").join("config"),
+            temp.join("roaming").join("data"),
+            temp.join("local"),
+        );
+
+        paths.ensure().unwrap();
+
+        assert!(paths.config_dir.exists());
+        assert!(paths.data_dir.exists());
+        assert!(paths.plugin_dir.exists());
+        assert!(paths.log_dir.exists());
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
     fn migrate_legacy_candidates_is_idempotent_after_copy_fallback() {
         let temp =
             std::env::temp_dir().join(format!("agent-storage-paths-test-{}", uuid::Uuid::new_v4()));
@@ -567,7 +615,11 @@ mod tests {
 
         let error = storage.reset_all().unwrap_err();
 
-        assert!(error.to_string().contains("escapes managed root"));
+        let message = error.to_string();
+        assert!(
+            message.contains("escapes managed root")
+                || message.contains("does not match managed state root")
+        );
         let _ = std::fs::remove_dir_all(&temp);
     }
 }
