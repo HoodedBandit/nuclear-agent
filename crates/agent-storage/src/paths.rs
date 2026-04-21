@@ -1,9 +1,9 @@
 use super::*;
-use anyhow::bail;
 use agent_core::{
     resolve_operator_path, resolve_path_from_existing_parent, resolve_path_within_root,
     CONFIG_VERSION,
 };
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 
 const PATH_MIGRATION_SCHEMA_VERSION: u32 = 1;
