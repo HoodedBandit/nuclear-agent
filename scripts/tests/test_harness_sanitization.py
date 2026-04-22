@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness.common import (
     sanitize_artifact_payload,
     sanitize_text,
-    write_json,
     write_json_artifact,
     write_json_config_raw,
 )
@@ -64,13 +63,13 @@ class HarnessSanitizationTests(unittest.TestCase):
         self.assertNotIn("refresh-secret", content)
         self.assertIn("[REDACTED]", content)
 
-    def test_write_json_sanitizes_by_default(self) -> None:
+    def test_artifact_writer_is_the_explicit_sensitive_result_writer(self) -> None:
         root = Path(self.id()).with_suffix("")
         output_dir = Path.cwd() / "target" / "scripts-tests" / root
         output_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = output_dir / "artifact-default.json"
 
-        write_json(
+        write_json_artifact(
             artifact_path,
             {
                 "access_token": "access-secret",

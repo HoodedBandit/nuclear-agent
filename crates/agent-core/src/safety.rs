@@ -1,8 +1,4 @@
-use std::{
-    ffi::OsString,
-    fs,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{Map, Value};
@@ -30,7 +26,12 @@ pub fn display_safe_id(value: &str) -> String {
 }
 
 pub fn display_safe_model(value: &str) -> String {
-    redact_sensitive_text(value)
+    let trimmed = value.trim();
+    if is_safe_model_label(trimmed) {
+        trimmed.to_string()
+    } else {
+        display_safe_fingerprint("model", trimmed)
+    }
 }
 
 pub fn display_safe_label(value: &str) -> String {
@@ -195,41 +196,25 @@ pub fn redact_sensitive_text(text: &str) -> String {
 
 fn resolve_existing_ancestor(path: &Path, label: &str) -> Result<PathBuf> {
     validate_path_components(path, label)?;
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .with_context(|| format!("failed to resolve current directory for {label}"))?
-            .join(path)
-    };
-    let mut missing = Vec::<OsString>::new();
-    let mut current = absolute.as_path();
-    loop {
-        if current.exists() {
-            let mut resolved = normalize_canonical_path(
-                fs::canonicalize(current)
-                    .with_context(|| format!("failed to canonicalize {}", current.display()))?,
-            );
-            for component in missing.iter().rev() {
-                resolved.push(component);
-            }
-            return Ok(resolved);
-        }
+    let absolute = std::path::absolute(path)
+        .with_context(|| format!("failed to resolve absolute path for {label}"))?;
+    normalize_lexical_path(&absolute, label)
+}
 
-        let name = current.file_name().ok_or_else(|| {
-            anyhow!(
-                "{label} '{}' could not be resolved from an existing ancestor",
-                path.display()
-            )
-        })?;
-        missing.push(name.to_os_string());
-        current = current.parent().ok_or_else(|| {
-            anyhow!(
-                "{label} '{}' could not be resolved from an existing ancestor",
-                path.display()
-            )
-        })?;
+fn normalize_lexical_path(path: &Path, label: &str) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(segment) => normalized.push(segment),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                bail!("{label} must not contain traversal components");
+            }
+        }
     }
+    Ok(normalize_canonical_path(normalized))
 }
 
 fn validate_path_components(path: &Path, label: &str) -> Result<()> {
@@ -257,6 +242,26 @@ fn display_safe_fingerprint(label: &str, value: &str) -> String {
         encoded.push_str(&format!("{byte:02x}"));
     }
     format!("{label}:{encoded}")
+}
+
+fn is_safe_model_label(value: &str) -> bool {
+    if value.is_empty() || value.len() > 128 {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("://")
+        || lower.contains("bearer ")
+        || SENSITIVE_VALUE_KEYS.iter().any(|key| lower.contains(key))
+        || TOKEN_PREFIXES
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+        || looks_like_jwt(value)
+    {
+        return false;
+    }
+    value.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ':' | '/' | '+' | '@')
+    })
 }
 
 fn normalize_canonical_path(path: PathBuf) -> PathBuf {
@@ -418,6 +423,7 @@ fn is_secret_delimiter(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
@@ -521,9 +527,13 @@ mod tests {
         assert!(rendered.starts_with("id:"));
         assert_eq!(rendered, display_safe_id(raw));
         assert_eq!(display_safe_model("mock-codex"), "mock-codex");
+        assert_eq!(display_safe_model("openai/gpt-5"), "openai/gpt-5");
         assert_eq!(display_safe_label("main"), "main");
         let redacted_model = display_safe_model("sk-live-123456");
-        assert!(redacted_model.contains(REDACTED_VALUE));
+        assert!(redacted_model.starts_with("model:"));
         assert!(!redacted_model.contains("live-123456"));
+        let jwt_model = display_safe_model("eyJhbGciOiJIUzI1Ni.eyJzdWIiOiIxMjM0NTYifQ.signature");
+        assert!(jwt_model.starts_with("model:"));
+        assert!(!jwt_model.contains("eyJhbGci"));
     }
 }

@@ -1442,9 +1442,21 @@ def main() -> int:
         )
         doctor_report = daemon_json(base_url, auth_headers, "GET", "/v1/doctor")
         bad_health = {entry["id"]: entry for entry in doctor_report["providers"]}
-        common.assert_in(bad_health["openai-bad-auth"]["detail"], "invalid API key", context="bad openai auth detail")
-        common.assert_in(bad_health["anthropic-bad-auth"]["detail"], "invalid x-api-key", context="bad anthropic auth detail")
-        common.assert_in(bad_health["codex-bad-auth"]["detail"], "authentication token invalid", context="bad codex auth detail")
+        common.assert_in(
+            bad_health["openai-bad-auth"]["detail"],
+            "authentication error",
+            context="bad openai auth detail",
+        )
+        common.assert_in(
+            bad_health["anthropic-bad-auth"]["detail"],
+            "authentication error",
+            context="bad anthropic auth detail",
+        )
+        common.assert_in(
+            bad_health["codex-bad-auth"]["detail"],
+            "authentication token invalid",
+            context="bad codex auth detail",
+        )
         common.assert_in(bad_health["ollama-bad-model"]["detail"], "missing-ollama", context="bad ollama model detail")
         for provider_id in ["openai-bad-auth", "anthropic-bad-auth", "codex-bad-auth", "ollama-bad-model"]:
             daemon_json(base_url, auth_headers, "DELETE", f"/v1/providers/{provider_id}")

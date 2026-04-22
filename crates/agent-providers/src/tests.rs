@@ -1117,16 +1117,11 @@ fn extract_error_redacts_nested_secret_fields() {
 
 #[test]
 fn provider_error_for_display_does_not_echo_secret_response_text() {
-    let message = provider_error_for_display(&json!({
-        "error": {
-            "message": "request failed for Bearer sk-live-123456 refresh_token=refresh-secret"
-        }
-    }));
+    let message = provider_error_for_status(StatusCode::UNAUTHORIZED);
 
     assert!(!message.contains("sk-live-123456"));
     assert!(!message.contains("refresh-secret"));
-    assert!(message.contains("[REDACTED]"));
-    assert!(message.contains("request failed"));
+    assert_eq!(message, "authentication error");
 }
 
 #[test]

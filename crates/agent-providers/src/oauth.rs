@@ -34,7 +34,7 @@ pub async fn exchange_oauth_code(
     redirect_uri: &str,
 ) -> Result<OAuthToken> {
     let oauth = oauth_config(provider)?;
-    let token_url = validated_token_endpoint_url(provider)?;
+    let token_request = post_validated_token_endpoint(client, provider)?;
     let form = base_token_form(oauth)
         .into_iter()
         .chain([
@@ -45,8 +45,7 @@ pub async fn exchange_oauth_code(
         ])
         .collect::<Vec<_>>();
 
-    let response = client
-        .post(token_url)
+    let response = token_request
         .form(&form)
         .send()
         .await
@@ -160,7 +159,7 @@ pub(crate) async fn refresh_oauth_token(
     }
 
     let oauth = oauth_config(provider)?;
-    let token_url = validated_token_endpoint_url(provider)?;
+    let token_request = post_validated_token_endpoint(client, provider)?;
     let refresh_token = token
         .refresh_token
         .as_deref()
@@ -173,8 +172,7 @@ pub(crate) async fn refresh_oauth_token(
         ])
         .collect::<Vec<_>>();
 
-    let response = client
-        .post(token_url)
+    let response = token_request
         .form(&form)
         .send()
         .await
@@ -287,8 +285,54 @@ fn oauth_token_url(provider: &ProviderConfig) -> Result<Url> {
 }
 
 fn validated_token_endpoint_url(provider: &ProviderConfig) -> Result<Url> {
-    provider.validate_oauth_configuration()?;
-    oauth_token_url(provider)
+    let url = oauth_token_url(provider)?;
+    validate_oauth_post_endpoint(provider, &url)?;
+    Ok(url)
+}
+
+fn post_validated_token_endpoint(
+    client: &Client,
+    provider: &ProviderConfig,
+) -> Result<reqwest::RequestBuilder> {
+    let url = oauth_token_url(provider)?;
+    validate_oauth_post_endpoint(provider, &url)?;
+    Ok(client.post(url))
+}
+
+fn validate_oauth_post_endpoint(provider: &ProviderConfig, url: &Url) -> Result<()> {
+    let host = url.host_str().ok_or_else(|| {
+        anyhow!(
+            "provider '{}' OAuth token URL is missing a host",
+            provider.id
+        )
+    })?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_host(host) => Ok(()),
+        "http" => bail!(
+            "provider '{}' OAuth token URL must use https unless it targets localhost or a loopback address",
+            provider.id
+        ),
+        scheme => bail!(
+            "provider '{}' OAuth token URL must use https or loopback-local http; found '{}'",
+            provider.id,
+            scheme
+        ),
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let candidate = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    candidate
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 pub(crate) async fn refresh_openai_oauth_token(
@@ -297,13 +341,12 @@ pub(crate) async fn refresh_openai_oauth_token(
     token: &OAuthToken,
 ) -> Result<OAuthToken> {
     let oauth = oauth_config(provider)?;
-    let token_url = validated_token_endpoint_url(provider)?;
+    let token_request = post_validated_token_endpoint(client, provider)?;
     let refresh_token = token
         .refresh_token
         .as_deref()
         .ok_or_else(|| anyhow!("provider '{}' has no refresh token", provider.id))?;
-    let response = client
-        .post(token_url)
+    let response = token_request
         .json(&json!({
             "client_id": oauth.client_id,
             "grant_type": "refresh_token",
@@ -346,7 +389,7 @@ pub(crate) async fn exchange_openai_api_key(
             provider.id
         )
     })?;
-    let token_url = oauth_token_url(provider)?;
+    let token_url = validated_token_endpoint_url(provider)?;
     let issuer = format!(
         "{}://{}",
         token_url.scheme(),
@@ -367,8 +410,11 @@ pub(crate) async fn exchange_openai_api_key(
             "urn:ietf:params:oauth:token-type:id_token",
         )
         .finish();
+    let exchange_url = Url::parse(&format!("{issuer}/oauth/token"))
+        .context("failed to build OpenAI API key exchange URL")?;
+    validate_oauth_post_endpoint(provider, &exchange_url)?;
     let response = client
-        .post(format!("{issuer}/oauth/token"))
+        .post(exchange_url)
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(body)
         .send()

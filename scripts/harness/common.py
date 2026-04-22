@@ -70,10 +70,6 @@ def write_json_config_raw(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def write_json(path: Path, payload: Any) -> None:
-    write_json_artifact(path, payload)
-
-
 def sanitize_text(value: str) -> str:
     redacted = BEARER_PATTERN.sub(f"Bearer {REDACTED}", value)
     redacted = KEY_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}={REDACTED}", redacted)

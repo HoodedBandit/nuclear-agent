@@ -1,9 +1,8 @@
 use agent_core::{
-    display_safe_error, redact_sensitive_json_value, redact_sensitive_text, AttachmentKind,
-    AuthMode, ConversationMessage, HostedToolKind, InputAttachment, MessageRole,
-    ModelToolCapabilities, OAuthConfig, OAuthToken, ProviderConfig, ProviderHealth, ProviderKind,
-    ProviderOutputItem, ProviderReply, ThinkingLevel, ToolBackend, ToolCall, ToolDefinition,
-    KEYCHAIN_SERVICE,
+    redact_sensitive_json_value, redact_sensitive_text, AttachmentKind, AuthMode,
+    ConversationMessage, HostedToolKind, InputAttachment, MessageRole, ModelToolCapabilities,
+    OAuthConfig, OAuthToken, ProviderConfig, ProviderHealth, ProviderKind, ProviderOutputItem,
+    ProviderReply, ThinkingLevel, ToolBackend, ToolCall, ToolDefinition, KEYCHAIN_SERVICE,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -204,8 +203,15 @@ fn extract_error(body: &Value) -> String {
         .unwrap_or_else(|_| "[REDACTED]".to_string())
 }
 
-fn provider_error_for_display(body: &Value) -> String {
-    display_safe_error(&extract_error(body))
+fn provider_error_for_status(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "authentication error",
+        StatusCode::TOO_MANY_REQUESTS => "rate limit exceeded",
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => "invalid request",
+        StatusCode::NOT_FOUND => "resource not found",
+        status if status.is_server_error() => "provider server error",
+        _ => "provider error",
+    }
 }
 
 fn extract_text(value: &Value) -> String {
