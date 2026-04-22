@@ -13,7 +13,7 @@ from harness.common import (
     sanitize_text,
     write_json,
     write_json_artifact,
-    write_json_config,
+    write_json_config_raw,
 )
 
 
@@ -83,13 +83,13 @@ class HarnessSanitizationTests(unittest.TestCase):
         self.assertNotIn("sk-live-123456", content)
         self.assertIn("[REDACTED]", content)
 
-    def test_write_json_config_preserves_config_values(self) -> None:
+    def test_write_json_config_raw_preserves_config_values(self) -> None:
         root = Path(self.id()).with_suffix("")
         output_dir = Path.cwd() / "target" / "scripts-tests" / root
         output_dir.mkdir(parents=True, exist_ok=True)
         config_path = output_dir / "config.json"
 
-        write_json_config(
+        write_json_config_raw(
             config_path,
             {
                 "daemon_token": "keep-for-config-tests",

@@ -1,8 +1,49 @@
 use agent_core::{DiscordChannelCursor, HomeAssistantEntityCursor, SlackChannelCursor};
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+use std::{fs, path::PathBuf};
+use uuid::Uuid;
 
 pub(crate) fn hash_webhook_token_local(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+pub(crate) fn write_webhook_token_fallback_file(
+    connector_id: &str,
+    token: &str,
+) -> Result<PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "nuclear-webhook-token-{}-{}.txt",
+        safe_file_slug(connector_id),
+        Uuid::new_v4()
+    ));
+    fs::write(
+        &path,
+        format!(
+            "Webhook token for connector: {}\n\n{}\n",
+            connector_id, token
+        ),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write webhook token fallback file at {}",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+fn safe_file_slug(input: &str) -> String {
+    let slug: String = input
+        .chars()
+        .filter(|ch| matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_'))
+        .take(48)
+        .collect();
+    if slug.is_empty() {
+        "connector".to_string()
+    } else {
+        slug
+    }
 }
 
 pub(crate) fn format_i64_list(values: &[i64]) -> String {

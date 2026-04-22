@@ -1416,7 +1416,8 @@ mod tests {
 
         let error = uninstall_plugin_package(&paths, &plugin).unwrap_err();
 
-        assert!(error.to_string().contains("escapes managed root"));
+        let error = error.to_string();
+        assert!(error.contains("escapes managed root") || error.contains("traversal"));
     }
 
     #[test]
@@ -1474,6 +1475,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("escapes managed root"));
+        let error = error.to_string();
+        assert!(error.contains("escapes managed root") || error.contains("traversal"));
     }
 }

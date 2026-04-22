@@ -34,7 +34,7 @@ pub async fn exchange_oauth_code(
     redirect_uri: &str,
 ) -> Result<OAuthToken> {
     let oauth = oauth_config(provider)?;
-    let token_url = oauth_token_url(provider)?;
+    let token_url = validated_token_endpoint_url(provider)?;
     let form = base_token_form(oauth)
         .into_iter()
         .chain([
@@ -160,7 +160,7 @@ pub(crate) async fn refresh_oauth_token(
     }
 
     let oauth = oauth_config(provider)?;
-    let token_url = oauth_token_url(provider)?;
+    let token_url = validated_token_endpoint_url(provider)?;
     let refresh_token = token
         .refresh_token
         .as_deref()
@@ -286,13 +286,18 @@ fn oauth_token_url(provider: &ProviderConfig) -> Result<Url> {
     Url::parse(&oauth.token_url).context("failed to parse OAuth token URL")
 }
 
+fn validated_token_endpoint_url(provider: &ProviderConfig) -> Result<Url> {
+    provider.validate_oauth_configuration()?;
+    oauth_token_url(provider)
+}
+
 pub(crate) async fn refresh_openai_oauth_token(
     client: &Client,
     provider: &ProviderConfig,
     token: &OAuthToken,
 ) -> Result<OAuthToken> {
     let oauth = oauth_config(provider)?;
-    let token_url = oauth_token_url(provider)?;
+    let token_url = validated_token_endpoint_url(provider)?;
     let refresh_token = token
         .refresh_token
         .as_deref()
@@ -639,6 +644,34 @@ mod tests {
         )
         .await
         .unwrap_err();
+
+        assert!(error.to_string().contains("https"));
+    }
+
+    #[tokio::test]
+    async fn refresh_oauth_token_rejects_invalid_token_url_before_request() {
+        let provider = oauth_provider(
+            "https://example.invalid/oauth/authorize",
+            "http://example.invalid/oauth/token",
+        );
+        let token = OAuthToken {
+            access_token: "access".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            expires_at: None,
+            token_type: Some("Bearer".to_string()),
+            scopes: Vec::new(),
+            id_token: None,
+            account_id: None,
+            user_id: None,
+            org_id: None,
+            project_id: None,
+            display_email: None,
+            subscription_type: None,
+        };
+
+        let error = refresh_oauth_token(&Client::new(), &provider, &token)
+            .await
+            .unwrap_err();
 
         assert!(error.to_string().contains("https"));
     }

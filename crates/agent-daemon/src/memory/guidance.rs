@@ -3,7 +3,11 @@ use std::{
     path::{Path as FsPath, PathBuf},
 };
 
-use agent_core::{truncate_with_suffix, SkillDraft, SkillDraftStatus, ToolExecutionRecord};
+use agent_core::{
+    resolve_operator_path, resolve_path_within_root, resolve_relative_path_within_root,
+    truncate_with_suffix, validate_single_path_component, SkillDraft, SkillDraftStatus,
+    ToolExecutionRecord,
+};
 
 use crate::AppState;
 
@@ -19,9 +23,12 @@ pub(super) fn env_value(keys: &[&str]) -> Option<String> {
 }
 
 pub(super) fn find_git_root(start: &FsPath) -> Option<PathBuf> {
-    let mut current = Some(start);
+    let start = resolve_operator_path(start, "git search root").ok()?;
+    let mut current = Some(start.as_path());
     while let Some(path) = current {
-        if path.join(".git").exists() {
+        let git_dir =
+            resolve_relative_path_within_root(path, FsPath::new(".git"), "git metadata").ok()?;
+        if git_dir.exists() {
             return Some(path.to_path_buf());
         }
         current = path.parent();
@@ -120,6 +127,9 @@ pub(crate) async fn load_enabled_skill_guidance(
 fn load_skill_guidance_blocks(enabled_skills: &[String]) -> String {
     const MAX_TOTAL_BYTES: usize = 32_000;
     let Some(root) = home_dir().map(|home| home.join(".codex").join("skills")) else {
+        return String::new();
+    };
+    let Ok(root) = resolve_operator_path(&root, "skills root") else {
         return String::new();
     };
     let mut output = String::new();
@@ -222,24 +232,32 @@ fn skill_draft_relevant(draft: &SkillDraft, query_terms: &[String]) -> bool {
 }
 
 fn find_skill_markdown(root: &FsPath, skill_name: &str) -> Option<PathBuf> {
+    let root = resolve_operator_path(root, "skills root").ok()?;
+    let skill_name = validate_single_path_component(skill_name, "skill name").ok()?;
+    find_skill_markdown_under(&root, &skill_name)
+}
+
+fn find_skill_markdown_under(root: &FsPath, skill_name: &str) -> Option<PathBuf> {
     if !root.is_dir() {
         return None;
     }
     let entries = fs::read_dir(root).ok()?;
     for entry in entries.flatten() {
-        let path = entry.path();
+        let path = resolve_path_within_root(root, &entry.path(), "skill directory").ok()?;
         if entry.file_type().ok()?.is_dir() {
             if path
                 .file_name()
                 .map(|name| name.to_string_lossy() == skill_name)
                 .unwrap_or(false)
             {
-                let candidate = path.join("SKILL.md");
+                let candidate =
+                    resolve_relative_path_within_root(&path, FsPath::new("SKILL.md"), "skill file")
+                        .ok()?;
                 if candidate.is_file() {
                     return Some(candidate);
                 }
             }
-            if let Some(found) = find_skill_markdown(&path, skill_name) {
+            if let Some(found) = find_skill_markdown_under(&path, skill_name) {
                 return Some(found);
             }
         }
@@ -251,4 +269,38 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn find_git_root_detects_valid_root() {
+        let root = temp_dir("agent-daemon-git-root");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        let nested = root.join("a").join("b");
+        fs::create_dir_all(&nested).unwrap();
+
+        let found = find_git_root(&nested).unwrap();
+
+        assert_eq!(found, root);
+    }
+
+    #[test]
+    fn find_skill_markdown_rejects_path_like_skill_names() {
+        let root = temp_dir("agent-daemon-skills-root");
+        let skill = root.join("safe-skill");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "safe").unwrap();
+
+        assert!(find_skill_markdown(&root, "../safe-skill").is_none());
+        assert!(find_skill_markdown(&root, "safe-skill").is_some());
+    }
 }

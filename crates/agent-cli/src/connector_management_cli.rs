@@ -91,6 +91,7 @@ pub(crate) async fn webhook_command(storage: &Storage, command: WebhookCommands)
         WebhookCommands::Add(args) => {
             let prompt_template =
                 load_prompt_template(args.prompt_template.as_deref(), args.prompt_file.as_ref())?;
+            let generated_token = args.token.is_none();
             let token = args.token.unwrap_or_else(|| Uuid::new_v4().to_string());
             let connector = WebhookConnectorConfig {
                 id: args.id.clone(),
@@ -125,7 +126,14 @@ pub(crate) async fn webhook_command(storage: &Storage, command: WebhookCommands)
                 "url=http://{}:{}/v1/hooks/{}",
                 config.daemon.host, config.daemon.port, args.id
             );
-            println!("token={token}");
+            if generated_token {
+                let token_path = write_webhook_token_fallback_file(&args.id, &token)?;
+                println!("token_file={}", token_path.display());
+                println!("token_fingerprint={}", display_safe_id(&token));
+            } else {
+                println!("token=provided");
+                println!("token_fingerprint={}", display_safe_id(&token));
+            }
         }
         WebhookCommands::Remove { id } => {
             if let Some(client) = try_daemon(storage).await? {

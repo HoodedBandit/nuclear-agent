@@ -1,7 +1,8 @@
 use super::*;
-use agent_core::redact_sensitive_text;
+use agent_core::{display_safe_error, display_safe_model, display_safe_url};
 use dialoguer::FuzzySelect;
 use sha2::{Digest, Sha256};
+use std::{fs, path::PathBuf};
 
 pub(crate) async fn interactive_provider_setup(
     theme: &ColorfulTheme,
@@ -306,7 +307,7 @@ pub(crate) async fn resolve_hosted_model_after_auth(
     match discovered {
         Ok(models) if !models.is_empty() => {
             if models.len() == 1 {
-                println!("Detected model '{}'.", redact_sensitive_text(&models[0]));
+                println!("Detected model '{}'.", display_safe_model(&models[0]));
                 return Ok(models[0].clone());
             }
             let selection = FuzzySelect::with_theme(theme)
@@ -326,7 +327,7 @@ pub(crate) async fn resolve_hosted_model_after_auth(
             }
             println!(
                 "Could not load models automatically after authentication: {}",
-                redact_sensitive_text(&error.to_string())
+                display_safe_error(&error.to_string())
             );
             prompt_for_model(theme)
         }
@@ -361,7 +362,7 @@ pub(crate) async fn determine_local_model(
         Ok(models) if !models.is_empty() => {
             if let Some(theme) = theme {
                 if models.len() == 1 {
-                    println!("Detected local model '{}'.", models[0]);
+                    println!("Detected local model '{}'.", display_safe_model(&models[0]));
                     return Ok(models[0].clone());
                 }
                 let index = Select::with_theme(theme)
@@ -372,7 +373,7 @@ pub(crate) async fn determine_local_model(
                 return Ok(models[index].clone());
             }
 
-            println!("Detected local model '{}'.", models[0]);
+            println!("Detected local model '{}'.", display_safe_model(&models[0]));
             Ok(models[0].clone())
         }
         Ok(_) => {
@@ -386,7 +387,7 @@ pub(crate) async fn determine_local_model(
             if let Some(theme) = theme {
                 println!(
                     "Could not detect models automatically: {}",
-                    redact_sensitive_text(&error.to_string())
+                    display_safe_error(&error.to_string())
                 );
                 prompt_for_model(theme)
             } else {
@@ -525,15 +526,14 @@ pub(crate) async fn complete_openai_browser_login() -> Result<OAuthToken> {
 
     match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for OpenAI sign-in."),
-        Err(error) => println!(
-            "Could not open browser automatically: {}",
-            redact_sensitive_text(&error.to_string())
-        ),
+        Err(error) => {
+            println!(
+                "Could not open browser automatically: {}",
+                display_safe_error(&error.to_string())
+            );
+            print_manual_url_fallback("OpenAI authorization", &authorization_url);
+        }
     }
-    println!(
-        "If needed, open this URL manually:\n{}\n",
-        redact_sensitive_text(&authorization_url)
-    );
 
     timeout(
         OAUTH_TIMEOUT,
@@ -830,15 +830,14 @@ pub(crate) async fn complete_claude_browser_login() -> Result<BrowserLoginResult
     let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
     match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for Claude sign-in."),
-        Err(error) => println!(
-            "Could not open browser automatically: {}",
-            redact_sensitive_text(&error.to_string())
-        ),
+        Err(error) => {
+            println!(
+                "Could not open browser automatically: {}",
+                display_safe_error(&error.to_string())
+            );
+            print_manual_url_fallback("Claude authorization", &authorization_url);
+        }
     }
-    println!(
-        "If needed, open this URL manually:\n{}\n",
-        redact_sensitive_text(&authorization_url)
-    );
 
     let callback = timeout(OAUTH_TIMEOUT, callback_task)
         .await
@@ -1201,15 +1200,14 @@ pub(crate) async fn complete_openrouter_browser_login() -> Result<String> {
     let callback_task = tokio::spawn(wait_for_code_callback(listener));
     match opener::open_browser(authorization_url.as_str()) {
         Ok(_) => println!("Opened browser for OpenRouter login."),
-        Err(error) => println!(
-            "Could not open browser automatically: {}",
-            redact_sensitive_text(&error.to_string())
-        ),
+        Err(error) => {
+            println!(
+                "Could not open browser automatically: {}",
+                display_safe_error(&error.to_string())
+            );
+            print_manual_url_fallback("OpenRouter authorization", authorization_url.as_str());
+        }
     }
-    println!(
-        "If needed, open this URL manually:\n{}\n",
-        redact_sensitive_text(authorization_url.as_str())
-    );
 
     let callback = timeout(OAUTH_TIMEOUT, callback_task)
         .await
@@ -1269,15 +1267,14 @@ pub(crate) async fn capture_browser_api_key(
     ));
     match opener::open_browser(&helper_url) {
         Ok(_) => println!("Opened browser helper for {} login.", provider_name),
-        Err(error) => println!(
-            "Could not open browser automatically: {}",
-            redact_sensitive_text(&error.to_string())
-        ),
+        Err(error) => {
+            println!(
+                "Could not open browser automatically: {}",
+                display_safe_error(&error.to_string())
+            );
+            print_manual_url_fallback("browser helper", &helper_url);
+        }
     }
-    println!(
-        "If needed, open this URL manually:\n{}\n",
-        redact_sensitive_text(&helper_url)
-    );
 
     timeout(OAUTH_TIMEOUT, capture_task)
         .await
@@ -1519,15 +1516,14 @@ pub(crate) async fn complete_oauth_login(provider: &ProviderConfig) -> Result<OA
     let callback_task = tokio::spawn(wait_for_oauth_callback(listener));
     match opener::open_browser(&authorization_url) {
         Ok(_) => println!("Opened browser for OAuth login."),
-        Err(error) => println!(
-            "Could not open browser automatically: {}",
-            redact_sensitive_text(&error.to_string())
-        ),
+        Err(error) => {
+            println!(
+                "Could not open browser automatically: {}",
+                display_safe_error(&error.to_string())
+            );
+            print_manual_url_fallback("OAuth authorization", &authorization_url);
+        }
     }
-    println!(
-        "If needed, open this URL manually:\n{}\n",
-        redact_sensitive_text(&authorization_url)
-    );
 
     let callback = timeout(OAUTH_TIMEOUT, callback_task)
         .await
@@ -1577,7 +1573,7 @@ pub(crate) async fn wait_for_code_callback(listener: TcpListener) -> Result<Brow
     if let Some(error) = error {
         bail!(
             "browser login failed: {}",
-            redact_sensitive_text(&error.to_string())
+            display_safe_error(&error.to_string())
         );
     }
 
@@ -1671,6 +1667,61 @@ pub(crate) fn html_escape(input: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+fn print_manual_url_fallback(label: &str, url: &str) {
+    match write_manual_url_fallback_file(label, url) {
+        Ok(path) => println!(
+            "Manual {} fallback file: {}\nURL fingerprint: {}\nOpen that local file if browser launch failed.\n",
+            label,
+            path.display(),
+            display_safe_url(url)
+        ),
+        Err(error) => println!(
+            "Manual {} fallback file could not be written: {}\nURL fingerprint: {}\n",
+            label,
+            display_safe_error(&error.to_string()),
+            display_safe_url(url)
+        ),
+    }
+}
+
+pub(crate) fn write_manual_url_fallback_file(label: &str, url: &str) -> Result<PathBuf> {
+    let slug = label
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                Some(ch.to_ascii_lowercase())
+            } else if ch.is_ascii_whitespace() || ch == '-' || ch == '_' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let slug = if slug.is_empty() { "auth" } else { &slug };
+    let path =
+        std::env::temp_dir().join(format!("nuclear-{}-{}.html", slug, Uuid::new_v4().simple()));
+    let href = html_attr_escape(url);
+    let body_url = html_escape(url);
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0;url={href}\"><title>Nuclear authorization</title></head><body><p>If you are not redirected, open <a href=\"{href}\">this authorization link</a>.</p><pre>{body_url}</pre></body></html>"
+    );
+    fs::write(&path, html).with_context(|| {
+        format!(
+            "failed to write manual authorization fallback file at {}",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+fn html_attr_escape(input: &str) -> String {
+    html_escape(input)
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 pub(crate) fn prompt_or_value(

@@ -44,7 +44,7 @@ pub(crate) async fn list_anthropic_models(
         .await
         .context("failed to parse anthropic models response")?;
     if !status.is_success() {
-        let error = redact_sensitive_text(&extract_error(&body));
+        let error = provider_error_for_display(&body);
         bail!("anthropic model listing failed: {}", error);
     }
 
@@ -116,7 +116,7 @@ pub(crate) async fn run_anthropic(
         .await
         .context("failed to parse anthropic response")?;
     if !status.is_success() {
-        let error = redact_sensitive_text(&extract_error(&body));
+        let error = provider_error_for_display(&body);
         bail!("anthropic request failed: {}", error);
     }
 

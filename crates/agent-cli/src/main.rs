@@ -51,6 +51,7 @@ use connector_management_cli::{
 pub(crate) use connector_support::{
     format_discord_channel_cursors, format_home_assistant_entity_cursors, format_i64_list,
     format_slack_channel_cursors, format_string_list, hash_webhook_token_local,
+    write_webhook_token_fallback_file,
 };
 use futures::StreamExt;
 use integrations_cli::{app_command, mcp_command, AppCommands, McpCommands};
@@ -77,26 +78,27 @@ pub(crate) use session_support::{
 };
 
 use agent_core::{
-    redact_sensitive_text, AliasUpsertRequest, AppConfig, AuthMode, AutonomyEnableRequest,
-    AutonomyMode, AutopilotConfig, AutopilotState, AutopilotUpdateRequest, BatchTaskRequest,
-    BatchTaskResponse, ConnectorApprovalStatus, ConnectorKind, DaemonConfigUpdateRequest,
-    DaemonStatus, DashboardLaunchResponse, DiscordConnectorConfig, DiscordConnectorUpsertRequest,
-    DiscordPollResponse, DiscordSendRequest, DiscordSendResponse, EvolveConfig, EvolveStartRequest,
-    HealthReport, HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest,
-    HomeAssistantEntityState, HomeAssistantPollResponse, HomeAssistantServiceCallRequest,
-    HomeAssistantServiceCallResponse, InboxConnectorConfig, InboxConnectorUpsertRequest,
-    InboxPollResponse, InputAttachment, KeyValuePair, MemoryKind, MemoryRebuildRequest,
-    MemoryRebuildResponse, MemoryRecord, MemoryReviewStatus, MemoryReviewUpdateRequest,
-    MemoryScope, MemorySearchQuery, MemorySearchResponse, MemoryUpsertRequest, Mission,
-    MissionCheckpoint, MissionControlRequest, MissionStatus, ModelAlias, OAuthConfig, OAuthToken,
-    PermissionPreset, PermissionUpdateRequest, PersistenceMode, ProviderConfig, ProviderKind,
-    ProviderUpsertRequest, RunTaskRequest, RunTaskResponse, SessionTranscript,
-    SignalConnectorConfig, SignalConnectorUpsertRequest, SignalPollResponse, SignalSendRequest,
-    SignalSendResponse, SkillDraftStatus, SlackConnectorConfig, SlackConnectorUpsertRequest,
-    SlackPollResponse, SlackSendRequest, SlackSendResponse, SubAgentTask, TaskMode,
-    TelegramConnectorConfig, TelegramConnectorUpsertRequest, TelegramPollResponse,
-    TelegramSendRequest, TelegramSendResponse, ThinkingLevel, TrustPolicy, TrustUpdateRequest,
-    WakeTrigger, WebhookConnectorConfig, WebhookConnectorUpsertRequest, WebhookEventRequest,
+    display_safe_id, display_safe_label, display_safe_model, display_safe_url, AliasUpsertRequest,
+    AppConfig, AuthMode, AutonomyEnableRequest, AutonomyMode, AutopilotConfig, AutopilotState,
+    AutopilotUpdateRequest, BatchTaskRequest, BatchTaskResponse, ConnectorApprovalStatus,
+    ConnectorKind, DaemonConfigUpdateRequest, DaemonStatus, DashboardLaunchResponse,
+    DiscordConnectorConfig, DiscordConnectorUpsertRequest, DiscordPollResponse, DiscordSendRequest,
+    DiscordSendResponse, EvolveConfig, EvolveStartRequest, HealthReport,
+    HomeAssistantConnectorConfig, HomeAssistantConnectorUpsertRequest, HomeAssistantEntityState,
+    HomeAssistantPollResponse, HomeAssistantServiceCallRequest, HomeAssistantServiceCallResponse,
+    InboxConnectorConfig, InboxConnectorUpsertRequest, InboxPollResponse, InputAttachment,
+    KeyValuePair, MemoryKind, MemoryRebuildRequest, MemoryRebuildResponse, MemoryRecord,
+    MemoryReviewStatus, MemoryReviewUpdateRequest, MemoryScope, MemorySearchQuery,
+    MemorySearchResponse, MemoryUpsertRequest, Mission, MissionCheckpoint, MissionControlRequest,
+    MissionStatus, ModelAlias, OAuthConfig, OAuthToken, PermissionPreset, PermissionUpdateRequest,
+    PersistenceMode, ProviderConfig, ProviderKind, ProviderUpsertRequest, RunTaskRequest,
+    RunTaskResponse, SessionTranscript, SignalConnectorConfig, SignalConnectorUpsertRequest,
+    SignalPollResponse, SignalSendRequest, SignalSendResponse, SkillDraftStatus,
+    SlackConnectorConfig, SlackConnectorUpsertRequest, SlackPollResponse, SlackSendRequest,
+    SlackSendResponse, SubAgentTask, TaskMode, TelegramConnectorConfig,
+    TelegramConnectorUpsertRequest, TelegramPollResponse, TelegramSendRequest,
+    TelegramSendResponse, ThinkingLevel, TrustPolicy, TrustUpdateRequest, WakeTrigger,
+    WebhookConnectorConfig, WebhookConnectorUpsertRequest, WebhookEventRequest,
     WebhookEventResponse, DEFAULT_ANTHROPIC_URL, DEFAULT_CHATGPT_CODEX_URL,
     DEFAULT_LOCAL_OPENAI_URL, DEFAULT_MOONSHOT_URL, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL,
     DEFAULT_OPENROUTER_URL, DEFAULT_VENICE_URL, DISPLAY_APP_NAME, INTERNAL_DAEMON_ARG,
@@ -1717,10 +1719,10 @@ async fn run_command(storage: &Storage, args: RunArgs) -> Result<()> {
         println!("{}", response.response);
         println!(
             "\nsession={} alias={} provider={} model={}",
-            redact_sensitive_text(&response.session_id),
-            redact_sensitive_text(&response.alias),
-            redact_sensitive_text(&response.provider_id),
-            redact_sensitive_text(&response.model)
+            display_safe_id(&response.session_id),
+            display_safe_label(&response.alias),
+            display_safe_label(&response.provider_id),
+            display_safe_model(&response.model)
         );
     }
     Ok(())
@@ -1852,7 +1854,10 @@ async fn interactive_session(
                         println!("{output}");
                     }
                 }
-                Err(error) => println!("error: {}", redact_sensitive_text(&format!("{error:#}"))),
+                Err(error) => println!(
+                    "error: {}",
+                    agent_core::display_safe_error(&format!("{error:#}"))
+                ),
             }
             continue;
         }
@@ -2002,11 +2007,11 @@ async fn interactive_session(
                                     for connector in connectors {
                                         println!(
                                             "{} [{}] enabled={} require_pairing_approval={} account={} cli_path={} groups={} allowed_groups={} users={} alias={} model={} cwd={}",
-                                            redact_sensitive_text(&connector.id),
-                                            redact_sensitive_text(&connector.name),
+                                            display_safe_id(&connector.id),
+                                            display_safe_label(&connector.name),
                                             connector.enabled,
                                             connector.require_pairing_approval,
-                                            redact_sensitive_text(&connector.account),
+                                            display_safe_id(&connector.account),
                                             connector
                                                 .cli_path
                                                 .as_ref()
@@ -2015,8 +2020,8 @@ async fn interactive_session(
                                             format_string_list(&connector.monitored_group_ids),
                                             format_string_list(&connector.allowed_group_ids),
                                             format_string_list(&connector.allowed_user_ids),
-                                            redact_sensitive_text(connector.alias.as_deref().unwrap_or("-")),
-                                            redact_sensitive_text(
+                                            display_safe_label(connector.alias.as_deref().unwrap_or("-")),
+                                            display_safe_model(
                                                 connector.requested_model.as_deref().unwrap_or("-")
                                             ),
                                             connector
@@ -2611,8 +2616,8 @@ async fn interactive_session(
                                 session_id = Some(new_session_id.clone());
                                 println!(
                                     "Compacted session {} -> {}",
-                                    redact_sensitive_text(&transcript.session.id),
-                                    redact_sensitive_text(&new_session_id)
+                                    display_safe_id(&transcript.session.id),
+                                    display_safe_id(&new_session_id)
                                 );
                             }
                             InteractiveCommand::Init => {
@@ -2734,8 +2739,8 @@ async fn interactive_session(
                                 storage.rename_session(current_session, title)?;
                                 println!(
                                     "renamed session={} title={}",
-                                    redact_sensitive_text(current_session),
-                                    redact_sensitive_text(title)
+                                    display_safe_id(current_session),
+                                    display_safe_label(title)
                                 );
                             }
                             InteractiveCommand::Review(custom_prompt) => {
@@ -2771,13 +2776,13 @@ async fn interactive_session(
                                 )?;
                                 println!(
                                     "Resumed session={} title={} alias={} provider={} model={} mode={}",
-                                    redact_sensitive_text(&transcript.session.id),
-                                    redact_sensitive_text(
+                                    display_safe_id(&transcript.session.id),
+                                    display_safe_label(
                                         transcript.session.title.as_deref().unwrap_or("(untitled)")
                                     ),
-                                    redact_sensitive_text(&transcript.session.alias),
-                                    redact_sensitive_text(&transcript.session.provider_id),
-                                    redact_sensitive_text(&transcript.session.model),
+                                    display_safe_label(&transcript.session.alias),
+                                    display_safe_label(&transcript.session.provider_id),
+                                    display_safe_model(&transcript.session.model),
                                     task_mode_label(transcript.session.task_mode),
                                 );
                                 last_output = latest_assistant_output_from_transcript(&transcript);
@@ -2805,11 +2810,11 @@ async fn interactive_session(
                                 let new_session_id = fork_session(storage, &transcript)?;
                                 println!(
                                     "Forked session {} ({}) -> {}",
-                                    redact_sensitive_text(&transcript.session.id),
-                                    redact_sensitive_text(
+                                    display_safe_id(&transcript.session.id),
+                                    display_safe_label(
                                         transcript.session.title.as_deref().unwrap_or("(untitled)")
                                     ),
-                                    redact_sensitive_text(&new_session_id)
+                                    display_safe_id(&new_session_id)
                                 );
                                 last_output = latest_assistant_output_from_transcript(&transcript);
                                 alias = Some(transcript.session.alias.clone());
@@ -2831,7 +2836,10 @@ async fn interactive_session(
                     }
                     .await;
                     if let Err(error) = command_result {
-                        println!("error: {}", redact_sensitive_text(&format!("{error:#}")));
+                        println!(
+                            "error: {}",
+                            agent_core::display_safe_error(&format!("{error:#}"))
+                        );
                     } else if exit_after_command {
                         break;
                     }
@@ -2839,7 +2847,10 @@ async fn interactive_session(
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    println!("error: {}", redact_sensitive_text(&format!("{error:#}")));
+                    println!(
+                        "error: {}",
+                        agent_core::display_safe_error(&format!("{error:#}"))
+                    );
                     continue;
                 }
             }
@@ -2893,10 +2904,10 @@ async fn review_command(storage: &Storage, args: ReviewArgs) -> Result<()> {
     println!("{}", response.response);
     println!(
         "\nsession={} alias={} provider={} model={}",
-        redact_sensitive_text(&response.session_id),
-        redact_sensitive_text(&response.alias),
-        redact_sensitive_text(&response.provider_id),
-        redact_sensitive_text(&response.model)
+        display_safe_id(&response.session_id),
+        display_safe_label(&response.alias),
+        display_safe_label(&response.provider_id),
+        display_safe_model(&response.model)
     );
     Ok(())
 }
@@ -2905,11 +2916,11 @@ async fn resume_command(storage: &Storage, args: ResumeArgs) -> Result<()> {
     let transcript = load_session_for_command(storage, args.session_id, args.last, args.all)?;
     println!(
         "Resuming session={} title={} alias={} provider={} model={} mode={}",
-        redact_sensitive_text(&transcript.session.id),
-        redact_sensitive_text(transcript.session.title.as_deref().unwrap_or("(untitled)")),
-        redact_sensitive_text(&transcript.session.alias),
-        redact_sensitive_text(&transcript.session.provider_id),
-        redact_sensitive_text(&transcript.session.model),
+        display_safe_id(&transcript.session.id),
+        display_safe_label(transcript.session.title.as_deref().unwrap_or("(untitled)")),
+        display_safe_label(&transcript.session.alias),
+        display_safe_label(&transcript.session.provider_id),
+        display_safe_model(&transcript.session.model),
         task_mode_label(transcript.session.task_mode),
     );
     launch_chat_session(
@@ -2931,9 +2942,9 @@ async fn fork_command(storage: &Storage, args: ForkArgs) -> Result<()> {
     let new_session_id = fork_session(storage, &transcript)?;
     println!(
         "Forked session {} ({}) -> {}",
-        redact_sensitive_text(&transcript.session.id),
-        redact_sensitive_text(transcript.session.title.as_deref().unwrap_or("(untitled)")),
-        redact_sensitive_text(&new_session_id)
+        display_safe_id(&transcript.session.id),
+        display_safe_label(transcript.session.title.as_deref().unwrap_or("(untitled)")),
+        display_safe_id(&new_session_id)
     );
     launch_chat_session(
         storage,
@@ -3037,27 +3048,39 @@ impl DaemonClient {
             .json(body)
             .send()
             .await
-            .with_context(|| format!("request failed: {url}"))?;
+            .with_context(|| format!("request failed: {}", display_safe_url(&url)))?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             bail!(
                 "daemon returned {}: {}",
                 status,
-                redact_sensitive_text(&body)
+                agent_core::display_safe_error(&body)
             );
         }
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::new();
         while let Some(chunk) = stream.next().await {
-            let chunk =
-                chunk.with_context(|| format!("failed to read streamed response from {url}"))?;
+            let chunk = chunk.with_context(|| {
+                format!(
+                    "failed to read streamed response from {}",
+                    display_safe_url(&url)
+                )
+            })?;
             buffer.extend_from_slice(&chunk);
-            drain_ndjson_buffer(&mut buffer, false, &mut on_event)
-                .with_context(|| format!("failed to parse streamed daemon response from {url}"))?;
+            drain_ndjson_buffer(&mut buffer, false, &mut on_event).with_context(|| {
+                format!(
+                    "failed to parse streamed daemon response from {}",
+                    display_safe_url(&url)
+                )
+            })?;
         }
-        drain_ndjson_buffer(&mut buffer, true, &mut on_event)
-            .with_context(|| format!("failed to parse streamed daemon response from {url}"))?;
+        drain_ndjson_buffer(&mut buffer, true, &mut on_event).with_context(|| {
+            format!(
+                "failed to parse streamed daemon response from {}",
+                display_safe_url(&url)
+            )
+        })?;
         Ok(())
     }
 
@@ -3075,20 +3098,22 @@ impl DaemonClient {
         let response = request
             .send()
             .await
-            .with_context(|| format!("request failed: {url}"))?;
+            .with_context(|| format!("request failed: {}", display_safe_url(&url)))?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             bail!(
                 "daemon returned {}: {}",
                 status,
-                redact_sensitive_text(&body)
+                agent_core::display_safe_error(&body)
             );
         }
-        response
-            .json::<T>()
-            .await
-            .with_context(|| format!("failed to parse daemon response from {url}"))
+        response.json::<T>().await.with_context(|| {
+            format!(
+                "failed to parse daemon response from {}",
+                display_safe_url(&url)
+            )
+        })
     }
 }
 

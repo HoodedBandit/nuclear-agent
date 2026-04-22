@@ -380,20 +380,25 @@ pub(crate) async fn print_interactive_status(
         .ok_or_else(|| anyhow!("unknown provider '{}'", active_alias.provider_id))?;
     let selected_model = resolved_requested_model(active_alias, requested_model);
     let daemon_status: DaemonStatus = client.get("/v1/status").await?;
-    println!(
-        "session={}",
-        agent_core::redact_sensitive_text(session_id.unwrap_or("(new)"))
-    );
+    let session_display = session_id
+        .map(agent_core::display_safe_id)
+        .unwrap_or_else(|| "(new)".to_string());
+    println!("session={session_display}");
     if let Some(session) = current_session {
         println!("title={}", session.title.as_deref().unwrap_or("(untitled)"));
     }
-    println!("alias={}", active_alias.alias);
-    println!("provider={}", provider.id);
-    println!("model={}", selected_model);
+    println!(
+        "alias={}",
+        agent_core::display_safe_label(&active_alias.alias)
+    );
+    println!("provider={}", agent_core::display_safe_label(&provider.id));
+    println!("model={}", agent_core::display_safe_model(selected_model));
     if let Some(main_target) = daemon_status.main_target.as_ref() {
         println!(
             "main={} ({}/{})",
-            main_target.alias, main_target.provider_id, main_target.model
+            agent_core::display_safe_label(&main_target.alias),
+            agent_core::display_safe_label(&main_target.provider_id),
+            agent_core::display_safe_model(&main_target.model)
         );
     }
     println!("thinking={}", thinking_level_label(thinking_level));

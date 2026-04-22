@@ -2,9 +2,10 @@ use std::{collections::HashSet, path::Path as FsPath};
 
 use crate::{append_log, ApiError, AppState, LimitQuery, SkillDraftQuery};
 use agent_core::{
-    MemoryKind, MemoryRebuildRequest, MemoryRebuildResponse, MemoryRecord, MemoryReviewStatus,
-    MemoryReviewUpdateRequest, MemoryScope, MemorySearchQuery, MemorySearchResponse,
-    MemoryUpsertRequest, SessionTranscript, SkillDraft, SkillDraftStatus,
+    resolve_operator_path, resolve_relative_path_within_root, MemoryKind, MemoryRebuildRequest,
+    MemoryRebuildResponse, MemoryRecord, MemoryReviewStatus, MemoryReviewUpdateRequest,
+    MemoryScope, MemorySearchQuery, MemorySearchResponse, MemoryUpsertRequest, SessionTranscript,
+    SkillDraft, SkillDraftStatus,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -803,8 +804,7 @@ fn collect_system_profile_memories(
             &["workspace_profile", "workspace", "profile"],
         );
 
-        let agents_path = cwd.join("AGENTS.md");
-        if agents_path.is_file() {
+        if let Some(agents_path) = workspace_agents_path(cwd).filter(|path| path.is_file()) {
             push_memory(
                 MemoryKind::Constraint,
                 MemoryScope::Workspace,
@@ -830,6 +830,17 @@ fn collect_system_profile_memories(
 
     memories
 }
+
+fn workspace_agents_path(cwd: &FsPath) -> Option<std::path::PathBuf> {
+    let workspace_root = resolve_operator_path(cwd, "workspace root").ok()?;
+    resolve_relative_path_within_root(
+        &workspace_root,
+        FsPath::new("AGENTS.md"),
+        "workspace AGENTS.md",
+    )
+    .ok()
+}
+
 pub(crate) fn normalize_memory_sentence(value: &str) -> String {
     value
         .trim()
@@ -929,6 +940,18 @@ mod tests {
         assert!(instructions.contains("read_file"));
         assert!(instructions.contains("run_shell"));
         assert!(instructions.contains("Desired outcome"));
+    }
+
+    #[test]
+    fn workspace_agents_path_rejects_traversal_workspace() {
+        let root =
+            std::env::temp_dir().join(format!("agent-daemon-profile-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let escaped = root.join("..").join("escape");
+
+        assert!(workspace_agents_path(&escaped).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

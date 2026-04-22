@@ -1468,6 +1468,40 @@ fn openai_browser_authorization_url_uses_loopback_contract() {
 }
 
 #[test]
+fn manual_auth_url_fallback_file_preserves_url_without_console_secret() {
+    let url = "https://auth.example.test/oauth?state=secret-state&code_challenge=challenge";
+    let path = write_manual_url_fallback_file("OpenAI authorization", url)
+        .expect("manual fallback file should be written");
+    let rendered = std::fs::read_to_string(&path).expect("manual fallback file should be readable");
+
+    assert!(rendered.contains("https://auth.example.test/oauth"));
+    assert!(rendered.contains("state=secret-state&amp;code_challenge=challenge"));
+    assert!(!path.to_string_lossy().contains("secret-state"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn webhook_token_fallback_file_preserves_generated_token_without_path_secret() {
+    let token = "webhook-secret-token";
+    let path = write_webhook_token_fallback_file("../ops/webhook", token)
+        .expect("webhook token fallback file should be written");
+    let rendered = std::fs::read_to_string(&path).expect("webhook token file should be readable");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("fallback file should have a utf-8 file name");
+
+    assert!(rendered.contains(token));
+    assert!(!path.to_string_lossy().contains("webhook-secret-token"));
+    assert!(!file_name.contains(".."));
+    assert!(!file_name.contains('/'));
+    assert!(!file_name.contains('\\'));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn claude_browser_oauth_config_matches_packaged_claude_constants() {
     let config = claude_browser_oauth_config();
     assert_eq!(config.client_id, CLAUDE_BROWSER_CLIENT_ID);

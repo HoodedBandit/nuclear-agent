@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 const REDACTED_VALUE: &str = "[REDACTED]";
 const SENSITIVE_VALUE_KEYS: &[&str] = &[
@@ -23,6 +24,26 @@ const SENSITIVE_VALUE_KEYS: &[&str] = &[
 const TOKEN_PREFIXES: &[&str] = &[
     "sk-", "ghp_", "gho_", "ghu_", "ghs_", "glpat-", "xoxb-", "xoxp-",
 ];
+
+pub fn display_safe_id(value: &str) -> String {
+    display_safe_fingerprint("id", value)
+}
+
+pub fn display_safe_model(value: &str) -> String {
+    redact_sensitive_text(value)
+}
+
+pub fn display_safe_label(value: &str) -> String {
+    redact_sensitive_text(value)
+}
+
+pub fn display_safe_error(value: &str) -> String {
+    redact_sensitive_text(value)
+}
+
+pub fn display_safe_url(value: &str) -> String {
+    display_safe_fingerprint("url", value)
+}
 
 pub fn validate_single_path_component(value: &str, label: &str) -> Result<String> {
     let trimmed = value.trim();
@@ -83,6 +104,8 @@ pub fn resolve_relative_path_within_root(
 }
 
 pub fn resolve_path_within_root(root: &Path, candidate: &Path, label: &str) -> Result<PathBuf> {
+    validate_path_components(root, "managed root")?;
+    validate_path_components(candidate, label)?;
     let root = resolve_existing_ancestor(root, "managed root")?;
     let candidate = if candidate.is_absolute() {
         candidate.to_path_buf()
@@ -104,6 +127,7 @@ pub fn resolve_operator_path(path: &Path, label: &str) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
         bail!("{label} must not be empty");
     }
+    validate_path_components(path, label)?;
     resolve_existing_ancestor(path, label)
 }
 
@@ -111,6 +135,7 @@ pub fn resolve_path_from_existing_parent(path: &Path, label: &str) -> Result<Pat
     if path.as_os_str().is_empty() {
         bail!("{label} must not be empty");
     }
+    validate_path_components(path, label)?;
 
     let parent = path.parent().ok_or_else(|| {
         anyhow!(
@@ -169,6 +194,7 @@ pub fn redact_sensitive_text(text: &str) -> String {
 }
 
 fn resolve_existing_ancestor(path: &Path, label: &str) -> Result<PathBuf> {
+    validate_path_components(path, label)?;
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -204,6 +230,33 @@ fn resolve_existing_ancestor(path: &Path, label: &str) -> Result<PathBuf> {
             )
         })?;
     }
+}
+
+fn validate_path_components(path: &Path, label: &str) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        bail!("{label} must not be empty");
+    }
+    for component in path.components() {
+        if matches!(component, Component::ParentDir) {
+            bail!("{label} must not contain traversal components");
+        }
+    }
+    Ok(())
+}
+
+fn display_safe_fingerprint(label: &str, value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == "-" {
+        return "-".to_string();
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(trimmed.as_bytes());
+    let digest = hasher.finalize();
+    let mut encoded = String::with_capacity(12);
+    for byte in digest.iter().take(6) {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    format!("{label}:{encoded}")
 }
 
 fn normalize_canonical_path(path: PathBuf) -> PathBuf {
@@ -395,6 +448,14 @@ mod tests {
     }
 
     #[test]
+    fn resolve_operator_path_rejects_traversal_components() {
+        let root = temp_dir("agent-core-safety-root");
+        let error =
+            resolve_operator_path(&root.join("..").join("outside"), "operator path").unwrap_err();
+        assert!(error.to_string().contains("traversal"));
+    }
+
+    #[test]
     fn resolve_path_within_root_accepts_non_existing_targets_under_root() {
         let root = temp_dir("agent-core-safety-root");
         let normalized_root = normalize_canonical_path(fs::canonicalize(&root).unwrap());
@@ -449,5 +510,20 @@ mod tests {
         assert!(!serialized.contains("refresh-secret"));
         assert!(!serialized.contains("sk-live-123456"));
         assert!(serialized.contains(REDACTED_VALUE));
+    }
+
+    #[test]
+    fn display_safe_values_do_not_echo_raw_input() {
+        let raw = "session-secret-value";
+        let rendered = display_safe_id(raw);
+
+        assert!(!rendered.contains(raw));
+        assert!(rendered.starts_with("id:"));
+        assert_eq!(rendered, display_safe_id(raw));
+        assert_eq!(display_safe_model("mock-codex"), "mock-codex");
+        assert_eq!(display_safe_label("main"), "main");
+        let redacted_model = display_safe_model("sk-live-123456");
+        assert!(redacted_model.contains(REDACTED_VALUE));
+        assert!(!redacted_model.contains("live-123456"));
     }
 }

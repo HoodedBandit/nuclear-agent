@@ -8,13 +8,13 @@ pub(crate) async fn session_command(storage: &Storage, command: SessionCommands)
             for session in storage.list_sessions(50)? {
                 println!(
                     "{} {} {} {} {} {} {}",
-                    agent_core::redact_sensitive_text(&session.id),
-                    agent_core::redact_sensitive_text(
+                    agent_core::display_safe_id(&session.id),
+                    agent_core::display_safe_label(
                         session.title.as_deref().unwrap_or("(untitled)")
                     ),
-                    agent_core::redact_sensitive_text(&session.alias),
-                    agent_core::redact_sensitive_text(&session.provider_id),
-                    agent_core::redact_sensitive_text(&session.model),
+                    agent_core::display_safe_label(&session.alias),
+                    agent_core::display_safe_label(&session.provider_id),
+                    agent_core::display_safe_model(&session.model),
                     session
                         .cwd
                         .as_deref()
@@ -34,13 +34,13 @@ pub(crate) async fn session_command(storage: &Storage, command: SessionCommands)
             };
             println!(
                 "session={} title={} alias={} provider={} model={}",
-                agent_core::redact_sensitive_text(&transcript.session.id),
-                agent_core::redact_sensitive_text(
+                agent_core::display_safe_id(&transcript.session.id),
+                agent_core::display_safe_label(
                     transcript.session.title.as_deref().unwrap_or("(untitled)")
                 ),
-                agent_core::redact_sensitive_text(&transcript.session.alias),
-                agent_core::redact_sensitive_text(&transcript.session.provider_id),
-                agent_core::redact_sensitive_text(&transcript.session.model)
+                agent_core::display_safe_label(&transcript.session.alias),
+                agent_core::display_safe_label(&transcript.session.provider_id),
+                agent_core::display_safe_model(&transcript.session.model)
             );
             for message in transcript.messages {
                 println!(
@@ -62,8 +62,8 @@ pub(crate) async fn session_command(storage: &Storage, command: SessionCommands)
             storage.rename_session(&id, title)?;
             println!(
                 "renamed session={} title={}",
-                agent_core::redact_sensitive_text(&id),
-                agent_core::redact_sensitive_text(title)
+                agent_core::display_safe_id(&id),
+                agent_core::display_safe_label(title)
             );
         }
     }
@@ -480,10 +480,7 @@ pub(crate) async fn mission_command(storage: &Storage, command: MissionCommands)
                     checkpoint.created_at, checkpoint.status, checkpoint.summary
                 );
                 if let Some(session_id) = checkpoint.session_id {
-                    println!(
-                        "  session={}",
-                        agent_core::redact_sensitive_text(&session_id)
-                    );
+                    println!("  session={}", agent_core::display_safe_id(&session_id));
                 }
             }
         }

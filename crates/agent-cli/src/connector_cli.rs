@@ -784,10 +784,10 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
                 for connector in connectors {
                     println!(
                         "{} [{}] enabled={} account={} cli_path={} require_pairing_approval={} monitored_groups={} allowed_groups={} users={} alias={} model={} cwd={}",
-                        agent_core::redact_sensitive_text(&connector.id),
-                        agent_core::redact_sensitive_text(&connector.name),
+                        agent_core::display_safe_id(&connector.id),
+                        agent_core::display_safe_label(&connector.name),
                         connector.enabled,
-                        agent_core::redact_sensitive_text(&connector.account),
+                        agent_core::display_safe_id(&connector.account),
                         connector
                             .cli_path
                             .as_ref()
@@ -797,8 +797,8 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
                         format_string_list(&connector.monitored_group_ids),
                         format_string_list(&connector.allowed_group_ids),
                         format_string_list(&connector.allowed_user_ids),
-                        agent_core::redact_sensitive_text(connector.alias.as_deref().unwrap_or("-")),
-                        agent_core::redact_sensitive_text(
+                        agent_core::display_safe_label(connector.alias.as_deref().unwrap_or("-")),
+                        agent_core::display_safe_model(
                             connector.requested_model.as_deref().unwrap_or("-")
                         ),
                         connector
@@ -819,15 +819,12 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
             if json {
                 println!("{}", serde_json::to_string_pretty(&connector)?);
             } else {
-                println!("id={}", agent_core::redact_sensitive_text(&connector.id));
-                println!(
-                    "name={}",
-                    agent_core::redact_sensitive_text(&connector.name)
-                );
+                println!("id={}", agent_core::display_safe_id(&connector.id));
+                println!("name={}", agent_core::display_safe_label(&connector.name));
                 println!("enabled={}", connector.enabled);
                 println!(
                     "account={}",
-                    agent_core::redact_sensitive_text(&connector.account)
+                    agent_core::display_safe_id(&connector.account)
                 );
                 println!(
                     "cli_path={}",
@@ -853,10 +850,15 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
                     "allowed_user_ids={}",
                     format_string_list(&connector.allowed_user_ids)
                 );
-                println!("alias={}", connector.alias.as_deref().unwrap_or("-"));
+                println!(
+                    "alias={}",
+                    agent_core::display_safe_label(connector.alias.as_deref().unwrap_or("-"))
+                );
                 println!(
                     "model={}",
-                    connector.requested_model.as_deref().unwrap_or("-")
+                    agent_core::display_safe_model(
+                        connector.requested_model.as_deref().unwrap_or("-")
+                    )
                 );
                 println!(
                     "cwd={}",
@@ -900,8 +902,8 @@ pub(crate) async fn signal_command(storage: &Storage, command: SignalCommands) -
             }
             println!(
                 "signal='{}' configured account={} monitored_groups={} allowed_groups={} users={} auto_poll=daemon",
-                agent_core::redact_sensitive_text(&connector.id),
-                agent_core::redact_sensitive_text(&connector.account),
+                agent_core::display_safe_id(&connector.id),
+                agent_core::display_safe_id(&connector.account),
                 format_string_list(&connector.monitored_group_ids),
                 format_string_list(&connector.allowed_group_ids),
                 format_string_list(&connector.allowed_user_ids)

@@ -1116,6 +1116,20 @@ fn extract_error_redacts_nested_secret_fields() {
 }
 
 #[test]
+fn provider_error_for_display_does_not_echo_secret_response_text() {
+    let message = provider_error_for_display(&json!({
+        "error": {
+            "message": "request failed for Bearer sk-live-123456 refresh_token=refresh-secret"
+        }
+    }));
+
+    assert!(!message.contains("sk-live-123456"));
+    assert!(!message.contains("refresh-secret"));
+    assert!(message.contains("[REDACTED]"));
+    assert!(message.contains("request failed"));
+}
+
+#[test]
 fn refresh_keeps_existing_refresh_token_when_provider_omits_it() {
     let (token_url, request_rx) = spawn_json_server(json!({
         "access_token": "access-456",
