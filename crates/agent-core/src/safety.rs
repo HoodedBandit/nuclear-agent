@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn resolve_path_within_root_accepts_non_existing_targets_under_root() {
         let root = temp_dir("agent-core-safety-root");
-        let normalized_root = normalize_canonical_path(fs::canonicalize(&root).unwrap());
+        let normalized_root = resolve_operator_path(&root, "test root").unwrap();
         let target = resolve_relative_path_within_root(
             &root,
             Path::new("nested/output/file.txt"),
@@ -483,13 +483,14 @@ mod tests {
     #[test]
     fn resolve_path_from_existing_parent_accepts_non_existing_targets() {
         let root = temp_dir("agent-core-safety-parent");
+        let normalized_root = resolve_operator_path(&root, "test root").unwrap();
         let target = resolve_path_from_existing_parent(
             &root.join("nested").join("artifact.json"),
             "artifact path",
         )
         .unwrap();
 
-        assert!(target.starts_with(normalize_canonical_path(fs::canonicalize(&root).unwrap())));
+        assert!(target.starts_with(normalized_root));
         assert!(target.ends_with(Path::new("nested").join("artifact.json")));
     }
 
