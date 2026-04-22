@@ -290,7 +290,8 @@ mod tests {
 
         let found = find_git_root(&nested).unwrap();
 
-        assert_eq!(found, root);
+        let expected = resolve_operator_path(&root, "expected git root").unwrap();
+        assert_eq!(found, expected);
     }
 
     #[test]
