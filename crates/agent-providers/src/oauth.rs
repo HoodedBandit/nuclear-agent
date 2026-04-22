@@ -295,8 +295,25 @@ fn post_validated_token_endpoint(
     provider: &ProviderConfig,
 ) -> Result<reqwest::RequestBuilder> {
     let url = oauth_token_url(provider)?;
-    validate_oauth_post_endpoint(provider, &url)?;
-    Ok(client.post(url))
+    let host = url.host_str().ok_or_else(|| {
+        anyhow!(
+            "provider '{}' OAuth token URL is missing a host",
+            provider.id
+        )
+    })?;
+    match url.scheme() {
+        "https" => Ok(client.post(url)),
+        "http" if is_loopback_host(host) => Ok(client.post(url)),
+        "http" => bail!(
+            "provider '{}' OAuth token URL must use https unless it targets localhost or a loopback address",
+            provider.id
+        ),
+        scheme => bail!(
+            "provider '{}' OAuth token URL must use https or loopback-local http; found '{}'",
+            provider.id,
+            scheme
+        ),
+    }
 }
 
 fn validate_oauth_post_endpoint(provider: &ProviderConfig, url: &Url) -> Result<()> {

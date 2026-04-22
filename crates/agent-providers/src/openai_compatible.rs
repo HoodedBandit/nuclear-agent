@@ -10,7 +10,7 @@ pub async fn compute_embedding(
     text: &str,
     dimensions: Option<u32>,
 ) -> Result<Vec<f32>> {
-    let url = format!("{}/embeddings", trim_slash(&provider.base_url));
+    let url = provider_endpoint_url(provider, "embeddings", "embeddings")?;
     let mut body = json!({
         "input": text,
         "model": model,
@@ -20,7 +20,7 @@ pub async fn compute_embedding(
             body["dimensions"] = json!(dims);
         }
     }
-    let request = client.post(&url).json(&body);
+    let request = client.post(url).json(&body);
     let request = apply_auth(client, provider, request).await?;
     let response = request.send().await.context("embedding request failed")?;
     let status = response.status();
@@ -56,7 +56,7 @@ pub(crate) async fn list_openai_models(
     api_key_override: Option<&str>,
     oauth_token_override: Option<&OAuthToken>,
 ) -> Result<Vec<String>> {
-    let url = format!("{}/models", trim_slash(&provider.base_url));
+    let url = provider_endpoint_url(provider, "models", "models")?;
     let request = apply_auth_with_overrides(
         client,
         provider,
@@ -115,7 +115,7 @@ pub(crate) async fn run_openai_compatible(
     tools: &[ToolDefinition],
 ) -> Result<ProviderReply> {
     validate_tool_definitions(tools, "OpenAI-compatible")?;
-    let url = format!("{}/chat/completions", trim_slash(&provider.base_url));
+    let url = provider_endpoint_url(provider, "chat/completions", "chat completions")?;
     let mut payload = json!({
         "model": model,
         "messages": messages_to_openai(messages)?,

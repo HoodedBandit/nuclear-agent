@@ -97,7 +97,8 @@ def sanitize_artifact_payload(payload: Any) -> Any:
 
 def write_json_artifact(path: Path, payload: Any) -> None:
     sanitized = sanitize_artifact_payload(payload)
-    path.write_text(json.dumps(sanitized, indent=2), encoding="utf-8")
+    serialized = json.dumps(sanitized, indent=2)
+    path.write_text(sanitize_text(serialized), encoding="utf-8")
 
 
 def read_json(path: Path) -> Any:

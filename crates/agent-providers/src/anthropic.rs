@@ -9,7 +9,7 @@ pub(crate) async fn list_anthropic_models(
     api_key_override: Option<&str>,
     oauth_token_override: Option<&OAuthToken>,
 ) -> Result<Vec<String>> {
-    let url = format!("{}/v1/models", trim_slash(&provider.base_url));
+    let url = provider_endpoint_url(provider, "v1/models", "models")?;
     let request = match provider.auth_mode {
         AuthMode::ApiKey => {
             let api_key = match api_key_override {
@@ -74,7 +74,7 @@ pub(crate) async fn run_anthropic(
     tools: &[ToolDefinition],
 ) -> Result<ProviderReply> {
     validate_tool_definitions(tools, "Anthropic")?;
-    let url = format!("{}/v1/messages", trim_slash(&provider.base_url));
+    let url = provider_endpoint_url(provider, "v1/messages", "messages")?;
     let request = match provider.auth_mode {
         AuthMode::ApiKey => {
             let api_key = api_key_for(provider)?;

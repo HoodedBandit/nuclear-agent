@@ -176,6 +176,53 @@ fn trim_slash(url: &str) -> &str {
     url.trim_end_matches('/')
 }
 
+fn provider_endpoint_url(provider: &ProviderConfig, suffix: &str, label: &str) -> Result<Url> {
+    let base_url = format!("{}/", trim_slash(&provider.base_url));
+    let base = Url::parse(&base_url)
+        .with_context(|| format!("provider '{}' has an invalid base URL", provider.id))?;
+    let endpoint = base
+        .join(suffix.trim_start_matches('/'))
+        .with_context(|| format!("failed to build {label} URL"))?;
+    validate_provider_transport(provider, &endpoint, label)?;
+    Ok(endpoint)
+}
+
+fn validate_provider_transport(provider: &ProviderConfig, url: &Url, label: &str) -> Result<()> {
+    if matches!(provider.auth_mode, AuthMode::None) {
+        return Ok(());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("provider '{}' {label} URL is missing a host", provider.id))?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_host(host) => Ok(()),
+        "http" => bail!(
+            "provider '{}' {label} URL must use https unless it targets localhost or a loopback address",
+            provider.id
+        ),
+        scheme => bail!(
+            "provider '{}' {label} URL must use https or loopback-local http; found '{}'",
+            provider.id,
+            scheme
+        ),
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let candidate = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    candidate
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 fn supports_local_model_listing_fallback(provider: &ProviderConfig, status: StatusCode) -> bool {
     provider.local
         && provider.default_model.is_some()

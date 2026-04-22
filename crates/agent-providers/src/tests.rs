@@ -110,6 +110,66 @@ fn local_openai_provider_can_fallback_when_models_endpoint_is_missing() {
 }
 
 #[test]
+fn provider_endpoint_url_rejects_remote_http_before_authenticated_requests() {
+    let provider = ProviderConfig {
+        id: "remote-http".to_string(),
+        display_name: "Remote HTTP".to_string(),
+        kind: ProviderKind::OpenAiCompatible,
+        base_url: "http://example.invalid/v1".to_string(),
+        auth_mode: AuthMode::ApiKey,
+        default_model: Some("model".to_string()),
+        keychain_account: Some("remote-http".to_string()),
+        oauth: None,
+        local: false,
+    };
+
+    let error = provider_endpoint_url(&provider, "models", "models").unwrap_err();
+
+    assert!(error.to_string().contains("https"));
+}
+
+#[test]
+fn provider_endpoint_url_preserves_remote_http_for_unauthenticated_providers() {
+    let provider = ProviderConfig {
+        id: "remote-http".to_string(),
+        display_name: "Remote HTTP".to_string(),
+        kind: ProviderKind::OpenAiCompatible,
+        base_url: "http://example.invalid/v1".to_string(),
+        auth_mode: AuthMode::None,
+        default_model: Some("model".to_string()),
+        keychain_account: None,
+        oauth: None,
+        local: false,
+    };
+
+    let url = provider_endpoint_url(&provider, "models", "models").unwrap();
+
+    assert_eq!(url.as_str(), "http://example.invalid/v1/models");
+}
+
+#[test]
+fn provider_endpoint_url_allows_https_and_loopback_http() {
+    let mut provider = ProviderConfig {
+        id: "secure".to_string(),
+        display_name: "Secure".to_string(),
+        kind: ProviderKind::OpenAiCompatible,
+        base_url: "https://api.example.invalid/v1".to_string(),
+        auth_mode: AuthMode::ApiKey,
+        default_model: Some("model".to_string()),
+        keychain_account: Some("secure".to_string()),
+        oauth: None,
+        local: false,
+    };
+
+    let https = provider_endpoint_url(&provider, "models", "models").unwrap();
+    assert_eq!(https.as_str(), "https://api.example.invalid/v1/models");
+
+    provider.base_url = "http://127.0.0.1:8080/v1".to_string();
+    let loopback = provider_endpoint_url(&provider, "models", "models").unwrap();
+    assert_eq!(loopback.as_str(), "http://127.0.0.1:8080/v1/models");
+}
+
+#[test]
 fn validate_default_model_accepts_available_model() {
     let provider = ProviderConfig {
         id: "local".to_string(),
