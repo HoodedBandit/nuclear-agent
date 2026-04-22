@@ -196,8 +196,13 @@ pub fn redact_sensitive_text(text: &str) -> String {
 
 fn resolve_existing_ancestor(path: &Path, label: &str) -> Result<PathBuf> {
     validate_path_components(path, label)?;
-    let absolute = std::path::absolute(path)
-        .with_context(|| format!("failed to resolve absolute path for {label}"))?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .with_context(|| format!("failed to resolve current directory for {label}"))?
+            .join(path)
+    };
     normalize_lexical_path(&absolute, label)
 }
 
