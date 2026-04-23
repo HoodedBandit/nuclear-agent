@@ -27,8 +27,26 @@ const unixExecutables = [
   path.join(repoRoot, "target", "debug", "nuclear"),
 ];
 const rebuildExtensions = new Set([".rs", ".html", ".css", ".js", ".cjs", ".toml", ".lock", ".ts", ".tsx"]);
-const currentVersion = "0.8.3";
-const candidateVersion = "0.8.4";
+function readWorkspaceVersion() {
+  const cargoToml = fs.readFileSync(path.join(repoRoot, "Cargo.toml"), "utf8");
+  const workspaceMatch = cargoToml.match(/\[workspace\.package\][\s\S]*?^\s*version\s*=\s*"([^"]+)"/m);
+  if (!workspaceMatch) {
+    throw new Error("failed to read workspace package version from Cargo.toml");
+  }
+  return workspaceMatch[1];
+}
+
+function nextPatchVersion(version) {
+  const parts = version.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part))) {
+    throw new Error(`unsupported dashboard e2e version format: ${version}`);
+  }
+  parts[2] += 1;
+  return parts.join(".");
+}
+
+const currentVersion = readWorkspaceVersion();
+const candidateVersion = nextPatchVersion(currentVersion);
 
 let mockServer = null;
 let releaseServer = null;
@@ -296,6 +314,8 @@ function writeE2EConfig(configPath) {
         inboxPath: inboxDir,
         pluginPath: pluginSourceDir,
         attachmentPath,
+        currentVersion,
+        candidateVersion,
       },
       null,
       2
