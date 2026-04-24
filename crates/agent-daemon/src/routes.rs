@@ -65,7 +65,7 @@ use crate::{
     upsert_inbox_connector, upsert_mcp_server, upsert_memory, upsert_provider,
     upsert_signal_connector, upsert_slack_connector, upsert_telegram_connector,
     upsert_webhook_connector, workspace_diff_route, workspace_init_agents_route,
-    workspace_shell_route, ApiError, AppState,
+    workspace_shell_route, ApiError, AppState, ExecutionCancellation,
 };
 use crate::{
     execute_batch_request, execute_task_request, execute_task_request_with_events,
@@ -637,7 +637,8 @@ async fn run_task_stream(
     let provider = provider.clone();
 
     tokio::spawn(async move {
-        let mut emit = best_effort_stream_emitter(tx);
+        let cancellation = ExecutionCancellation::default();
+        let mut emit = best_effort_stream_emitter(tx, cancellation.clone());
         if let Err(error) = execute_task_request_with_events(
             &state,
             &alias,
@@ -656,7 +657,7 @@ async fn run_task_stream(
                 persist: !payload.ephemeral,
                 background: false,
                 delegation_depth: 0,
-                cancellation: None,
+                cancellation: Some(cancellation),
             },
             &mut emit,
         )
@@ -687,14 +688,17 @@ async fn run_task_stream(
 
 fn best_effort_stream_emitter(
     tx: tokio::sync::mpsc::Sender<Bytes>,
+    cancellation: ExecutionCancellation,
 ) -> impl FnMut(RunTaskStreamEvent) -> Pin<Box<dyn Future<Output = bool> + Send>> {
     let connected = Arc::new(AtomicBool::new(true));
     move |event| {
         let tx = tx.clone();
         let connected = Arc::clone(&connected);
+        let cancellation = cancellation.clone();
         Box::pin(async move {
             if !connected.load(Ordering::Relaxed) {
-                return true;
+                cancellation.cancel();
+                return false;
             }
 
             let delivered = match serde_json::to_string(&event) {
@@ -703,6 +707,8 @@ fn best_effort_stream_emitter(
             };
             if !delivered {
                 connected.store(false, Ordering::Relaxed);
+                cancellation.cancel();
+                return false;
             }
             true
         })
@@ -860,19 +866,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn best_effort_stream_emitter_ignores_disconnects() {
+    async fn best_effort_stream_emitter_reports_disconnects() {
         let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(1);
         drop(rx);
 
-        let mut emit = best_effort_stream_emitter(tx);
+        let cancellation = ExecutionCancellation::default();
+        let mut emit = best_effort_stream_emitter(tx, cancellation.clone());
         assert!(
-            emit(RunTaskStreamEvent::Error {
+            !emit(RunTaskStreamEvent::Error {
                 message: "first".to_string(),
             })
             .await
         );
+        assert!(cancellation.is_cancelled());
         assert!(
-            emit(RunTaskStreamEvent::Error {
+            !emit(RunTaskStreamEvent::Error {
                 message: "second".to_string(),
             })
             .await

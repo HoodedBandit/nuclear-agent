@@ -1,6 +1,6 @@
 import type { FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getJson, postJson, putJson } from "../../api/client";
 import type {
   InputAttachment,
@@ -22,8 +22,15 @@ import { TranscriptPanel } from "./panels/TranscriptPanel";
 export function ChatPage() {
   const { aliases, sessions, mainAgentAlias } = useChatBootstrap();
   const queryClient = useQueryClient();
+  const aliasNames = aliases.map((entry) => entry.alias);
+  const aliasKey = aliasNames.join("\u0000");
+  const preferredAlias =
+    mainAgentAlias && aliasNames.includes(mainAgentAlias)
+      ? mainAgentAlias
+      : aliasNames[0] || "main";
   const [prompt, setPrompt] = useState("");
-  const [alias, setAlias] = useState(mainAgentAlias || "main");
+  const [alias, setAlias] = useState(preferredAlias);
+  const userSelectedAliasRef = useRef(false);
   const [thinking, setThinking] = useState<ThinkingLevel>("medium");
   const [cwd, setCwd] = useState("");
   const [taskMode, setTaskMode] = useState<TaskMode | "">("");
@@ -38,6 +45,22 @@ export function ChatPage() {
   const [resumePacket, setResumePacket] = useState<SessionResumePacket | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const currentAliasNames = aliasKey ? aliasKey.split("\u0000") : [];
+    const aliasStillValid =
+      currentAliasNames.includes(alias) || (alias === "main" && currentAliasNames.length === 0);
+    if (userSelectedAliasRef.current && aliasStillValid) {
+      return;
+    }
+    userSelectedAliasRef.current = false;
+    setAlias(preferredAlias);
+  }, [alias, aliasKey, preferredAlias]);
+
+  function selectAlias(value: string) {
+    userSelectedAliasRef.current = true;
+    setAlias(value);
+  }
 
   function resetDraftRunState() {
     setAttachments([]);
@@ -92,7 +115,7 @@ export function ChatPage() {
     resetDraftRunState();
     await loadSessionContext(sessionSummary.id);
     setResponse(null);
-    setAlias(sessionSummary.alias);
+    selectAlias(sessionSummary.alias);
     setTaskMode(sessionSummary.task_mode || "");
     setCwd(sessionSummary.cwd || "");
   }
@@ -181,7 +204,7 @@ export function ChatPage() {
         busy={busy}
         error={error}
         onPromptChange={setPrompt}
-        onAliasChange={setAlias}
+        onAliasChange={selectAlias}
         onThinkingChange={setThinking}
         onCwdChange={setCwd}
         onTaskModeChange={setTaskMode}
@@ -216,7 +239,7 @@ export function ChatPage() {
             void openSession(entry);
           }}
           onUseTarget={(entry) => {
-            setAlias(entry.alias);
+            selectAlias(entry.alias);
             setCwd(entry.cwd || "");
           }}
         />

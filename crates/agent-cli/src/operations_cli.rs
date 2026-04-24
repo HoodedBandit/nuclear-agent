@@ -720,7 +720,7 @@ pub(crate) async fn support_bundle_command(
             .paths()
             .data_dir
             .join("support-bundles")
-            .join(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string())
+            .join(unique_support_bundle_dir_name(chrono::Utc::now()))
     });
     fs::create_dir_all(&bundle_dir).with_context(|| {
         format!(
@@ -866,9 +866,18 @@ async fn gather_health_report(storage: &Storage) -> Result<HealthReport> {
 }
 
 fn write_json_file(path: &Path, value: &impl Serialize) -> Result<()> {
-    let content =
-        serde_json::to_string_pretty(value).context("failed to serialize bundle content")?;
+    let value = serde_json::to_value(value).context("failed to serialize bundle content")?;
+    let content = serde_json::to_string_pretty(&agent_core::redact_sensitive_json_value(&value))
+        .context("failed to serialize bundle content")?;
     fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn unique_support_bundle_dir_name(generated_at: chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "{}-{}",
+        generated_at.format("%Y%m%d-%H%M%S"),
+        Uuid::new_v4().simple()
+    )
 }
 
 fn load_optional_json_file(path: &Path) -> Result<Option<serde_json::Value>> {
@@ -938,5 +947,48 @@ mod tests {
         assert!(output_dir.join("logs.json").exists());
         assert!(output_dir.join("sessions.json").exists());
         assert!(output_dir.join("README.md").exists());
+    }
+
+    #[test]
+    fn support_bundle_json_writer_redacts_sensitive_values() {
+        let root = std::env::temp_dir().join(format!(
+            "nuclear-support-bundle-redaction-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("artifact.json");
+
+        write_json_file(
+            &path,
+            &serde_json::json!({
+                "api_key": "sk-live-123456",
+                "nested": {
+                    "refresh_token": "refresh-secret",
+                    "message": "Bearer sk-live-abcdef"
+                },
+                "jwt": "eyJhbGciOiJIUzI1Ni.eyJzdWIiOiIxMjM0NTYifQ.signature"
+            }),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("sk-live-123456"));
+        assert!(!content.contains("refresh-secret"));
+        assert!(!content.contains("sk-live-abcdef"));
+        assert!(!content.contains("eyJhbGciOiJIUzI1Ni"));
+        assert!(content.contains("[REDACTED]"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_bundle_default_names_are_unique_with_timestamp_prefix() {
+        let generated_at = chrono::Utc::now();
+        let first = unique_support_bundle_dir_name(generated_at);
+        let second = unique_support_bundle_dir_name(generated_at);
+        let prefix = generated_at.format("%Y%m%d-%H%M%S").to_string();
+
+        assert!(first.starts_with(&prefix));
+        assert!(second.starts_with(&prefix));
+        assert_ne!(first, second);
     }
 }

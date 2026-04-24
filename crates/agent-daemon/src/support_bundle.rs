@@ -12,6 +12,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{
     append_log, collect_plugin_doctor_reports, control::build_daemon_status, ApiError, AppState,
@@ -233,12 +234,19 @@ fn resolve_support_bundle_dir(
         Some(path) => resolve_requested_support_bundle_dir(path),
         None => resolve_relative_path_within_root(
             data_dir,
-            &PathBuf::from("support-bundles")
-                .join(generated_at.format("%Y%m%d-%H%M%S").to_string()),
+            &PathBuf::from("support-bundles").join(unique_support_bundle_dir_name(generated_at)),
             "support bundle output directory",
         )
         .map_err(internal_error),
     }
+}
+
+fn unique_support_bundle_dir_name(generated_at: chrono::DateTime<Utc>) -> String {
+    format!(
+        "{}-{}",
+        generated_at.format("%Y%m%d-%H%M%S"),
+        Uuid::new_v4().simple()
+    )
 }
 
 fn resolve_requested_support_bundle_dir(path: &Path) -> Result<PathBuf, ApiError> {
@@ -299,9 +307,14 @@ mod tests {
             resolve_operator_path(&data_dir, "support bundle data directory").unwrap();
 
         let bundle_dir = resolve_support_bundle_dir(&data_dir, generated_at, None).unwrap();
+        let timestamp = generated_at.format("%Y%m%d-%H%M%S").to_string();
 
         assert!(bundle_dir.starts_with(&normalized_data_dir));
-        assert!(bundle_dir.ends_with(generated_at.format("%Y%m%d-%H%M%S").to_string()));
+        assert!(bundle_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&timestamp));
     }
 
     #[test]
@@ -316,6 +329,28 @@ mod tests {
             resolve_support_bundle_dir(&data_dir, Utc::now(), Some(requested.as_path())).unwrap();
 
         assert_eq!(bundle_dir, normalized_requested);
+    }
+
+    #[test]
+    fn resolve_support_bundle_dir_uses_unique_timestamp_prefixed_defaults() {
+        let data_dir = temp_dir("support-bundle-default-unique");
+        let generated_at = Utc::now();
+        let first = resolve_support_bundle_dir(&data_dir, generated_at, None).unwrap();
+        let second = resolve_support_bundle_dir(&data_dir, generated_at, None).unwrap();
+        let timestamp = generated_at.format("%Y%m%d-%H%M%S").to_string();
+
+        assert_ne!(first, second);
+        assert!(first
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&timestamp));
+        assert!(second
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&timestamp));
+        let _ = fs::remove_dir_all(data_dir);
     }
 
     #[test]

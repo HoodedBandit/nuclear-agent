@@ -1,4 +1,5 @@
 use super::*;
+use crate::commit_config_update;
 use agent_providers::{delete_secret, load_api_key, store_api_key};
 use sha2::{Digest, Sha256};
 
@@ -58,6 +59,23 @@ fn cleanup_upserted_secret(new_account: Option<&str>, previous_account: Option<&
     }
 }
 
+fn cleanup_secret_after_commit(state: &AppState, scope: &str, label: &str, account: Option<&str>) {
+    let Some(account) = account.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if let Err(error) = delete_secret(account) {
+        let _ = append_log(
+            state,
+            "warn",
+            scope,
+            format!(
+                "failed to clean up {label}: {}",
+                agent_core::display_safe_error(&error.to_string())
+            ),
+        );
+    }
+}
+
 fn brave_api_key_account_in_use(connectors: &[BraveConnectorConfig], account: &str) -> bool {
     connectors.iter().any(|connector| {
         connector.api_key_keychain_account.as_deref().map(str::trim) == Some(account)
@@ -95,11 +113,11 @@ pub(crate) async fn upsert_app_connector(
     State(state): State<AppState>,
     Json(payload): Json<AppConnectorUpsertRequest>,
 ) -> Result<Json<AppConnectorConfig>, ApiError> {
-    {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         config.upsert_app_connector(payload.connector.clone());
-        state.storage.save_config(&config)?;
-    }
+        Ok(())
+    })
+    .await?;
     append_log(
         &state,
         "info",
@@ -113,20 +131,17 @@ pub(crate) async fn delete_app_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let removed = {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         let removed = config.remove_app_connector(&connector_id);
-        if removed {
-            state.storage.save_config(&config)?;
+        if !removed {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown app connector",
+            ));
         }
-        removed
-    };
-    if !removed {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown app connector",
-        ));
-    }
+        Ok(())
+    })
+    .await?;
     append_log(
         &state,
         "info",
@@ -168,8 +183,7 @@ pub(crate) async fn upsert_webhook_connector(
             "webhook connector prompt_template must not be empty",
         ));
     }
-    {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         let existing_sha256 = config
             .webhook_connectors
             .iter()
@@ -181,8 +195,9 @@ pub(crate) async fn upsert_webhook_connector(
             payload.clear_webhook_token,
         );
         config.upsert_webhook_connector(connector.clone());
-        state.storage.save_config(&config)?;
-    }
+        Ok(())
+    })
+    .await?;
     append_log(
         &state,
         "info",
@@ -196,20 +211,17 @@ pub(crate) async fn delete_webhook_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let removed = {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         let removed = config.remove_webhook_connector(&connector_id);
-        if removed {
-            state.storage.save_config(&config)?;
+        if !removed {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown webhook connector",
+            ));
         }
-        removed
-    };
-    if !removed {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown webhook connector",
-        ));
-    }
+        Ok(())
+    })
+    .await?;
     append_log(
         &state,
         "info",
@@ -250,11 +262,11 @@ pub(crate) async fn upsert_inbox_connector(
             "inbox connector path must not be empty",
         ));
     }
-    {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         config.upsert_inbox_connector(payload.connector.clone());
-        state.storage.save_config(&config)?;
-    }
+        Ok(())
+    })
+    .await?;
     append_log(
         &state,
         "info",
@@ -268,20 +280,17 @@ pub(crate) async fn delete_inbox_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let removed = {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         let removed = config.remove_inbox_connector(&connector_id);
-        if removed {
-            state.storage.save_config(&config)?;
+        if !removed {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown inbox connector",
+            ));
         }
-        removed
-    };
-    if !removed {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown inbox connector",
-        ));
-    }
+        Ok(())
+    })
+    .await?;
     append_log(
         &state,
         "info",
@@ -429,20 +438,17 @@ pub(crate) async fn upsert_discord_connector(
         );
         return Err(error);
     }
-    let save_error = {
-        let mut config = state.config.write().await;
+    let save_result = commit_config_update(&state, |config| {
         config.upsert_discord_connector(connector.clone());
-        state.storage.save_config(&config).err()
-    };
-    if let Some(error) = save_error {
+        Ok(())
+    })
+    .await;
+    if let Err(error) = save_result {
         cleanup_upserted_secret(
             connector.bot_token_keychain_account.as_deref(),
             previous_account.as_deref(),
         );
-        return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error.to_string(),
-        ));
+        return Err(error);
     }
     append_log(
         &state,
@@ -486,20 +492,17 @@ pub(crate) async fn upsert_slack_connector(
         );
         return Err(error);
     }
-    let save_error = {
-        let mut config = state.config.write().await;
+    let save_result = commit_config_update(&state, |config| {
         config.upsert_slack_connector(connector.clone());
-        state.storage.save_config(&config).err()
-    };
-    if let Some(error) = save_error {
+        Ok(())
+    })
+    .await;
+    if let Err(error) = save_result {
         cleanup_upserted_secret(
             connector.bot_token_keychain_account.as_deref(),
             previous_account.as_deref(),
         );
-        return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error.to_string(),
-        ));
+        return Err(error);
     }
     append_log(
         &state,
@@ -552,20 +555,17 @@ pub(crate) async fn upsert_home_assistant_connector(
         );
         return Err(error);
     }
-    let save_error = {
-        let mut config = state.config.write().await;
+    let save_result = commit_config_update(&state, |config| {
         config.upsert_home_assistant_connector(connector.clone());
-        state.storage.save_config(&config).err()
-    };
-    if let Some(error) = save_error {
+        Ok(())
+    })
+    .await;
+    if let Err(error) = save_result {
         cleanup_upserted_secret(
             connector.access_token_keychain_account.as_deref(),
             previous_account.as_deref(),
         );
-        return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error.to_string(),
-        ));
+        return Err(error);
     }
     append_log(
         &state,
@@ -597,11 +597,11 @@ pub(crate) async fn upsert_signal_connector(
             ));
         }
     }
-    {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         config.upsert_signal_connector(payload.connector.clone());
-        state.storage.save_config(&config)?;
-    }
+        Ok(())
+    })
+    .await?;
     append_log(
         &state,
         "info",
@@ -638,20 +638,17 @@ pub(crate) async fn upsert_telegram_connector(
         );
         return Err(error);
     }
-    let save_error = {
-        let mut config = state.config.write().await;
+    let save_result = commit_config_update(&state, |config| {
         config.upsert_telegram_connector(connector.clone());
-        state.storage.save_config(&config).err()
-    };
-    if let Some(error) = save_error {
+        Ok(())
+    })
+    .await;
+    if let Err(error) = save_result {
         cleanup_upserted_secret(
             connector.bot_token_keychain_account.as_deref(),
             previous_account.as_deref(),
         );
-        return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error.to_string(),
-        ));
+        return Err(error);
     }
     append_log(
         &state,
@@ -666,17 +663,19 @@ pub(crate) async fn delete_discord_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let (removed_connector, delete_secret_account) = {
-        let mut config = state.config.write().await;
+    let (_removed_connector, delete_secret_account) = commit_config_update(&state, |config| {
         let removed = config
             .discord_connectors
             .iter()
             .find(|connector| connector.id == connector_id)
             .cloned();
-        if removed.is_some() {
-            config.remove_discord_connector(&connector_id);
-            state.storage.save_config(&config)?;
+        if removed.is_none() {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown discord connector",
+            ));
         }
+        config.remove_discord_connector(&connector_id);
         let delete_secret_account = removed
             .as_ref()
             .and_then(|connector| connector.bot_token_keychain_account.as_deref())
@@ -686,22 +685,15 @@ pub(crate) async fn delete_discord_connector(
                 !discord::discord_bot_token_account_in_use(&config.discord_connectors, account)
             })
             .map(ToOwned::to_owned);
-        (removed, delete_secret_account)
-    };
-    if removed_connector.is_none() {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown discord connector",
-        ));
-    }
-    if let Some(account) = delete_secret_account {
-        delete_secret(&account).map_err(|error| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to delete discord bot token: {error}"),
-            )
-        })?;
-    }
+        Ok((removed, delete_secret_account))
+    })
+    .await?;
+    cleanup_secret_after_commit(
+        &state,
+        "discord",
+        "discord bot token",
+        delete_secret_account.as_deref(),
+    );
     append_log(
         &state,
         "info",
@@ -715,17 +707,19 @@ pub(crate) async fn delete_slack_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let (removed_connector, delete_secret_account) = {
-        let mut config = state.config.write().await;
+    let (_removed_connector, delete_secret_account) = commit_config_update(&state, |config| {
         let removed = config
             .slack_connectors
             .iter()
             .find(|connector| connector.id == connector_id)
             .cloned();
-        if removed.is_some() {
-            config.remove_slack_connector(&connector_id);
-            state.storage.save_config(&config)?;
+        if removed.is_none() {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown slack connector",
+            ));
         }
+        config.remove_slack_connector(&connector_id);
         let delete_secret_account = removed
             .as_ref()
             .and_then(|connector| connector.bot_token_keychain_account.as_deref())
@@ -735,22 +729,15 @@ pub(crate) async fn delete_slack_connector(
                 !slack::slack_bot_token_account_in_use(&config.slack_connectors, account)
             })
             .map(ToOwned::to_owned);
-        (removed, delete_secret_account)
-    };
-    if removed_connector.is_none() {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown slack connector",
-        ));
-    }
-    if let Some(account) = delete_secret_account {
-        delete_secret(&account).map_err(|error| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to delete slack bot token: {error}"),
-            )
-        })?;
-    }
+        Ok((removed, delete_secret_account))
+    })
+    .await?;
+    cleanup_secret_after_commit(
+        &state,
+        "slack",
+        "slack bot token",
+        delete_secret_account.as_deref(),
+    );
     append_log(
         &state,
         "info",
@@ -764,17 +751,19 @@ pub(crate) async fn delete_home_assistant_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let (removed_connector, delete_secret_account) = {
-        let mut config = state.config.write().await;
+    let (_removed_connector, delete_secret_account) = commit_config_update(&state, |config| {
         let removed = config
             .home_assistant_connectors
             .iter()
             .find(|connector| connector.id == connector_id)
             .cloned();
-        if removed.is_some() {
-            config.remove_home_assistant_connector(&connector_id);
-            state.storage.save_config(&config)?;
+        if removed.is_none() {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown Home Assistant connector",
+            ));
         }
+        config.remove_home_assistant_connector(&connector_id);
         let delete_secret_account = removed
             .as_ref()
             .and_then(|connector| connector.access_token_keychain_account.as_deref())
@@ -787,22 +776,15 @@ pub(crate) async fn delete_home_assistant_connector(
                 )
             })
             .map(ToOwned::to_owned);
-        (removed, delete_secret_account)
-    };
-    if removed_connector.is_none() {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown Home Assistant connector",
-        ));
-    }
-    if let Some(account) = delete_secret_account {
-        delete_secret(&account).map_err(|error| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to delete Home Assistant token: {error}"),
-            )
-        })?;
-    }
+        Ok((removed, delete_secret_account))
+    })
+    .await?;
+    cleanup_secret_after_commit(
+        &state,
+        "home_assistant",
+        "Home Assistant token",
+        delete_secret_account.as_deref(),
+    );
     append_log(
         &state,
         "info",
@@ -816,24 +798,21 @@ pub(crate) async fn delete_signal_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let removed = {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         let removed = config
             .signal_connectors
             .iter()
             .any(|connector| connector.id == connector_id);
-        if removed {
-            config.remove_signal_connector(&connector_id);
-            state.storage.save_config(&config)?;
+        if !removed {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown signal connector",
+            ));
         }
-        removed
-    };
-    if !removed {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown signal connector",
-        ));
-    }
+        config.remove_signal_connector(&connector_id);
+        Ok(())
+    })
+    .await?;
     append_log(
         &state,
         "info",
@@ -891,20 +870,17 @@ pub(crate) async fn upsert_brave_connector(
         );
         return Err(error);
     }
-    let save_error = {
-        let mut config = state.config.write().await;
+    let save_result = commit_config_update(&state, |config| {
         config.upsert_brave_connector(connector.clone());
-        state.storage.save_config(&config).err()
-    };
-    if let Some(error) = save_error {
+        Ok(())
+    })
+    .await;
+    if let Err(error) = save_result {
         cleanup_upserted_secret(
             connector.api_key_keychain_account.as_deref(),
             previous_account.as_deref(),
         );
-        return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error.to_string(),
-        ));
+        return Err(error);
     }
     append_log(
         &state,
@@ -919,17 +895,19 @@ pub(crate) async fn delete_brave_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let (removed_connector, delete_secret_account) = {
-        let mut config = state.config.write().await;
+    let (_removed_connector, delete_secret_account) = commit_config_update(&state, |config| {
         let removed = config
             .brave_connectors
             .iter()
             .find(|connector| connector.id == connector_id)
             .cloned();
-        if removed.is_some() {
-            config.remove_brave_connector(&connector_id);
-            state.storage.save_config(&config)?;
+        if removed.is_none() {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown brave connector",
+            ));
         }
+        config.remove_brave_connector(&connector_id);
         let delete_secret_account = removed
             .as_ref()
             .and_then(|connector| connector.api_key_keychain_account.as_deref())
@@ -937,22 +915,15 @@ pub(crate) async fn delete_brave_connector(
             .filter(|account| !account.is_empty())
             .filter(|account| !brave_api_key_account_in_use(&config.brave_connectors, account))
             .map(ToOwned::to_owned);
-        (removed, delete_secret_account)
-    };
-    if removed_connector.is_none() {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown brave connector",
-        ));
-    }
-    if let Some(account) = delete_secret_account {
-        delete_secret(&account).map_err(|error| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to delete brave api key: {error}"),
-            )
-        })?;
-    }
+        Ok((removed, delete_secret_account))
+    })
+    .await?;
+    cleanup_secret_after_commit(
+        &state,
+        "brave",
+        "brave api key",
+        delete_secret_account.as_deref(),
+    );
     append_log(
         &state,
         "info",
@@ -1010,20 +981,17 @@ pub(crate) async fn upsert_gmail_connector(
         );
         return Err(error);
     }
-    let save_error = {
-        let mut config = state.config.write().await;
+    let save_result = commit_config_update(&state, |config| {
         config.upsert_gmail_connector(connector.clone());
-        state.storage.save_config(&config).err()
-    };
-    if let Some(error) = save_error {
+        Ok(())
+    })
+    .await;
+    if let Err(error) = save_result {
         cleanup_upserted_secret(
             connector.oauth_keychain_account.as_deref(),
             previous_account.as_deref(),
         );
-        return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error.to_string(),
-        ));
+        return Err(error);
     }
     append_log(
         &state,
@@ -1077,17 +1045,19 @@ pub(crate) async fn delete_gmail_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let (removed_connector, delete_secret_account) = {
-        let mut config = state.config.write().await;
+    let (_removed_connector, delete_secret_account) = commit_config_update(&state, |config| {
         let removed = config
             .gmail_connectors
             .iter()
             .find(|connector| connector.id == connector_id)
             .cloned();
-        if removed.is_some() {
-            config.remove_gmail_connector(&connector_id);
-            state.storage.save_config(&config)?;
+        if removed.is_none() {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown gmail connector",
+            ));
         }
+        config.remove_gmail_connector(&connector_id);
         let delete_secret_account = removed
             .as_ref()
             .and_then(|connector| connector.oauth_keychain_account.as_deref())
@@ -1095,22 +1065,15 @@ pub(crate) async fn delete_gmail_connector(
             .filter(|account| !account.is_empty())
             .filter(|account| !gmail::gmail_oauth_account_in_use(&config.gmail_connectors, account))
             .map(ToOwned::to_owned);
-        (removed, delete_secret_account)
-    };
-    if removed_connector.is_none() {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown gmail connector",
-        ));
-    }
-    if let Some(account) = delete_secret_account {
-        delete_secret(&account).map_err(|error| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to delete gmail OAuth token: {error}"),
-            )
-        })?;
-    }
+        Ok((removed, delete_secret_account))
+    })
+    .await?;
+    cleanup_secret_after_commit(
+        &state,
+        "gmail",
+        "gmail OAuth token",
+        delete_secret_account.as_deref(),
+    );
     append_log(
         &state,
         "info",
@@ -1124,17 +1087,19 @@ pub(crate) async fn delete_telegram_connector(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let (removed_connector, delete_secret_account) = {
-        let mut config = state.config.write().await;
+    let (_removed_connector, delete_secret_account) = commit_config_update(&state, |config| {
         let removed = config
             .telegram_connectors
             .iter()
             .find(|connector| connector.id == connector_id)
             .cloned();
-        if removed.is_some() {
-            config.remove_telegram_connector(&connector_id);
-            state.storage.save_config(&config)?;
+        if removed.is_none() {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown telegram connector",
+            ));
         }
+        config.remove_telegram_connector(&connector_id);
         let delete_secret_account = removed
             .as_ref()
             .and_then(|connector| connector.bot_token_keychain_account.as_deref())
@@ -1144,22 +1109,15 @@ pub(crate) async fn delete_telegram_connector(
                 !telegram::telegram_bot_token_account_in_use(&config.telegram_connectors, account)
             })
             .map(ToOwned::to_owned);
-        (removed, delete_secret_account)
-    };
-    if removed_connector.is_none() {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown telegram connector",
-        ));
-    }
-    if let Some(account) = delete_secret_account {
-        delete_secret(&account).map_err(|error| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to delete telegram bot token: {error}"),
-            )
-        })?;
-    }
+        Ok((removed, delete_secret_account))
+    })
+    .await?;
+    cleanup_secret_after_commit(
+        &state,
+        "telegram",
+        "telegram bot token",
+        delete_secret_account.as_deref(),
+    );
     append_log(
         &state,
         "info",

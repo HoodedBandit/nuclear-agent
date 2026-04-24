@@ -17,6 +17,7 @@ use agent_core::{
 use agent_storage::Storage;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use reqwest::header::USER_AGENT;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,7 @@ const UPDATE_HELPER_BINARY_BASENAME: &str = "nuclear-update-helper";
 const UPDATE_HELPER_SHUTDOWN_DELAY_MS: u64 = 350;
 const UPDATE_HELPER_WAIT_TIMEOUT_SECS: u64 = 180;
 const UPDATE_HELPER_WAIT_POLL_MS: u64 = 250;
+const MAX_UPDATE_ASSET_BYTES: u64 = 256 * 1024 * 1024;
 const RELEASE_ONLY_UPDATE_MESSAGE: &str =
     "Remote updates are available only for packaged installs with a published GitHub Release bundle.";
 
@@ -71,6 +73,7 @@ struct BuildStatusArgs {
     candidate_version: Option<String>,
     candidate_tag: Option<String>,
     candidate_commit: Option<String>,
+    published_at: Option<DateTime<Utc>>,
     detail: Option<String>,
     last_run: Option<UpdateRunSummary>,
 }
@@ -225,6 +228,7 @@ pub(crate) async fn trigger_update(
                     step: Some(UpdateOperationStep::Downloading),
                     candidate_version: Some(candidate.version.clone()),
                     candidate_tag: Some(candidate.tag.clone()),
+                    published_at: candidate.published_at,
                     detail: Some(format!("Downloading {}.", candidate.archive_name)),
                     last_run: last_run.clone(),
                     ..BuildStatusArgs::default()
@@ -242,6 +246,7 @@ pub(crate) async fn trigger_update(
                     step: Some(UpdateOperationStep::Verifying),
                     candidate_version: Some(candidate.version.clone()),
                     candidate_tag: Some(candidate.tag.clone()),
+                    published_at: candidate.published_at,
                     detail: Some(format!("Verifying {}.", candidate.archive_name)),
                     last_run: last_run.clone(),
                     ..BuildStatusArgs::default()
@@ -278,6 +283,7 @@ pub(crate) async fn trigger_update(
                     step: Some(UpdateOperationStep::Applying),
                     candidate_version: plan.candidate_version.clone(),
                     candidate_tag: plan.candidate_tag.clone(),
+                    published_at: plan.published_at,
                     detail: Some("Applying staged package and restarting the daemon.".to_string()),
                     last_run,
                     ..BuildStatusArgs::default()
@@ -517,6 +523,7 @@ async fn check_packaged_update(
                 probe,
                 UpdateAvailabilityState::UpToDate,
                 BuildStatusArgs {
+                    published_at: release.published_at,
                     detail: Some(format!("{} is already current.", probe.current_version)),
                     last_run,
                     ..BuildStatusArgs::default()
@@ -598,7 +605,7 @@ fn build_status(
         candidate_version: args.candidate_version,
         candidate_tag: args.candidate_tag,
         candidate_commit: args.candidate_commit,
-        published_at: None,
+        published_at: args.published_at,
         detail: args.detail,
         last_run: args.last_run,
     }
@@ -691,14 +698,40 @@ async fn download_asset(
             ),
         ));
     }
+    if let Some(length) = response.content_length() {
+        ensure_download_size_within_limit(length, destination)?;
+    }
 
     let mut file = File::create(destination).await.map_err(ApiError::from)?;
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_GATEWAY, error.to_string()))?;
-    file.write_all(&bytes).await.map_err(ApiError::from)?;
+    let mut downloaded = 0_u64;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            ApiError::new(axum::http::StatusCode::BAD_GATEWAY, error.to_string())
+        })?;
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        if let Err(error) = ensure_download_size_within_limit(downloaded, destination) {
+            drop(file);
+            let _ = tokio::fs::remove_file(destination).await;
+            return Err(error);
+        }
+        file.write_all(&chunk).await.map_err(ApiError::from)?;
+    }
     file.flush().await.map_err(ApiError::from)?;
+    Ok(())
+}
+
+fn ensure_download_size_within_limit(size: u64, destination: &Path) -> Result<(), ApiError> {
+    if size > MAX_UPDATE_ASSET_BYTES {
+        return Err(ApiError::new(
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "download for {} exceeds the {} byte update asset limit",
+                destination.display(),
+                MAX_UPDATE_ASSET_BYTES
+            ),
+        ));
+    }
     Ok(())
 }
 
@@ -1510,5 +1543,62 @@ mod tests {
         assert!(!content.contains("sk-live-123456"));
         assert!(!content.contains("refresh-secret"));
         assert!(content.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn build_status_preserves_release_published_at() {
+        let published_at = DateTime::parse_from_rfc3339("2026-04-23T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let probe = InstallProbe {
+            target: UpdateInstallTarget {
+                kind: UpdateInstallKind::Packaged,
+                executable_path: "nuclear".to_string(),
+                install_dir: Some("install".to_string()),
+                repo_root: None,
+                build_profile: None,
+            },
+            current_version: "0.8.0".to_string(),
+            current_commit: None,
+            kind: InstallProbeKind::Packaged {
+                install_dir: PathBuf::from("install"),
+            },
+        };
+
+        let status = build_status(
+            &probe,
+            UpdateAvailabilityState::InProgress,
+            BuildStatusArgs {
+                candidate_version: Some("0.8.1".to_string()),
+                candidate_tag: Some("v0.8.1".to_string()),
+                published_at: Some(published_at),
+                ..BuildStatusArgs::default()
+            },
+        );
+
+        assert_eq!(status.published_at, Some(published_at));
+    }
+
+    #[test]
+    fn update_download_size_guard_rejects_over_limit_assets() {
+        let root = temp_dir("nuclear-update-download-limit");
+        let destination = root.join("nuclear.zip");
+
+        let error = ensure_download_size_within_limit(MAX_UPDATE_ASSET_BYTES + 1, &destination)
+            .unwrap_err();
+
+        assert_eq!(error.status, axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(error.message.contains("exceeds"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn update_download_size_guard_accepts_valid_assets() {
+        let root = temp_dir("nuclear-update-download-valid");
+        let destination = root.join("nuclear.zip");
+
+        ensure_download_size_within_limit(MAX_UPDATE_ASSET_BYTES, &destination).unwrap();
+
+        let _ = fs::remove_dir_all(root);
     }
 }

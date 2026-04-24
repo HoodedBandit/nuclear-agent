@@ -171,15 +171,11 @@ pub(crate) fn print_onboarding_banner(config: &AppConfig) -> Result<()> {
         format!(" directory: {}", directory.display()),
     ];
     let width = lines.iter().map(|line| line.len()).max().unwrap_or(0) + 2;
-    println!("Ã¢â€¢Â­{}Ã¢â€¢Â®", "Ã¢â€â‚¬".repeat(width));
+    println!("+{}+", "-".repeat(width));
     for line in lines {
-        println!(
-            "Ã¢â€â€š {:width$} Ã¢â€â€š",
-            line,
-            width = width.saturating_sub(1)
-        );
+        println!("| {:width$} |", line, width = width.saturating_sub(1));
     }
-    println!("Ã¢â€¢Â°{}Ã¢â€¢Â¯", "Ã¢â€â‚¬".repeat(width));
+    println!("+{}+", "-".repeat(width));
     Ok(())
 }
 

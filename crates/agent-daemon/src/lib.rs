@@ -455,6 +455,18 @@ pub(crate) fn append_log(
     Ok(())
 }
 
+pub(crate) async fn commit_config_update<R>(
+    state: &AppState,
+    update: impl FnOnce(&mut AppConfig) -> std::result::Result<R, ApiError>,
+) -> std::result::Result<R, ApiError> {
+    let mut guard = state.config.write().await;
+    let mut next = guard.clone();
+    let result = update(&mut next)?;
+    state.storage.save_config(&next)?;
+    *guard = next;
+    Ok(result)
+}
+
 #[derive(Debug)]
 struct ApiError {
     pub(crate) status: StatusCode,
@@ -505,7 +517,7 @@ mod tests {
         MissionControlRequest, MissionStatus, ProviderKind, ProviderUpsertRequest, SessionMessage,
         TrustPolicy, WakeTrigger,
     };
-    use std::sync::Arc;
+    use std::{fs, sync::Arc};
 
     fn provider(id: &str, auth_mode: AuthMode, keychain_account: Option<&str>) -> ProviderConfig {
         ProviderConfig {
@@ -574,6 +586,26 @@ mod tests {
             restart_requested: Arc::new(AtomicBool::new(false)),
             rate_limiter: ProviderRateLimiter::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn commit_config_update_keeps_live_config_when_save_fails() {
+        let mut config = config_with_aliases();
+        config.onboarding_complete = false;
+        let state = test_state_with_config(config);
+        let config_path = state.storage.paths().config_path.clone();
+        fs::remove_file(&config_path).unwrap();
+        fs::create_dir(&config_path).unwrap();
+
+        let error = commit_config_update(&state, |config| {
+            config.onboarding_complete = true;
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!state.config.read().await.onboarding_complete);
     }
 
     #[tokio::test]

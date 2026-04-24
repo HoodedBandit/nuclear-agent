@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { DashboardDataProvider } from "../../app/DashboardDataContext";
 import type {
   DashboardBootstrapResponse,
+  ModelAlias,
   SessionResumePacket,
   SessionTranscript
 } from "../../api/types";
@@ -169,7 +170,41 @@ function resumePacketFixture(): SessionResumePacket {
   };
 }
 
-function renderChatPage() {
+function aliasFixture(alias: string, model = "gpt-5.4"): ModelAlias {
+  return {
+    alias,
+    provider_id: "codex",
+    model,
+    description: `${alias} target`
+  };
+}
+
+function bootstrapWithAliases(
+  mainAgentAlias: string,
+  aliases: ModelAlias[]
+): DashboardBootstrapResponse {
+  const bootstrap = bootstrapFixture();
+  const mainAlias = aliases.find((entry) => entry.alias === mainAgentAlias) || aliases[0];
+  return {
+    ...bootstrap,
+    status: {
+      ...bootstrap.status,
+      main_agent_alias: mainAgentAlias,
+      aliases: aliases.length,
+      main_target: mainAlias
+        ? {
+            alias: mainAlias.alias,
+            provider_id: mainAlias.provider_id,
+            provider_display_name: "Codex",
+            model: mainAlias.model
+          }
+        : null
+    },
+    aliases
+  };
+}
+
+function renderChatPage(bootstrap = bootstrapFixture()) {
   const client = new QueryClient({
     defaultOptions: {
       queries: {
@@ -178,16 +213,23 @@ function renderChatPage() {
     }
   });
 
-  render(
+  const renderTree = (currentBootstrap: DashboardBootstrapResponse) => (
     <QueryClientProvider client={client}>
       <DashboardDataProvider
-        bootstrap={bootstrapFixture()}
+        bootstrap={currentBootstrap}
         onLogout={async () => undefined}
       >
         <ChatPage />
       </DashboardDataProvider>
     </QueryClientProvider>
   );
+  const result = render(renderTree(bootstrap));
+  return {
+    ...result,
+    rerenderWithBootstrap: (nextBootstrap: DashboardBootstrapResponse) => {
+      result.rerender(renderTree(nextBootstrap));
+    }
+  };
 }
 
 describe("ChatPage", () => {
@@ -252,5 +294,51 @@ describe("ChatPage", () => {
     expect(screen.getByLabelText("Attachment path")).toHaveValue("");
     expect(screen.getByLabelText("Ephemeral run")).not.toBeChecked();
     expect(screen.getByLabelText("Attachment kind")).toHaveValue("file");
+  });
+
+  it("updates the selected alias when the bootstrap main alias changes", async () => {
+    const { rerenderWithBootstrap } = renderChatPage(
+      bootstrapWithAliases("main", [aliasFixture("main"), aliasFixture("fast", "gpt-5.5")])
+    );
+
+    expect(screen.getByLabelText("Alias")).toHaveValue("main");
+
+    rerenderWithBootstrap(
+      bootstrapWithAliases("fast", [aliasFixture("main"), aliasFixture("fast", "gpt-5.5")])
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Alias")).toHaveValue("fast");
+    });
+  });
+
+  it("preserves a user-selected valid alias across bootstrap refreshes", async () => {
+    const aliases = [
+      aliasFixture("main"),
+      aliasFixture("fast", "gpt-5.5"),
+      aliasFixture("safe", "gpt-5.3")
+    ];
+    const { rerenderWithBootstrap } = renderChatPage(bootstrapWithAliases("main", aliases));
+
+    fireEvent.change(screen.getByLabelText("Alias"), { target: { value: "fast" } });
+    rerenderWithBootstrap(bootstrapWithAliases("safe", aliases));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Alias")).toHaveValue("fast");
+    });
+  });
+
+  it("falls back to the current main alias when the selected alias disappears", async () => {
+    const initialAliases = [aliasFixture("main"), aliasFixture("fast", "gpt-5.5")];
+    const { rerenderWithBootstrap } = renderChatPage(
+      bootstrapWithAliases("main", initialAliases)
+    );
+
+    fireEvent.change(screen.getByLabelText("Alias"), { target: { value: "fast" } });
+    rerenderWithBootstrap(bootstrapWithAliases("main", [aliasFixture("main")]));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Alias")).toHaveValue("main");
+    });
   });
 });

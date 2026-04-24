@@ -32,7 +32,7 @@ use crate::{
         next_event_cursor, parse_event_cursor, EventCursor,
     },
     execute_batch_request, execute_task_request_with_events, resolve_alias_and_provider, ApiError,
-    AppState, DelegationExecutionOptions, TaskRequestInput,
+    AppState, DelegationExecutionOptions, ExecutionCancellation, TaskRequestInput,
 };
 
 const DEFAULT_CONTROL_LOG_LIMIT: usize = 50;
@@ -597,7 +597,12 @@ async fn execute_run_task_request(
 ) -> Result<agent_core::RunTaskResponse, ApiError> {
     let (alias, provider) = resolve_alias_and_provider(state, request.alias.as_deref()).await?;
     let request_id = request_id.to_string();
-    let mut emit = best_effort_control_event_emitter(outbound.clone(), request_id.clone());
+    let cancellation = ExecutionCancellation::default();
+    let mut emit = best_effort_control_event_emitter(
+        outbound.clone(),
+        request_id.clone(),
+        cancellation.clone(),
+    );
 
     execute_task_request_with_events(
         state,
@@ -617,7 +622,7 @@ async fn execute_run_task_request(
             persist: !request.ephemeral,
             background: false,
             delegation_depth: 0,
-            cancellation: None,
+            cancellation: Some(cancellation),
         },
         &mut emit,
     )
@@ -627,15 +632,18 @@ async fn execute_run_task_request(
 fn best_effort_control_event_emitter(
     outbound: mpsc::Sender<ControlServerMessage>,
     request_id: String,
+    cancellation: ExecutionCancellation,
 ) -> impl FnMut(RunTaskStreamEvent) -> Pin<Box<dyn Future<Output = bool> + Send>> {
     let connected = Arc::new(AtomicBool::new(true));
     move |event| {
         let outbound = outbound.clone();
         let request_id = request_id.clone();
         let connected = Arc::clone(&connected);
+        let cancellation = cancellation.clone();
         Box::pin(async move {
             if !connected.load(Ordering::Relaxed) {
-                return true;
+                cancellation.cancel();
+                return false;
             }
 
             let delivered = send_protocol_message(
@@ -650,6 +658,8 @@ fn best_effort_control_event_emitter(
             .await;
             if !delivered {
                 connected.store(false, Ordering::Relaxed);
+                cancellation.cancel();
+                return false;
             }
             true
         })
@@ -830,19 +840,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn best_effort_control_event_emitter_ignores_disconnects() {
+    async fn best_effort_control_event_emitter_reports_disconnects() {
         let (tx, rx) = mpsc::channel(1);
         drop(rx);
 
-        let mut emit = best_effort_control_event_emitter(tx, "request-1".to_string());
+        let cancellation = ExecutionCancellation::default();
+        let mut emit =
+            best_effort_control_event_emitter(tx, "request-1".to_string(), cancellation.clone());
         assert!(
-            emit(RunTaskStreamEvent::Error {
+            !emit(RunTaskStreamEvent::Error {
                 message: "first".to_string(),
             })
             .await
         );
+        assert!(cancellation.is_cancelled());
         assert!(
-            emit(RunTaskStreamEvent::Error {
+            !emit(RunTaskStreamEvent::Error {
                 message: "second".to_string(),
             })
             .await

@@ -30,6 +30,11 @@ KEY_VALUE_PATTERN = re.compile(
     + "|".join(re.escape(key) for key in SENSITIVE_KEYS)
     + r")\b\s*[:=]\s*([^\s,\"';]+)"
 )
+FLAG_VALUE_PATTERN = re.compile(
+    r"(?i)(--?(?:"
+    + "|".join(re.escape(key).replace("_", "[-_]") for key in SENSITIVE_KEYS)
+    + r"))\s+([^\s,\"';]+)"
+)
 BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._-]{6,}")
 TOKEN_PREFIX_PATTERN = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+|glpat-[A-Za-z0-9_-]+|xox[baprs]-[A-Za-z0-9-]+)\b"
@@ -73,6 +78,7 @@ def write_json_config_raw(path: Path, payload: Any) -> None:
 def sanitize_text(value: str) -> str:
     redacted = BEARER_PATTERN.sub(f"Bearer {REDACTED}", value)
     redacted = KEY_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}={REDACTED}", redacted)
+    redacted = FLAG_VALUE_PATTERN.sub(lambda match: f"{match.group(1)} {REDACTED}", redacted)
     redacted = TOKEN_PREFIX_PATTERN.sub(REDACTED, redacted)
     redacted = JWT_PATTERN.sub(REDACTED, redacted)
     return redacted
@@ -99,6 +105,10 @@ def write_json_artifact(path: Path, payload: Any) -> None:
     sanitized = sanitize_artifact_payload(payload)
     serialized = json.dumps(sanitized, indent=2)
     path.write_bytes(sanitize_text(serialized).encode("utf-8"))
+
+
+def write_text_artifact(path: Path, content: str) -> None:
+    path.write_text(sanitize_text(content), encoding="utf-8")
 
 
 def read_json(path: Path) -> Any:
@@ -179,9 +189,9 @@ def run_command(
     )
     if check and completed.returncode != 0:
         raise RuntimeError(
-            f"Command failed ({completed.returncode}): {command_label(argv)}\n"
-            f"stdout:\n{completed.stdout}\n"
-            f"stderr:\n{completed.stderr}"
+            f"Command failed ({completed.returncode}): {sanitize_text(command_label(argv))}\n"
+            f"stdout:\n{sanitize_text(completed.stdout)}\n"
+            f"stderr:\n{sanitize_text(completed.stderr)}"
         )
     return completed
 

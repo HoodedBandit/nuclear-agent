@@ -9,7 +9,9 @@ use axum::{
     Json,
 };
 
-use crate::{append_log, runtime::provider_has_runnable_access, ApiError, AppState};
+use crate::{
+    append_log, commit_config_update, runtime::provider_has_runnable_access, ApiError, AppState,
+};
 
 use super::redact_provider_secret_metadata;
 
@@ -19,6 +21,39 @@ fn config_has_runnable_main_alias(config: &agent_core::AppConfig) -> bool {
         .ok()
         .and_then(|alias| config.resolve_provider(&alias.provider_id))
         .is_some_and(|provider| provider_has_runnable_access(&provider))
+}
+
+fn should_cleanup_secret(new_account: Option<&str>, previous_account: Option<&str>) -> bool {
+    let new_account = new_account.map(str::trim).filter(|value| !value.is_empty());
+    let previous_account = previous_account
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    new_account.is_some() && new_account != previous_account
+}
+
+fn cleanup_secret_after_commit(state: &AppState, scope: &str, account: Option<&str>) {
+    let Some(account) = account.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if let Err(error) = delete_secret(account) {
+        let _ = append_log(
+            state,
+            "warn",
+            scope,
+            format!(
+                "secret cleanup failed: {}",
+                agent_core::display_safe_error(&error.to_string())
+            ),
+        );
+    }
+}
+
+fn cleanup_staged_secret(new_account: Option<&str>, previous_account: Option<&str>) {
+    if should_cleanup_secret(new_account, previous_account) {
+        if let Some(account) = new_account.map(str::trim).filter(|value| !value.is_empty()) {
+            let _ = delete_secret(account);
+        }
+    }
 }
 
 pub(crate) async fn list_providers(
@@ -99,6 +134,9 @@ pub(crate) async fn upsert_provider(
         }
         config.get_provider(&payload.provider.id).cloned()
     };
+    let previous_account = existing_provider
+        .as_ref()
+        .and_then(|provider| provider.keychain_account.clone());
 
     if let Some(api_key) = payload.api_key.take() {
         let account = store_api_key(&payload.provider.id, &api_key)?;
@@ -120,10 +158,24 @@ pub(crate) async fn upsert_provider(
         }
     }
 
-    {
-        let mut config = state.config.write().await;
+    let new_account = payload.provider.keychain_account.clone();
+    if let Err(error) = commit_config_update(&state, |config| {
+        if config.is_projected_plugin_provider(&payload.provider.id) {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "plugin-backed providers are managed by their plugin package",
+            ));
+        }
         config.upsert_provider(payload.provider.clone());
-        state.storage.save_config(&config)?;
+        Ok(())
+    })
+    .await
+    {
+        cleanup_staged_secret(new_account.as_deref(), previous_account.as_deref());
+        return Err(error);
+    }
+    if should_cleanup_secret(previous_account.as_deref(), new_account.as_deref()) {
+        cleanup_secret_after_commit(&state, "providers", previous_account.as_deref());
     }
 
     append_log(
@@ -139,27 +191,21 @@ pub(crate) async fn delete_provider(
     State(state): State<AppState>,
     Path(provider_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let (removed, removed_aliases, secret_account) = {
-        let mut config = state.config.write().await;
+    let (removed_aliases, secret_account) = commit_config_update(&state, |config| {
         let secret_account = config
             .get_provider(&provider_id)
             .and_then(|provider| provider.keychain_account.clone());
         let aliases_before = config.aliases.len();
         let removed = config.remove_provider(&provider_id);
-        let removed_aliases = aliases_before.saturating_sub(config.aliases.len());
-        if removed {
-            state.storage.save_config(&config)?;
+        if !removed {
+            return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown provider"));
         }
-        (removed, removed_aliases, secret_account)
-    };
+        let removed_aliases = aliases_before.saturating_sub(config.aliases.len());
+        Ok((removed_aliases, secret_account))
+    })
+    .await?;
 
-    if !removed {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown provider"));
-    }
-
-    if let Some(account) = secret_account {
-        delete_secret(&account)?;
-    }
+    cleanup_secret_after_commit(&state, "providers", secret_account.as_deref());
 
     append_log(
         &state,
@@ -216,8 +262,7 @@ pub(crate) async fn clear_provider_credentials(
     State(state): State<AppState>,
     Path(provider_id): Path<String>,
 ) -> Result<Json<ProviderConfig>, ApiError> {
-    let updated = {
-        let mut config = state.config.write().await;
+    let (updated, secret_account) = commit_config_update(&state, |config| {
         if config.is_projected_plugin_provider(&provider_id) {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
@@ -229,13 +274,12 @@ pub(crate) async fn clear_provider_credentials(
             .iter_mut()
             .find(|provider| provider.id == provider_id)
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown provider"))?;
-        if let Some(account) = provider.keychain_account.take() {
-            delete_secret(&account)?;
-        }
+        let secret_account = provider.keychain_account.take();
         let updated = provider.clone();
-        state.storage.save_config(&config)?;
-        updated
-    };
+        Ok((updated, secret_account))
+    })
+    .await?;
+    cleanup_secret_after_commit(&state, "providers", secret_account.as_deref());
 
     append_log(
         &state,
@@ -257,8 +301,7 @@ pub(crate) async fn upsert_alias(
     State(state): State<AppState>,
     Json(payload): Json<AliasUpsertRequest>,
 ) -> Result<Json<ModelAlias>, ApiError> {
-    {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         if config
             .resolve_provider(&payload.alias.provider_id)
             .is_none()
@@ -272,8 +315,9 @@ pub(crate) async fn upsert_alias(
             config.main_agent_alias = Some(payload.alias.alias.clone());
         }
         config.upsert_alias(payload.alias.clone());
-        state.storage.save_config(&config)?;
-    }
+        Ok(())
+    })
+    .await?;
 
     append_log(
         &state,
@@ -293,18 +337,14 @@ pub(crate) async fn delete_alias(
     State(state): State<AppState>,
     Path(alias_name): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let removed = {
-        let mut config = state.config.write().await;
+    commit_config_update(&state, |config| {
         let removed = config.remove_alias(&alias_name);
-        if removed {
-            state.storage.save_config(&config)?;
+        if !removed {
+            return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown alias"));
         }
-        removed
-    };
-
-    if !removed {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown alias"));
-    }
+        Ok(())
+    })
+    .await?;
 
     append_log(
         &state,
@@ -327,8 +367,7 @@ pub(crate) async fn update_main_alias(
         ));
     }
 
-    let summary = {
-        let mut config = state.config.write().await;
+    let summary = commit_config_update(&state, |config| {
         let summary = config.alias_target_summary(alias_name).ok_or_else(|| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -336,9 +375,9 @@ pub(crate) async fn update_main_alias(
             )
         })?;
         config.main_agent_alias = Some(summary.alias.clone());
-        state.storage.save_config(&config)?;
-        summary
-    };
+        Ok(summary)
+    })
+    .await?;
 
     append_log(
         &state,

@@ -20,7 +20,7 @@ Current implementation:
 - Explicit high-risk autonomy mode with confirmation gates
 - Auto-start configuration for always-on daemon mode
 
-GUI is intentionally deferred until the CLI path is stable.
+The browser dashboard is the supported GUI for chat, provider setup, connectors, logs, diagnostics, and update checks.
 
 ## Workspace
 

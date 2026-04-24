@@ -9,10 +9,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.common import (
+    run_command,
     sanitize_artifact_payload,
     sanitize_text,
     write_json_artifact,
     write_json_config_raw,
+    write_text_artifact,
 )
 
 
@@ -36,11 +38,12 @@ class HarnessSanitizationTests(unittest.TestCase):
 
     def test_sanitize_text_redacts_console_token_patterns(self) -> None:
         rendered = sanitize_text(
-            "authorization=Bearer sk-live-123456 refresh_token=refresh-secret jwt=eyJhbGciOiJIUzI1Ni.eyJzdWIiOiIxMjM0NTYifQ.signature"
+            "authorization=Bearer sk-live-123456 refresh_token=refresh-secret -Token plain-secret jwt=eyJhbGciOiJIUzI1Ni.eyJzdWIiOiIxMjM0NTYifQ.signature"
         )
 
         self.assertNotIn("sk-live-123456", rendered)
         self.assertNotIn("refresh-secret", rendered)
+        self.assertNotIn("plain-secret", rendered)
         self.assertNotIn("eyJhbGciOiJIUzI1Ni", rendered)
         self.assertIn("[REDACTED]", rendered)
 
@@ -99,6 +102,40 @@ class HarnessSanitizationTests(unittest.TestCase):
         content = config_path.read_text(encoding="utf-8")
         self.assertIn("keep-for-config-tests", content)
         self.assertIn("configured-key", content)
+
+    def test_write_text_artifact_redacts_raw_command_output(self) -> None:
+        root = Path(self.id()).with_suffix("")
+        output_dir = Path.cwd() / "target" / "scripts-tests" / root
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = output_dir / "stdout.txt"
+
+        write_text_artifact(
+            stdout_path,
+            "api_key=sk-live-123456\nAuthorization: Bearer ghp_secret123456\njwt=eyJhbGciOiJIUzI1Ni.eyJzdWIiOiIxMjM0NTYifQ.signature",
+        )
+
+        content = stdout_path.read_text(encoding="utf-8")
+        self.assertNotIn("sk-live-123456", content)
+        self.assertNotIn("ghp_secret123456", content)
+        self.assertNotIn("eyJhbGciOiJIUzI1Ni", content)
+        self.assertIn("[REDACTED]", content)
+
+    def test_run_command_failure_redacts_captured_output(self) -> None:
+        with self.assertRaises(RuntimeError) as raised:
+            run_command(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; print('api_key=sk-live-123456'); print('Bearer ghp_secret123456', file=sys.stderr); sys.exit(7)",
+                ],
+                cwd=Path.cwd(),
+                check=True,
+            )
+
+        message = str(raised.exception)
+        self.assertNotIn("sk-live-123456", message)
+        self.assertNotIn("ghp_secret123456", message)
+        self.assertIn("[REDACTED]", message)
 
 
 if __name__ == "__main__":

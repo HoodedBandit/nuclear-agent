@@ -16,6 +16,7 @@ from .common import (
     run_command,
     utc_now_iso,
     write_json_artifact,
+    write_text_artifact,
 )
 from .provider_adapters import ANALYSIS_MODEL, SCRIPTED_MODEL, HarnessProviderServer
 
@@ -186,8 +187,8 @@ def _run_command_spec(
         timeout_seconds=float(command["timeout_seconds"]),
         capture_output=True,
     )
-    stdout_path.write_text(completed.stdout, encoding="utf-8")
-    stderr_path.write_text(completed.stderr, encoding="utf-8")
+    write_text_artifact(stdout_path, completed.stdout)
+    write_text_artifact(stderr_path, completed.stderr)
     result = {
         "label": command["label"],
         "argv": resolved_argv,
@@ -235,7 +236,7 @@ def _write_exec_artifacts(task_dir: Path, stdout_text: str, stderr_text: str) ->
     if final_response:
         write_json_artifact(task_dir / "final_response.json", final_response)
     if stderr_text.strip():
-        (task_dir / "stderr-preview.txt").write_text("\n".join(stderr_text.strip().splitlines()[:20]), encoding="utf-8")
+        write_text_artifact(task_dir / "stderr-preview.txt", "\n".join(stderr_text.strip().splitlines()[:20]))
     return events, final_response
 
 
@@ -401,8 +402,8 @@ def _run_coding_task(
             env=env,
             timeout_seconds=float(task["max_duration_seconds"]) + 30.0,
         )
-        exec_stdout_path.write_text(completed.stdout, encoding="utf-8")
-        exec_stderr_path.write_text(completed.stderr, encoding="utf-8")
+        write_text_artifact(exec_stdout_path, completed.stdout)
+        write_text_artifact(exec_stderr_path, completed.stderr)
         events, final_response = _write_exec_artifacts(task_dir, completed.stdout, completed.stderr)
 
         if completed.returncode != 0:
@@ -557,8 +558,8 @@ def run_runtime_cert(
         completed = run_command(step["argv"], cwd=repo_root, capture_output=True)
         stdout_path = step_dir / "stdout.txt"
         stderr_path = step_dir / "stderr.txt"
-        stdout_path.write_text(completed.stdout, encoding="utf-8")
-        stderr_path.write_text(completed.stderr, encoding="utf-8")
+        write_text_artifact(stdout_path, completed.stdout)
+        write_text_artifact(stderr_path, completed.stderr)
         result = {
             "id": step["id"],
             "command": command_label(step["argv"]),
@@ -610,8 +611,8 @@ def run_soak_lane(
     completed = run_command(argv, cwd=repo_root, capture_output=True)
     stdout_path = output_root / "stdout.txt"
     stderr_path = output_root / "stderr.txt"
-    stdout_path.write_text(completed.stdout, encoding="utf-8")
-    stderr_path.write_text(completed.stderr, encoding="utf-8")
+    write_text_artifact(stdout_path, completed.stdout)
+    write_text_artifact(stderr_path, completed.stderr)
     summary = {
         "lane": "soak",
         "run_dir": str(output_root),
