@@ -112,6 +112,8 @@ def write_json_artifact(path: Path, payload: Any) -> None:
     redacted_payload = sanitize_artifact_payload(payload)
     redacted_json = sanitize_text(json.dumps(redacted_payload, indent=2))
     assert_no_sensitive_artifact_text(redacted_json)
+    # The artifact text has passed the fail-closed redaction guard above.
+    # codeql[py/clear-text-storage-sensitive-data]
     path.write_text(redacted_json, encoding="utf-8")
 
 
