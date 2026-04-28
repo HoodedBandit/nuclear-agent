@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import (
+    REDACTED,
     parse_key_value_output,
     python_launcher,
     read_json,
@@ -291,7 +292,7 @@ def provision_reference_profile(
         "alias": alias,
         "model": model,
         "base_url": base_url,
-        "api_key_env": api_key_env,
+        "api_key_env": REDACTED if api_key_env else None,
     }
 
 

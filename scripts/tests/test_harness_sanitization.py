@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.common import (
+    REDACTED,
     assert_no_sensitive_artifact_text,
     run_command,
     sanitize_artifact_payload,
@@ -18,6 +19,7 @@ from harness.common import (
     write_json_config_raw,
     write_text_artifact,
 )
+from harness.evaluator import _artifact_reference_profile
 
 
 class HarnessSanitizationTests(unittest.TestCase):
@@ -132,6 +134,21 @@ class HarnessSanitizationTests(unittest.TestCase):
         self.assertNotIn("access-secret", content)
         self.assertNotIn("sk-live-123456", content)
         self.assertIn("[REDACTED]", content)
+
+    def test_reference_profile_artifact_never_stores_raw_api_key_env(self) -> None:
+        profile = _artifact_reference_profile(
+            {
+                "alias": "main",
+                "provider_id": "harness-reference",
+                "model": "model-a",
+                "provider_kind": "openai-compatible",
+                "base_url": "https://example.test/v1",
+                "api_key_env": "REAL_PROVIDER_API_KEY",
+            }
+        )
+
+        self.assertEqual(profile["api_key_env"], REDACTED)
+        self.assertEqual(profile["provider_id"], "harness-reference")
 
     def test_write_json_config_raw_preserves_config_values(self) -> None:
         root = Path(self.id()).with_suffix("")

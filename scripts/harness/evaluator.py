@@ -8,6 +8,7 @@ from typing import Any
 
 from . import bootstrap
 from .common import (
+    REDACTED,
     allocate_local_port,
     command_label,
     ensure_dir,
@@ -22,6 +23,18 @@ from .provider_adapters import ANALYSIS_MODEL, SCRIPTED_MODEL, HarnessProviderSe
 
 
 IGNORED_CHANGE_GLOBS = [".git/**", "__pycache__/**", ".pytest_cache/**", "*.pyc", "*.pyo"]
+
+
+def _artifact_reference_profile(reference_profile: dict[str, Any] | None) -> dict[str, Any]:
+    if not reference_profile:
+        return {}
+    artifact_profile: dict[str, Any] = {}
+    for key in ("alias", "provider_id", "model", "provider_kind", "base_url"):
+        if key in reference_profile:
+            artifact_profile[key] = reference_profile[key]
+    if reference_profile.get("api_key_env"):
+        artifact_profile["api_key_env"] = REDACTED
+    return artifact_profile
 
 
 def _summary_markdown(title: str, results: list[dict[str, Any]], *, lane: str, started_at: str, finished_at: str) -> str:
@@ -499,7 +512,7 @@ def run_coding_tasks(
         "passed": sum(1 for result in results if result["passed"]),
         "failed": sum(1 for result in results if not result["passed"]),
         "results": results,
-        "reference_profile": reference_profile or {},
+        "reference_profile": _artifact_reference_profile(reference_profile),
     }
     write_json_artifact(output_root / "summary.json", summary)
     (output_root / "summary.md").write_text(
