@@ -40,6 +40,13 @@ TOKEN_PREFIX_PATTERN = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+|glpat-[A-Za-z0-9_-]+|xox[baprs]-[A-Za-z0-9-]+)\b"
 )
 JWT_PATTERN = re.compile(r"\b[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b")
+SENSITIVE_JSON_FIELD_PATTERN = re.compile(
+    r"(?i)\"[^\"]*(?:"
+    + "|".join(re.escape(key) for key in SENSITIVE_KEYS)
+    + r")[^\"]*\"\s*:\s*\"(?!"
+    + re.escape(REDACTED)
+    + r"\")[^\"]+\""
+)
 
 
 def utc_now_iso() -> str:
@@ -102,9 +109,15 @@ def sanitize_artifact_payload(payload: Any) -> Any:
 
 
 def write_json_artifact(path: Path, payload: Any) -> None:
-    sanitized = sanitize_artifact_payload(payload)
-    serialized = json.dumps(sanitized, indent=2)
-    path.write_bytes(sanitize_text(serialized).encode("utf-8"))
+    redacted_payload = sanitize_artifact_payload(payload)
+    redacted_json = sanitize_text(json.dumps(redacted_payload, indent=2))
+    assert_no_sensitive_artifact_text(redacted_json)
+    path.write_text(redacted_json, encoding="utf-8")
+
+
+def assert_no_sensitive_artifact_text(content: str) -> None:
+    if sanitize_text(content) != content or SENSITIVE_JSON_FIELD_PATTERN.search(content):
+        raise ValueError("refusing to write artifact with unredacted sensitive content")
 
 
 def write_text_artifact(path: Path, content: str) -> None:

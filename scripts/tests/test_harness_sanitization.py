@@ -4,11 +4,13 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.common import (
+    assert_no_sensitive_artifact_text,
     run_command,
     sanitize_artifact_payload,
     sanitize_text,
@@ -57,14 +59,60 @@ class HarnessSanitizationTests(unittest.TestCase):
             artifact_path,
             {
                 "api_key": "sk-live-123456",
-                "note": "refresh_token=refresh-secret",
+                "password": "password-secret",
+                "access_token": "access-secret",
+                "nested": {
+                    "refresh_token": "refresh-secret",
+                    "id_token": "id-secret",
+                    "message": "Authorization: Bearer ghp_secret123456",
+                },
+                "note": "refresh_token=refresh-secret --api-key cli-secret jwt=eyJhbGciOiJIUzI1Ni.eyJzdWIiOiIxMjM0NTYifQ.signature",
             },
         )
 
         content = artifact_path.read_text(encoding="utf-8")
         self.assertNotIn("sk-live-123456", content)
+        self.assertNotIn("password-secret", content)
+        self.assertNotIn("access-secret", content)
         self.assertNotIn("refresh-secret", content)
+        self.assertNotIn("id-secret", content)
+        self.assertNotIn("ghp_secret123456", content)
+        self.assertNotIn("cli-secret", content)
+        self.assertNotIn("eyJhbGciOiJIUzI1Ni", content)
         self.assertIn("[REDACTED]", content)
+
+    def test_artifact_text_guard_rejects_unredacted_sensitive_content(self) -> None:
+        with self.assertRaises(ValueError):
+            assert_no_sensitive_artifact_text(
+                json.dumps(
+                    {
+                        "password": "plain-secret",
+                        "note": "Bearer sk-live-123456",
+                    },
+                    indent=2,
+                )
+            )
+
+    def test_write_json_artifact_fails_closed_before_overwrite(self) -> None:
+        root = Path(self.id()).with_suffix("")
+        output_dir = Path.cwd() / "target" / "scripts-tests" / root
+        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = output_dir / "artifact-existing.json"
+        artifact_path.write_text("existing-content", encoding="utf-8")
+
+        with (
+            patch("harness.common.sanitize_artifact_payload", side_effect=lambda payload: payload),
+            patch("harness.common.sanitize_text", side_effect=lambda content: content),
+        ):
+            with self.assertRaises(ValueError):
+                write_json_artifact(
+                    artifact_path,
+                    {
+                        "password": "plain-secret",
+                    },
+                )
+
+        self.assertEqual(artifact_path.read_text(encoding="utf-8"), "existing-content")
 
     def test_artifact_writer_is_the_explicit_sensitive_result_writer(self) -> None:
         root = Path(self.id()).with_suffix("")
